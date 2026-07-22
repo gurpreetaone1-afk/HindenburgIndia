@@ -4,8 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Plus, RefreshCw, Search, Star, X } from "lucide-react";
-import { InstrumentAPI, MarketwatchAPI, SegmentSettingsAPI } from "@/lib/api";
+import { Minus, Plus, RefreshCw, Search, Star, X } from "lucide-react";
+import {
+  InstrumentAPI,
+  MarketwatchAPI,
+  OrderAPI,
+  ProfileAPI,
+  SegmentSettingsAPI,
+} from "@/lib/api";
+import { playBuyTone, playSellTone } from "@/lib/trade-audio";
 import { cn, formatPrice } from "@/lib/utils";
 import { useMarketStream } from "@/lib/useMarketStream";
 import { usePriceFlash } from "@/lib/usePriceFlash";
@@ -62,7 +69,18 @@ const BUCKETS: Bucket[] = [
   { key: "stocks", label: "Stocks", group: "asset", mode: "filter", segments: ["STOCKS"], adminRows: ["STOCKS"] },
   { key: "indices", label: "Indices", group: "asset", mode: "filter", segments: ["INDICES"], adminRows: ["INDICES"] },
   { key: "commodities", label: "Commodities", group: "asset", mode: "filter", segments: ["COMMODITIES"], adminRows: ["COMMODITIES"] },
-  { key: "crypto", label: "Crypto", group: "asset", mode: "filter", segments: ["CRYPTO_PERPETUAL", "CRYPTO_SPOT", "CRYPTO_FUTURE"], adminRows: ["CRYPTO"] },
+  // Crypto = SPOT only. Perpetual + dated futures are out of scope —
+  // Infoway emits spot prices, Delta covers OPTIONS via the separate
+  // Crypto Options chip below. The legacy CRYPTO_PERPETUAL / CRYPTO_FUTURE
+  // segments are intentionally not listed here; on next Infoway boot the
+  // mirror flips any existing perp rows to CRYPTO_SPOT so they keep
+  // appearing under this chip without a data migration.
+  { key: "crypto", label: "Crypto", group: "asset", mode: "filter", segments: ["CRYPTO_SPOT"], adminRows: ["CRYPTO"] },
+  // Crypto OPTIONS — fed from Delta Exchange (separate provider, separate
+  // admin tile CRYPTO_OPT). User-side chip is distinct from the spot/perp
+  // "Crypto" chip above so admin can deactivate one without hiding the
+  // other.
+  { key: "crypto_opt", label: "Crypto Options", group: "asset", mode: "filter", segments: ["CRYPTO_OPTION_BUY", "CRYPTO_OPTION_SELL"], adminRows: ["CRYPTO_OPT"], managed: true },
 
   // NSE granular — managed (user adds instruments explicitly)
   { key: "nse_eq", label: "NSE EQ", group: "nse", mode: "filter", segments: ["NSE_EQUITY"], adminRows: ["NSE_EQ"], managed: true },
@@ -102,6 +120,38 @@ function formatExpiry(raw: string | null | undefined): string {
   return `${d}-${_EXPIRY_MONTHS[mi]}-${y}`;
 }
 
+/** Parse the expiry directly out of the symbol when the server-side
+ *  `expiry` field isn't populated (typical for watchlist quotes and
+ *  search hits — only the Instrument doc carries it explicitly).
+ *  Matches "26JUN" (monthly futures / options) and the weekly numeric
+ *  encoding `<YY><M><DD>` used by NSE option chains
+ *  (NIFTY2651923800PE = 2026-05-19). Returns `null` for non-derivatives.
+ *  Mirrors the same helper used on the Positions page (kept duplicated
+ *  here so we don't drag a positions-only import into the watchlist
+ *  bundle). */
+function extractExpiryFromSymbol(symbol: string | null | undefined): string | null {
+  if (!symbol) return null;
+  const sym = String(symbol).toUpperCase();
+  const monthly =
+    /(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/.exec(sym);
+  if (monthly) return `${monthly[1]} ${monthly[2]}`;
+  const weekly =
+    /^[A-Z]+(\d{2})([1-9OND])(\d{2})\d+(?:CE|PE)$/.exec(sym);
+  if (weekly) {
+    const yy = weekly[1];
+    const mChar = weekly[2];
+    const dd = weekly[3];
+    let mi: number;
+    if (/^[1-9]$/.test(mChar)) mi = parseInt(mChar, 10) - 1;
+    else if (mChar === "O") mi = 9;
+    else if (mChar === "N") mi = 10;
+    else mi = 11;
+    if (mi < 0 || mi > 11) return null;
+    return `${dd} ${_EXPIRY_MONTHS[mi]} ${yy}`;
+  }
+  return null;
+}
+
 /**
  * Sliding instruments panel — search any tradeable symbol, see live bid/ask,
  * 1-day arrow, click to open it in the terminal. Drives off the existing
@@ -116,6 +166,116 @@ export function InstrumentsPanel({ onClose }: Props) {
   // Optimistic favorite toggle — flips the star instantly while the
   // add/remove request is in flight. Reconciled by the watchlist refetch.
   const [pendingFav, setPendingFav] = useState<Map<string, boolean>>(new Map());
+
+  // ── One-Click trading mode ────────────────────────────────────────
+  // Shared global flag managed by PositionsTabs's toolbar toggle (key:
+  // stock4x.terminal.oneClick in localStorage). When ON, clicking a
+  // row expands it inline with a lot stepper + BUY/SELL price buttons
+  // — no order-panel hop, no confirm dialog — for fast scalping right
+  // from the watchlist. When OFF, the row stays as a navigation
+  // affordance (clicks pick the instrument for the chart / order
+  // panel). Storage-watched so the toggle in the trades panel
+  // propagates here without a page reload.
+  const [oneClick, setOneClick] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const read = () =>
+      setOneClick(window.localStorage.getItem("stock4x.terminal.oneClick") === "1");
+    read();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "stock4x.terminal.oneClick") read();
+    };
+    window.addEventListener("storage", onStorage);
+    // Storage events DON'T fire in the same tab that made the change —
+    // poll every 1s as a backup so toggling One-Click in the trades
+    // panel (same tab) lights up here too without a refresh.
+    const poll = setInterval(read, 1000);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      clearInterval(poll);
+    };
+  }, []);
+
+  // When One-Click is ON, the inline BUY/SELL strip is shown on
+  // EVERY visible row — no click-to-expand step, the trader sees
+  // the trade affordance on every symbol immediately. (Earlier
+  // version required tapping the row to reveal the strip; user
+  // feedback was that the toggle should make it visible directly.)
+  const [oneClickLots, setOneClickLots] = useState<Record<string, number>>({});
+  const [placingSide, setPlacingSide] = useState<Record<string, "BUY" | "SELL" | null>>({});
+
+  // Profile-level default lot size — seeds every row's stepper when
+  // > 0. The OneClickRowController still clamps up to the admin's
+  // min_lot for that instrument so the server doesn't reject.
+  const { data: me } = useQuery<any>({
+    queryKey: ["users", "me"],
+    queryFn: () => ProfileAPI.me(),
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+  const userDefaultLot = Number(me?.default_lot_size ?? 0) || 0;
+
+  // Segment-aware FALLBACK only. The admin's per-instrument min_lot
+  // (resolved through SegmentSettingsAPI.effective) takes precedence
+  // — each OneClickRowController fetches its own settings and seeds
+  // `oneClickLots[token]` once the lookup lands. These constants are
+  // just for the brief window before that fetch resolves.
+  function fallbackLotsFor(segment: string | undefined, exchange: string | undefined): number {
+    const seg = (segment ?? "").toUpperCase();
+    const ex = (exchange ?? "").toUpperCase();
+    const isCrypto = seg.includes("CRYPTO") || ex === "CRYPTO";
+    const isForex = seg.includes("FOREX") || seg.includes("FX") || ex === "CDS";
+    if (isCrypto) return 0.001;
+    if (isForex) return 0.01;
+    return 1;
+  }
+
+  async function oneClickPlace(
+    side: "BUY" | "SELL",
+    row: any,
+    lots: number,
+  ) {
+    const token = String(row?.instrument_token);
+    if (!token) return;
+    if (!lots || lots <= 0) {
+      toast.error("Lots must be > 0");
+      return;
+    }
+    const seg = (row?.segment ?? "").toUpperCase();
+    const ex = (row?.exchange ?? "").toUpperCase();
+    const isCrypto = seg.includes("CRYPTO") || ex === "CRYPTO";
+    const isForex = seg.includes("FOREX") || seg.includes("FX") || ex === "CDS";
+    const product = isCrypto || isForex ? "NRML" : "MIS";
+    const ask = Number(row?.ask) || Number(row?.ltp) || 0;
+    const bid = Number(row?.bid) || Number(row?.ltp) || 0;
+    setPlacingSide((p) => ({ ...p, [token]: side }));
+    if (side === "BUY") playBuyTone();
+    else playSellTone();
+    try {
+      await OrderAPI.place({
+        token,
+        action: side,
+        order_type: "MARKET",
+        product_type: product,
+        lots,
+        price: 0,
+        trigger_price: 0,
+        validity: "DAY",
+        is_amo: false,
+        stop_loss: null,
+        target: null,
+        expected_price: side === "BUY" ? ask : bid,
+      });
+      toast.success(`${side} ${lots} ${row?.symbol ?? ""} placed`, { duration: 1500 });
+      qc.invalidateQueries({ queryKey: ["positions"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+    } catch (e: any) {
+      toast.error(e?.message || "Order rejected");
+    } finally {
+      setPlacingSide((p) => ({ ...p, [token]: null }));
+    }
+  }
 
   // Inactive admin rows (Block → isActive = false). Refetched every 60 s so
   // a broker toggling a segment off shows up within a minute on every open
@@ -356,14 +516,17 @@ export function InstrumentsPanel({ onClose }: Props) {
     const all = (() => {
       if (debouncedSearch.trim().length > 0) return (searchHits ?? []).map((s: any) => s.token);
       if (bucket.mode === "watchlist") {
-        // Subscribe the FAVOURITE tokens to WS + batch quotes. Without this
-        // `quoteByToken` stayed empty for the Favorites tab, so the row's
-        // overlay (pickPositive(q.bid, liveOverlay?.bid, …)) had nothing to
-        // pick and fell back to the /marketwatch/quotes REST ltp — which is 0
-        // for Infoway (crypto/forex/metals). Those rows froze at 0 while every
-        // other bucket ticked live. instrument_token == symbol for Infoway.
+        // Subscribe favorites/watchlist rows to the WS stream too. The
+        // REST poll endpoint (MarketwatchAPI.quotes) reads from the
+        // in-process market_data_service.get_quote which calls
+        // infoway.get_tick(symbol) — that returns None when the request
+        // lands on a uvicorn worker that doesn't hold the Infoway WS
+        // connection (the in-memory ticks dict is per-process), so the
+        // row stays at zero. The /ws/marketdata bridge forwards Redis
+        // pub/sub ticks cross-process, so subscribing here makes the
+        // row pick up live data the same way the OrderPanel does.
         return (activeWl?.items ?? []).map((it: any) =>
-          String(it.instrument_token ?? it.token),
+          String(it.instrument_token),
         );
       }
       if (managedSegmentName) {
@@ -372,7 +535,7 @@ export function InstrumentsPanel({ onClose }: Props) {
       return (bucketHits ?? []).map((s: any) => s.token);
     })();
     return all.slice(0, LIVE_TOKEN_CAP);
-  }, [debouncedSearch, searchHits, bucketHits, bucket, managedSegmentName, segmentItems, activeWl?.items]);
+  }, [debouncedSearch, searchHits, bucketHits, bucket, managedSegmentName, segmentItems, activeWl]);
 
   // Live quote pump — uses the `/ws/marketdata` stream so bid/ask/change tick
   // at the same 250 ms cadence as the order panel / positions, instead of a
@@ -454,8 +617,13 @@ export function InstrumentsPanel({ onClose }: Props) {
   }, []);
 
   function pickToken(token: string) {
+    // Navigate to the picked instrument but keep the panel open so the
+    // trader can continue browsing — `onClose()` here used to slam the
+    // sidebar shut on every click, forcing them to re-open it for the
+    // next pick (user-reported: "instrument click karne ke bad section
+    // collapse ho jata, ye nahi hona chahiye"). The close button in
+    // the panel header still works for the explicit-dismiss case.
     router.push(`/terminal?token=${encodeURIComponent(token)}`);
-    onClose();
   }
 
   return (
@@ -680,9 +848,21 @@ export function InstrumentsPanel({ onClose }: Props) {
           return (
             <div
               key={token}
+              className={cn(
+                "border-b border-border/40",
+                oneClick && "bg-muted/10",
+              )}
+            >
+            <div
               role="button"
               tabIndex={0}
-              onClick={() => pickToken(token)}
+              onClick={() => {
+                // When One-Click is ON we still navigate on row tap
+                // so the chart + order panel update — the inline
+                // BUY/SELL strip below the row stays available for
+                // direct trading on EVERY row, no expand step.
+                pickToken(token);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
@@ -693,7 +873,7 @@ export function InstrumentsPanel({ onClose }: Props) {
               // renders both the favorites star and the segment-remove X.
               // Other contexts (single star, single X, "+" button, "✓"
               // badge) just take the natural 28-px slot.
-              className="grid w-full cursor-pointer grid-cols-[1fr_auto_auto] items-center gap-3 border-b border-border/40 px-3 py-2.5 text-left text-xs transition-colors hover:bg-muted/30"
+              className="grid w-full cursor-pointer grid-cols-[1fr_auto_auto] items-center gap-3 px-3 py-2.5 text-left text-xs transition-colors hover:bg-muted/30"
             >
               {/* Symbol + change% + expiry (left side, stacked) */}
               <div className="flex min-w-0 flex-col items-start leading-tight">
@@ -718,11 +898,24 @@ export function InstrumentsPanel({ onClose }: Props) {
                   ) : (
                     <span className="text-muted-foreground">—</span>
                   )}
-                  {q.expiry && (
-                    <span className="truncate text-muted-foreground">
-                      Exp: {formatExpiry(q.expiry)}
-                    </span>
-                  )}
+                  {(() => {
+                    // Prefer the server-supplied ISO expiry when present
+                    // (carries the year — DD-MMM-YYYY). Fall back to a
+                    // symbol-parsed label (DD MMM) so watchlist quotes
+                    // and search hits — whose payloads usually drop the
+                    // expiry field — still show the contract date.
+                    const display = q.expiry
+                      ? `Exp: ${formatExpiry(q.expiry)}`
+                      : (() => {
+                          const parsed = extractExpiryFromSymbol(q.symbol);
+                          return parsed ? `Exp: ${parsed}` : null;
+                        })();
+                    return display ? (
+                      <span className="truncate text-muted-foreground">
+                        {display}
+                      </span>
+                    ) : null;
+                  })()}
                 </div>
               </div>
 
@@ -745,10 +938,243 @@ export function InstrumentsPanel({ onClose }: Props) {
               {/* Right-edge action — context-dependent (see above) */}
               {rightAction}
             </div>
+            {oneClick && (
+              <OneClickRowController
+                row={q}
+                bid={Number(bidDisplay) || 0}
+                ask={Number(askDisplay) || 0}
+                placingSide={placingSide[token] ?? null}
+                lotsOverride={oneClickLots[token]}
+                fallbackLots={fallbackLotsFor(q.segment, q.exchange)}
+                userDefaultLot={userDefaultLot}
+                onLotsChange={(n) =>
+                  setOneClickLots((prev) => ({ ...prev, [token]: n }))
+                }
+                onPlace={(side, lots) => oneClickPlace(side, q, lots)}
+              />
+            )}
+            </div>
           );
         })}
       </div>
     </aside>
+  );
+}
+
+/** Wraps OneClickTradeStrip with a per-row segment-settings fetch so
+ *  the lot stepper's default + step values follow the admin's
+ *  configured `min_lot` for that exact instrument. Each visible row
+ *  fires its own SegmentSettingsAPI.effective lookup (cached by React
+ *  Query so re-renders / scrolls don't refetch). Until the lookup
+ *  resolves we render the strip with the segment-aware fallback so
+ *  the trader can act without waiting on the round-trip. */
+function OneClickRowController({
+  row,
+  bid,
+  ask,
+  placingSide,
+  lotsOverride,
+  fallbackLots,
+  userDefaultLot,
+  onLotsChange,
+  onPlace,
+}: {
+  row: any;
+  bid: number;
+  ask: number;
+  placingSide: "BUY" | "SELL" | null;
+  lotsOverride: number | undefined;
+  fallbackLots: number;
+  /** Profile-level default lot size (0 = use instrument min). When >
+   *  0 it wins over the instrument's admin min, clamped UP to the
+   *  admin min so the value never falls below what the server would
+   *  accept. */
+  userDefaultLot: number;
+  onLotsChange: (n: number) => void;
+  onPlace: (side: "BUY" | "SELL", lots: number) => void;
+}) {
+  const token = String(row?.instrument_token ?? "");
+  const seg = (row?.segment ?? "").toUpperCase();
+  const ex = (row?.exchange ?? "").toUpperCase();
+  const isCrypto = seg.includes("CRYPTO") || ex === "CRYPTO";
+  const isForex = seg.includes("FOREX") || seg.includes("FX") || ex === "CDS";
+  const product: "MIS" | "NRML" = isCrypto || isForex ? "NRML" : "MIS";
+
+  // Admin-configured min_lot + step from segment settings — single
+  // doc lookup, cached for 30 s so scrolling / re-renders don't
+  // re-fetch. BUY action passed defensively; min_lot is typically
+  // side-symmetric but the endpoint requires it.
+  const { data: effSettings } = useQuery<any>({
+    queryKey: ["segment-settings", token, "BUY", product],
+    queryFn: () => SegmentSettingsAPI.effective(token, "BUY", product),
+    enabled: !!token,
+    staleTime: 30_000,
+  });
+
+  const adminMinLot = Number(effSettings?.min_lot ?? 0) || 0;
+  const segmentFloor = adminMinLot > 0 ? adminMinLot : fallbackLots;
+  // Resolved lots in priority order:
+  //   1. User-edited override (`lotsOverride`)
+  //   2. Profile default `userDefaultLot` clamped UP to segmentFloor
+  //   3. segmentFloor itself (admin min_lot or segment-aware fallback)
+  const lots =
+    typeof lotsOverride === "number"
+      ? lotsOverride
+      : userDefaultLot > 0
+        ? Math.max(userDefaultLot, segmentFloor)
+        : segmentFloor;
+  // Step matches the natural unit — crypto/forex steps in the
+  // admin's min_lot (or fractional defaults); equity steps in whole
+  // lots so +/− moves by 1 share-lot at a time.
+  const step = adminMinLot > 0
+    ? adminMinLot
+    : fallbackLots;
+
+  return (
+    <OneClickTradeStrip
+      row={row}
+      lots={lots}
+      step={step}
+      minLot={adminMinLot > 0 ? adminMinLot : fallbackLots}
+      onLotsChange={onLotsChange}
+      bid={bid}
+      ask={ask}
+      placingSide={placingSide}
+      onPlace={(side) => onPlace(side, lots)}
+    />
+  );
+}
+
+/** Inline BUY/SELL strip rendered below a watchlist row when One-Click
+ *  trading is enabled. Mirrors the MobileQuickTradeBar layout (SELL
+ *  price card · lot stepper · BUY price card) so the trader can fire
+ *  a MARKET order without leaving the watchlist — no second screen,
+ *  no confirm dialog. Lot stepper defaults to the admin's configured
+ *  min_lot (via OneClickRowController's segment-settings fetch). */
+function OneClickTradeStrip({
+  row,
+  lots,
+  step,
+  minLot,
+  onLotsChange,
+  bid,
+  ask,
+  placingSide,
+  onPlace,
+}: {
+  row: any;
+  lots: number;
+  step: number;
+  /** Admin-configured floor for this instrument. The − button won't
+   *  drop the lot count below this; the API will reject anything
+   *  smaller anyway, so we enforce it client-side too. */
+  minLot: number;
+  onLotsChange: (n: number) => void;
+  bid: number;
+  ask: number;
+  placingSide: "BUY" | "SELL" | null;
+  onPlace: (side: "BUY" | "SELL") => void;
+}) {
+  const seg = (row?.segment ?? "").toUpperCase();
+  const ex = (row?.exchange ?? "").toUpperCase();
+  const isCrypto = seg.includes("CRYPTO") || ex === "CRYPTO";
+  const isForex = seg.includes("FOREX") || seg.includes("FX") || ex === "CDS";
+  const decimals = isCrypto ? 3 : isForex ? 2 : 0;
+  const priceDecimals = isCrypto ? 2 : isForex ? 4 : 2;
+  function fmt(n: number) {
+    return Number(n || 0).toFixed(decimals);
+  }
+  function fmtPx(n: number) {
+    return Number(n || 0).toFixed(priceDecimals);
+  }
+  function clampDown(n: number) {
+    return Math.max(minLot, Number((n - step).toFixed(6)));
+  }
+  function clampUp(n: number) {
+    return Number((n + step).toFixed(6));
+  }
+  // Suppress unused-warning — `fmt` was used by the now-removed status
+  // footer; kept the helper around in case we re-introduce a label.
+  void fmt;
+  return (
+    <div className="grid grid-cols-[1fr_auto_1fr] items-stretch gap-1 px-2 pb-1.5">
+      {/* SELL price card (red) — single line: label + price */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onPlace("SELL");
+        }}
+        disabled={placingSide !== null || !(bid > 0)}
+        className={cn(
+          "flex h-6 items-center justify-center gap-1.5 rounded border border-red-500/30 bg-red-500/10 px-1.5 text-[10px] font-semibold text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-300",
+          "disabled:cursor-not-allowed disabled:opacity-50",
+        )}
+      >
+        <span className="uppercase tracking-wider opacity-70">
+          {placingSide === "SELL" ? "…" : "Sell"}
+        </span>
+        <span className="font-tabular tabular-nums">{fmtPx(bid)}</span>
+      </button>
+
+      {/* Lot stepper — compact h-6 row */}
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex h-6 items-center rounded border border-border bg-background"
+      >
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onLotsChange(clampDown(lots));
+          }}
+          aria-label="Decrease lots"
+          className="grid size-6 place-items-center rounded-l text-muted-foreground hover:bg-muted/40"
+        >
+          <Minus className="size-3" />
+        </button>
+        <input
+          type="number"
+          min={minLot}
+          step={step}
+          value={lots}
+          onChange={(e) => onLotsChange(Number(e.target.value))}
+          onClick={(e) => e.stopPropagation()}
+          aria-label="Lots"
+          className="w-10 bg-transparent text-center font-tabular text-[11px] font-semibold tabular-nums outline-none"
+        />
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onLotsChange(clampUp(lots));
+          }}
+          aria-label="Increase lots"
+          className="grid size-6 place-items-center rounded-r text-muted-foreground hover:bg-muted/40"
+        >
+          <Plus className="size-3" />
+        </button>
+      </div>
+
+      {/* BUY price card (green) — single line: label + price */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onPlace("BUY");
+        }}
+        disabled={placingSide !== null || !(ask > 0)}
+        className={cn(
+          "flex h-6 items-center justify-center gap-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 text-[10px] font-semibold text-emerald-600 transition-colors hover:bg-emerald-500/15 dark:text-emerald-300",
+          "disabled:cursor-not-allowed disabled:opacity-50",
+        )}
+      >
+        <span className="uppercase tracking-wider opacity-70">
+          {placingSide === "BUY" ? "…" : "Buy"}
+        </span>
+        <span className="font-tabular tabular-nums">{fmtPx(ask)}</span>
+      </button>
+    </div>
   );
 }
 

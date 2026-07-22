@@ -32,7 +32,9 @@ export function OrderForm({ instrument, ltp }: Props) {
   const [available, setAvailable] = useState<number>(0);
 
   useEffect(() => {
-    WalletAPI.summary().then((s: any) => setAvailable(Number(s.available_balance))).catch(() => undefined);
+    WalletAPI.summary()
+      .then((s: any) => setAvailable(Number(s.available_balance)))
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {

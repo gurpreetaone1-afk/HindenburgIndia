@@ -1,61 +1,68 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ReportsAPI } from "@/lib/api";
 import { PageHeader } from "@/components/common/PageHeader";
 import { DataTable, type Column } from "@/components/common/DataTable";
-import { Pagination } from "@/components/common/Pagination";
 import { StatusPill } from "@/components/common/StatusPill";
 import { ReportPdfButton } from "@/components/common/ReportPdfButton";
-import { DateRangeBar, toIsoFrom, toIsoTo, type DateRange } from "@/components/common/DateRangeBar";
-import { Card } from "@/components/ui/card";
-import { cn, formatINR, formatPrice } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { formatINR, formatPrice } from "@/lib/utils";
+
+// Local helper — turn a `YYYY-MM-DD` <input type="date"> value into the
+// shape FastAPI's `datetime` query coercion accepts (ISO start-of-day
+// in the user's local zone). The backend re-interprets the date in
+// IST and applies start/end-of-day boundaries on its own.
+function toIso(d: string): string | undefined {
+  if (!d) return undefined;
+  return new Date(`${d}T00:00:00`).toISOString();
+}
 
 export default function TradebookPage() {
-  const [range, setRange] = useState<DateRange>(() => {
-    const to = new Date();
-    const from = new Date();
-    from.setDate(from.getDate() - 30);
-    const iso = (d: Date) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    return { from: iso(from), to: iso(to) };
-  });
+  // Default window: last 30 days. Empty string = no bound. Both fields
+  // are independently optional — clearing one acts as open-ended on
+  // that side (matches the admin-side tradebook export semantics).
+  const today = new Date();
+  const thirtyAgo = new Date();
+  thirtyAgo.setDate(thirtyAgo.getDate() - 30);
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const [fromDate, setFromDate] = useState<string>(fmt(thirtyAgo));
+  const [toDate, setToDate] = useState<string>(fmt(today));
 
-  const params = useMemo(
-    () => ({ from_date: toIsoFrom(range.from), to_date: toIsoTo(range.to), limit: 1000 }),
-    [range],
-  );
-
+  // Re-fetch the JSON list whenever the date window changes so the
+  // table preview matches what the PDF will contain. Limit kept at
+  // 500 for the table preview; PDF endpoint paginates internally.
   const { data, isFetching } = useQuery({
-    queryKey: ["reports", "tradebook", params],
-    queryFn: () => ReportsAPI.tradebook(params),
+    queryKey: ["reports", "tradebook", fromDate, toDate],
+    queryFn: () =>
+      ReportsAPI.tradebook({
+        from_date: toIso(fromDate),
+        to_date: toIso(toDate),
+        limit: 500,
+      } as any),
     placeholderData: (prev) => prev,
   });
 
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-
-  // Range change → bounce back to page 1 so pagination never lands on
-  // a page that no longer exists in the smaller filtered set.
-  useEffect(() => {
-    setPage(1);
-  }, [range.from, range.to]);
-
-  const allRows = (data ?? []) as any[];
-  const pagedRows = useMemo(() => {
-    const start = (page - 1) * pageSize;
-    return allRows.slice(start, start + pageSize);
-  }, [allRows, page, pageSize]);
+  // PDF params are the same date strings — the backend accepts a plain
+  // date string and re-interprets at IST boundaries (see
+  // backend/app/api/v1/user/reports.py:tradebook_pdf).
+  const pdfParams = useMemo(
+    () => ({
+      from_date: toIso(fromDate),
+      to_date: toIso(toDate),
+      limit: 500,
+    }),
+    [fromDate, toDate],
+  );
 
   const cols: Column<any>[] = [
     { key: "executed_at", header: "When", render: (r) => new Date(r.executed_at).toLocaleString() },
-    {
-      key: "trade_number",
-      header: "Trade #",
-      render: (r) => <span className="font-mono text-[11px] text-muted-foreground">{r.trade_number}</span>,
-    },
-    { key: "symbol", header: "Symbol", render: (r) => <span className="font-medium">{r.symbol}</span> },
+    { key: "trade_number", header: "Trade #", render: (r) => <span className="font-mono text-[11px]">{r.trade_number}</span> },
+    { key: "symbol", header: "Symbol" },
     { key: "exchange", header: "Exch" },
     { key: "action", header: "Side", render: (r) => <StatusPill status={r.action} /> },
     { key: "quantity", header: "Qty", align: "right" },
@@ -71,103 +78,68 @@ export default function TradebookPage() {
       align: "right",
       render: (r) => formatPrice(r.value, r.segment, r.exchange),
     },
-    {
-      key: "total_charges",
-      header: "Charges",
-      align: "right",
-      render: (r) => <span className="text-muted-foreground">{formatINR(r.total_charges)}</span>,
-    },
+    { key: "total_charges", header: "Charges", align: "right", render: (r) => formatINR(r.total_charges) },
   ];
+
+  function applyPreset(days: number) {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - days);
+    setFromDate(fmt(start));
+    setToDate(fmt(end));
+  }
 
   return (
     <div className="space-y-4">
       <PageHeader
         title="Tradebook"
-        description={`${allRows.length} ${allRows.length === 1 ? "trade" : "trades"} in the selected period.`}
+        description={`${data?.length ?? 0} trades`}
         actions={
-          <div className="flex gap-2">
-            <ReportPdfButton kind="tradebook" params={{ ...params }} label="Simple PDF" />
-            <ReportPdfButton kind="tradebook/full" params={{ from_date: toIsoFrom(range.from), to_date: toIsoTo(range.to) }} label="Full Tradebook" />
-          </div>
+          <ReportPdfButton kind="tradebook" params={pdfParams} />
         }
       />
 
-      <DateRangeBar value={range} onChange={setRange} />
-
-      {/* Desktop table */}
-      <div className="hidden md:block">
-        <DataTable
-          columns={cols}
-          rows={pagedRows}
-          keyExtractor={(r) => r.id}
-          loading={isFetching && !data}
-          empty="No trades in the selected period."
-        />
+      {/* Custom date range — drives BOTH the table preview and the PDF
+          download. Leaving from / to blank treats that side as
+          unbounded; the backend then defaults to "since account
+          inception" / "now" respectively. Preset buttons offer the
+          common windows in one click. */}
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-border bg-card p-3">
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">From</Label>
+          <Input
+            type="date"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            className="h-9 w-40 font-mono"
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">To</Label>
+          <Input
+            type="date"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            className="h-9 w-40 font-mono"
+          />
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <Button size="sm" variant="outline" onClick={() => applyPreset(7)}>7d</Button>
+          <Button size="sm" variant="outline" onClick={() => applyPreset(30)}>30d</Button>
+          <Button size="sm" variant="outline" onClick={() => applyPreset(90)}>90d</Button>
+          <Button size="sm" variant="outline" onClick={() => applyPreset(365)}>1y</Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => { setFromDate(""); setToDate(""); }}
+            title="Clear filter to include every trade since inception"
+          >
+            All
+          </Button>
+        </div>
       </div>
-      {/* Mobile stack */}
-      <div className="md:hidden">
-        <MobileTradeList rows={pagedRows} loading={isFetching && !data} />
-      </div>
 
-      <Pagination
-        page={page}
-        pageSize={pageSize}
-        total={allRows.length}
-        onPageChange={setPage}
-        onPageSizeChange={setPageSize}
-        pageSizeOptions={[25, 50, 100, 200]}
-      />
-    </div>
-  );
-}
-
-function MobileTradeList({ rows, loading }: { rows: any[]; loading: boolean }) {
-  if (loading && rows.length === 0) {
-    return <Card className="p-6 text-center text-sm text-muted-foreground">Loading…</Card>;
-  }
-  if (rows.length === 0) {
-    return (
-      <Card className="p-6 text-center text-sm text-muted-foreground">
-        No trades in the selected period.
-      </Card>
-    );
-  }
-  return (
-    <div className="space-y-2">
-      {rows.map((r) => (
-        <Card key={r.id} className="p-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <div className="truncate font-semibold">{r.symbol}</div>
-              <div className="text-[11px] text-muted-foreground">
-                {new Date(r.executed_at).toLocaleString()}
-              </div>
-            </div>
-            <StatusPill status={r.action} />
-          </div>
-          <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-            <Row label="Qty" value={String(r.quantity ?? 0)} />
-            <Row
-              label="Price"
-              value={formatPrice(r.price, r.segment, r.exchange)}
-            />
-            <Row
-              label="Value"
-              value={formatPrice(r.value, r.segment, r.exchange)}
-            />
-            <Row label="Charges" value={formatINR(r.total_charges)} muted />
-          </div>
-        </Card>
-      ))}
-    </div>
-  );
-}
-
-function Row({ label, value, muted = false }: { label: string; value: string; muted?: boolean }) {
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={cn("tabular-nums", muted && "text-muted-foreground")}>{value}</span>
+      <DataTable columns={cols} rows={data} keyExtractor={(r) => r.id} loading={isFetching && !data} />
     </div>
   );
 }

@@ -33,7 +33,6 @@ import {
   WalletAPI,
 } from "@/lib/api";
 import { playBuyTone, playSellTone } from "@/lib/trade-audio";
-import { useMarketStream } from "@/lib/useMarketStream";
 import { getIndexLotSize } from "@/lib/indexLots";
 import { isInstrumentMarketOpen, marketLabel } from "@/lib/marketHours";
 import { cn, formatINR, formatIST, formatPercent, pnlColor } from "@/lib/utils";
@@ -52,23 +51,6 @@ interface Props {
    * a wide viewport.
    */
   onSwap?: (token: string) => void;
-  /** Preselect BUY or SELL when the card opens (e.g. from the chart's
-   *  SELL / BUY strip). Defaults to BUY. */
-  initialSide?: "BUY" | "SELL";
-  /** Last-known price + identity from the list row the user tapped. Shown
-   *  INSTANTLY so the card never sits at "0.00" / "Instrument not loaded"
-   *  for the 5-7 s its own fresh WS connection + cold REST fetches take on
-   *  first open. The live WS tick / REST detail take over the moment they
-   *  arrive. `symbol/exchange/segment` seed the instrument so BUY/SELL work
-   *  immediately instead of erroring with "Instrument not loaded". */
-  seedQuote?: {
-    ltp?: number | null;
-    bid?: number | null;
-    ask?: number | null;
-    symbol?: string | null;
-    exchange?: string | null;
-    segment?: string | null;
-  } | null;
 }
 
 /**
@@ -93,7 +75,7 @@ export function TradeDetailSheet(props: Props) {
   return <TradeDetailSheetInner {...props} />;
 }
 
-function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seedQuote }: Props) {
+function TradeDetailSheetInner({ token, open, onClose, onSwap }: Props) {
   const qc = useQueryClient();
 
   // ── Live data ─────────────────────────────────────────────────────
@@ -105,22 +87,6 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
     enabled: !!token,
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
-    // Seed a minimal instrument from the tapped list row so the card is
-    // immediately usable (symbol/segment render, BUY/SELL no longer hit the
-    // "Instrument not loaded" guard) while the full detail loads. The real
-    // detail — with the authoritative lot_size etc. — replaces this within
-    // ~1 s; we deliberately DON'T fake a lot_size here so the lotSize chain
-    // keeps falling back correctly until the true value lands.
-    placeholderData:
-      token && seedQuote?.symbol
-        ? {
-            instrument_token: token,
-            token,
-            symbol: seedQuote.symbol,
-            exchange: seedQuote.exchange ?? undefined,
-            segment: seedQuote.segment ?? undefined,
-          }
-        : undefined,
   });
 
   // 1.5 s quote — slightly slower than the OrderPanel's 1 s but a sheet that
@@ -133,19 +99,6 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
     refetchInterval: 1500,
     staleTime: 1000,
   });
-
-  // ── Instant price via the live WS stream ──────────────────────────
-  // The REST `/quote` above does a cold fetch when the sheet opens — and
-  // when the tapped token isn't already on Zerodha's WS pool it falls back
-  // to a Kite REST snapshot that can take ~2-3 s, so the card sat at
-  // "0.00" until it landed (user-flagged). The WS sends a SNAPSHOT the
-  // instant we subscribe (the token is almost always already streaming —
-  // the user tapped it from a price-showing list), so this paints the LTP
-  // / bid / ask in ~100-300 ms. We OVERLAY it on top of the REST quote
-  // (which still supplies change%, OHLC, depth). The sheet is lazy-mounted
-  // (renders nothing while closed), so this WS only runs while it's open.
-  const liveQuotes = useMarketStream(token ? [String(token)] : []);
-  const liveTick = token ? liveQuotes.get(String(token)) : undefined;
 
   const { data: walletSummary } = useQuery({
     queryKey: ["wallet", "summary"],
@@ -174,7 +127,7 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
   });
 
   // ── Local UI state — reset whenever the sheet opens a fresh token ─
-  const [side, setSide] = useState<"BUY" | "SELL">(initialSide ?? "BUY");
+  const [side, setSide] = useState<"BUY" | "SELL">("BUY");
   const [orderType, setOrderType] = useState<"MARKET" | "LIMIT">("MARKET");
   const [slTpEnabled, setSlTpEnabled] = useState(false);
   const [stopLoss, setStopLoss] = useState<string>("");
@@ -182,6 +135,13 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
   const [limitPrice, setLimitPrice] = useState<string>("");
   const [unit, setUnit] = useState<"LOTS" | "QTY">("LOTS");
   const [lots, setLots] = useState<number>(1);
+  // Per-order leverage usage. Only meaningful when the resolved segment's
+  // marginCalcMode is "times". Default 100 = use the full leverage the
+  // admin configured for this segment. Selecting a lower bucket scales
+  // the effective leverage proportionally (45 → 0.45× leverage → ~2.22×
+  // margin per lot). Resets to 100 whenever the symbol changes so a
+  // BTC choice doesn't leak into the next NIFTY trade.
+  const [leveragePct, setLeveragePct] = useState<number>(100);
   // Local string buffer for the stepper input. Lets the user clear the
   // field, type intermediate states ("0." while typing "0.5"), or wipe
   // and retype freely without the controlled-input bouncing back to the
@@ -190,6 +150,15 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
   // the +/− buttons or external resets.
   const [lotInput, setLotInput] = useState<string>("");
   const [submitting, setSubmitting] = useState<"BUY" | "SELL" | null>(null);
+  // Netting confirmation — set when a BUY/SELL would offset an existing
+  // opposite position; the popup confirms the close/open split before placing.
+  const [netConfirm, setNetConfirm] = useState<{
+    action: "BUY" | "SELL";
+    lots: number;
+    closeLots: number;
+    openLots: number;
+    heldSide: "BUY" | "SELL";
+  } | null>(null);
   // Option-chain picker open state. Only meaningful for Indian
   // equity/index/future rows (see `showOptionChain` below).
   const [optionChainOpen, setOptionChainOpen] = useState(false);
@@ -226,13 +195,14 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
   // international equities + indices) settle in 24×5 or 24×7 mode — they
   // don't have a separate carry-forward margin tier the way Indian F&O
   // does. The margin posted at fill IS the margin held overnight, so we
-  // collapse the Intraday/Holding tile pair into a single "Margin" tile
-  // for these rows. Indian segments still show both because admin can
-  // configure different intraday-vs-overnight requirements there.
-  const isInfowaySeg =
-    /CRYPTO|FOREX|FX|CDS|STOCKS|INDICES|COMMODITIES/.test(seg) ||
-    exch === "CDS" ||
-    exch === "CRYPTO";
+  // Always show the two-tile Intraday + Holding margin breakdown —
+  // every admin tile (NSE / BSE / MCX, the Infoway-fed FOREX /
+  // STOCKS / INDICES / COMMODITIES / CRYPTO, AND CRYPTO_OPT) now
+  // carries a distinct overnight margin tier the admin can configure
+  // separately from intraday. Kept the variable name so the JSX below
+  // doesn't need to fork; pinned to false so the two-tile branch
+  // always renders.
+  const isInfowaySeg = false;
   // FX conversion is disabled platform-wide — Infoway feed numbers are
   // INR by convention now. Keeping the variable so the margin formula and
   // currency-prefix logic below don't fork; both naturally fall into the
@@ -259,6 +229,13 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
     Number(effSettings?.min_lot ?? (isCrypto ? 0.001 : isForex ? 0.01 : 1)) || 1;
   const maxLotPerOrder = Number(effSettings?.order_lot ?? 0) || 0;
   const maxLotTotal = Number(effSettings?.max_lot ?? 0) || 0;
+  // Equity rows are QTY-based (lot_applies=false): all lot caps come back 0,
+  // so the meta row showed "—" for Max/Order Lots. Surface the qty caps
+  // (per_order_qty / max_qty_per_script) instead for those segments.
+  const qtyBased =
+    Boolean(effSettings?.qty_applies) && !effSettings?.lot_applies;
+  const maxQtyPerOrder = Number(effSettings?.per_order_qty ?? 0) || 0;
+  const maxQtyTotal = Number(effSettings?.max_qty_per_script ?? 0) || 0;
   const lotStep = minLot < 1 ? +minLot.toFixed(3) : 1;
   const canonicalLot =
     isCrypto || isForex
@@ -288,36 +265,24 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
   // (every 30 s) and the resolver re-emitted the same min value with a
   // different Number reference, which manifested as "I can't change the
   // lots on mobile".
-  // Indian exchanges always open at 1 lot (operator preference);
-  // forex / crypto fall back to the fractional segment minimum.
-  const isIndianExchange =
-    exch === "NSE" || exch === "BSE" || exch === "MCX" || exch === "NFO" || exch === "BFO";
-  const defaultLot = isIndianExchange ? Math.max(1, minLot) : minLot;
-
   useEffect(() => {
     if (!open) return;
-    setLots(defaultLot);
+    setLots(minLot);
     setStopLoss("");
     setTarget("");
     setLimitPrice("");
-    setSide(initialSide ?? "BUY");
+    setSide("BUY");
     setOrderType("MARKET");
     setSlTpEnabled(false);
     setUnit("LOTS");
+    setLeveragePct(100);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, open, initialSide]);
+  }, [token, open]);
 
   // ── Pricing ───────────────────────────────────────────────────────
-  // Prefer the live WS tick (arrives in ~100-300 ms) over the cold REST
-  // quote (~2-3 s on first open). Each field falls back independently so a
-  // partial tick (ltp but no bid yet) still shows a price immediately.
-  const ltp = Number(liveTick?.ltp || quote?.ltp || seedQuote?.ltp || 0);
-  const bid = Number(
-    liveTick?.bid || quote?.bid || quote?.depth?.bids?.[0]?.price || seedQuote?.bid || ltp,
-  );
-  const ask = Number(
-    liveTick?.ask || quote?.ask || quote?.depth?.asks?.[0]?.price || seedQuote?.ask || ltp,
-  );
+  const ltp = Number(quote?.ltp ?? 0);
+  const bid = Number(quote?.bid ?? quote?.depth?.bids?.[0]?.price ?? ltp);
+  const ask = Number(quote?.ask ?? quote?.depth?.asks?.[0]?.price ?? ltp);
   const sellPrice = bid || ltp;
   const buyPrice = ask || ltp;
   const sideQuote = side === "BUY" ? buyPrice : sellPrice;
@@ -355,16 +320,46 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
   const overnightFixedMarginPerLot = Number(
     effSettings?.overnight_fixed_margin_per_lot ?? fixedMarginPerLot,
   );
+  // Always-intraday source — the active `serverLeverage` switches to the
+  // overnight tier for NRML/CNC orders, and Infoway (crypto/forex) panels
+  // run in NRML by default, so the Intraday tile read the overnight value
+  // and mirrored the Holding tile. These dedicated `intraday_*` fields keep
+  // the Intraday tile on the true intraday tier. Falls back to the active
+  // values for older API responses.
+  const serverIntradayMarginPct =
+    effSettings?.intraday_margin_percentage != null
+      ? Number(effSettings.intraday_margin_percentage) / 100
+      : serverMarginPct;
+  const serverIntradayLeverage =
+    Number(effSettings?.intraday_leverage ?? serverLeverage) || serverLeverage;
+  const intradayTileFixedMarginPerLot = Number(
+    effSettings?.intraday_fixed_margin_per_lot ?? fixedMarginPerLot,
+  );
+
+  // User's leverage usage chip only scales TIMES-mode segments. Fixed
+  // and percent modes ignore the chip (we hide it in the UI for those).
+  // For TIMES: effective leverage = serverLeverage × (leveragePct/100).
+  // 100% → unchanged; 45% → 2.22× margin per lot.
+  const effectiveLeverage = useMemo(() => {
+    if (marginCalcMode !== "times") return serverLeverage;
+    const scaled = serverLeverage * (leveragePct / 100);
+    return scaled > 0 ? scaled : serverLeverage;
+  }, [marginCalcMode, serverLeverage, leveragePct]);
+  const effectiveOvernightLeverage = useMemo(() => {
+    if (marginCalcMode !== "times") return serverOvernightLeverage;
+    const scaled = serverOvernightLeverage * (leveragePct / 100);
+    return scaled > 0 ? scaled : serverOvernightLeverage;
+  }, [marginCalcMode, serverOvernightLeverage, leveragePct]);
 
   const marginPerLot = useMemo(() => {
     if (marginCalcMode === "fixed" && fixedMarginPerLot > 0) {
       return +fixedMarginPerLot.toFixed(2);
     }
     return +(
-      ((lotSize * (refPrice || ltp || 0) * serverMarginPct) / serverLeverage) *
+      ((lotSize * (refPrice || ltp || 0) * serverMarginPct) / effectiveLeverage) *
       fxMultiplier
     ).toFixed(2);
-  }, [marginCalcMode, fixedMarginPerLot, lotSize, refPrice, ltp, serverMarginPct, serverLeverage, fxMultiplier]);
+  }, [marginCalcMode, fixedMarginPerLot, lotSize, refPrice, ltp, serverMarginPct, effectiveLeverage, fxMultiplier]);
 
   // Carry-forward (overnight) per-lot margin — same formula as intraday
   // but with the overnight leverage / margin% the admin configured for
@@ -376,7 +371,7 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
     }
     return +(
       ((lotSize * (refPrice || ltp || 0) * serverOvernightMarginPct) /
-        serverOvernightLeverage) *
+        effectiveOvernightLeverage) *
       fxMultiplier
     ).toFixed(2);
   }, [
@@ -386,7 +381,35 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
     refPrice,
     ltp,
     serverOvernightMarginPct,
-    serverOvernightLeverage,
+    effectiveOvernightLeverage,
+    fxMultiplier,
+  ]);
+
+  // True-intraday per-lot for the Intraday DISPLAY tile (independent of the
+  // active/charged tier). `intradayMargin` below stays on the active tier
+  // for validation + margin_used.
+  const effectiveIntradayTileLeverage = useMemo(() => {
+    if (marginCalcMode !== "times") return serverIntradayLeverage;
+    const scaled = serverIntradayLeverage * (leveragePct / 100);
+    return scaled > 0 ? scaled : serverIntradayLeverage;
+  }, [marginCalcMode, serverIntradayLeverage, leveragePct]);
+  const intradayTileMarginPerLot = useMemo(() => {
+    if (marginCalcMode === "fixed" && intradayTileFixedMarginPerLot > 0) {
+      return +intradayTileFixedMarginPerLot.toFixed(2);
+    }
+    return +(
+      ((lotSize * (refPrice || ltp || 0) * serverIntradayMarginPct) /
+        effectiveIntradayTileLeverage) *
+      fxMultiplier
+    ).toFixed(2);
+  }, [
+    marginCalcMode,
+    intradayTileFixedMarginPerLot,
+    lotSize,
+    refPrice,
+    ltp,
+    serverIntradayMarginPct,
+    effectiveIntradayTileLeverage,
     fxMultiplier,
   ]);
 
@@ -396,6 +419,7 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
   // into `lots`. submit() still uses `lotsToUse` for the actual order.
   const intradayMargin = +(marginPerLot * liveLots).toFixed(2);
   const carryforwardMargin = +(overnightMarginPerLot * liveLots).toFixed(2);
+  const intradayTileMargin = +(intradayTileMarginPerLot * liveLots).toFixed(2);
   const availableMargin =
     Number(walletSummary?.available_balance ?? 0) +
     Number(walletSummary?.credit_limit ?? 0);
@@ -427,10 +451,7 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
   // render the full Indian-grouped number everywhere and let the card
   // width handle overflow (auto-shrink via `truncate`/CSS clamp).
   function formatINRCompact(value: number | null | undefined): string {
-    // Whole rupees only (drop paise) so the full number fits the slim 3-up
-    // margin cards without truncating — ₹2,23,160 instead of ₹2,23,160.00.
-    const n = Math.round(Number(value ?? 0));
-    return `${n < 0 ? "-" : ""}₹${Math.abs(n).toLocaleString("en-IN")}`;
+    return formatINR(Number(value ?? 0));
   }
 
   const expiryShort = useMemo(() => {
@@ -446,7 +467,7 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
   }, [instrument?.expiry]);
 
   // ── Submit ────────────────────────────────────────────────────────
-  async function submit(action: "BUY" | "SELL") {
+  async function submit(action: "BUY" | "SELL", skipConfirm = false) {
     if (!instrument || !token) {
       toast.error("Instrument not loaded");
       return;
@@ -486,6 +507,38 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
       toast.error("Enter a limit price");
       return;
     }
+    // ── SL / TP directional sanity ───────────────────────────────────
+    // Mirrors the backend validator (order_validator.py: SL_WRONG_SIDE /
+    // TP_WRONG_SIDE). Validates SL and TP independently — the old check
+    // only fired on SL, which let a wrong-side TP through. A long with
+    // TP below entry would auto-trigger the moment the order filled.
+    if (slTpEnabled) {
+      const entry = orderType === "MARKET" ? refPrice : Number(limitPrice);
+      const sl = Number(stopLoss);
+      const tp = Number(target);
+      if (entry > 0) {
+        if (sl > 0) {
+          if (action === "BUY" && sl >= entry) {
+            toast.error(`Stop loss must be BELOW entry ${fmtPrice(entry)} for a BUY`);
+            return;
+          }
+          if (action === "SELL" && sl <= entry) {
+            toast.error(`Stop loss must be ABOVE entry ${fmtPrice(entry)} for a SELL`);
+            return;
+          }
+        }
+        if (tp > 0) {
+          if (action === "BUY" && tp <= entry) {
+            toast.error(`Target must be ABOVE entry ${fmtPrice(entry)} for a BUY`);
+            return;
+          }
+          if (action === "SELL" && tp >= entry) {
+            toast.error(`Target must be BELOW entry ${fmtPrice(entry)} for a SELL`);
+            return;
+          }
+        }
+      }
+    }
     if (intradayMargin > 0 && availableMargin < intradayMargin) {
       toast.error(
         `Insufficient margin — need ${formatINR(intradayMargin)}, have ${formatINR(availableMargin)}`,
@@ -515,6 +568,29 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
       return;
     }
 
+    // ── Netting confirmation ──────────────────────────────────────────
+    // When this order offsets an existing OPPOSITE position, confirm the
+    // close/open split first. English copy, no fees shown (per request).
+    if (!skipConfirm) {
+      const existingPos = (openPositions ?? []).find(
+        (p: any) => p && p.instrument_token === token && p.product_type === productType,
+      );
+      const heldLots = lotSize > 0 ? Number(existingPos?.quantity ?? 0) / lotSize : 0;
+      const opposite =
+        (heldLots > 0 && action === "SELL") || (heldLots < 0 && action === "BUY");
+      if (opposite) {
+        const held = Math.abs(heldLots);
+        setNetConfirm({
+          action,
+          lots: lotsToUse,
+          closeLots: +Math.min(lotsToUse, held).toFixed(3),
+          openLots: +Math.max(0, lotsToUse - held).toFixed(3),
+          heldSide: heldLots > 0 ? "BUY" : "SELL",
+        });
+        return;
+      }
+    }
+
     // 250 ms double-tap lockout (NOT a network wait — the request fires
     // immediately below). Releases by the time the sheet's close
     // animation completes, so a second order on the same instrument
@@ -539,19 +615,24 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
     if (action === "BUY") playBuyTone();
     else playSellTone();
 
-    // Instant feedback — fire the success toast on the SAME tick as the audio
-    // cue, before the network leaves the device, so it feels as fast as the
-    // sound. It carries an `id` so that IF the server rejects (market closed /
-    // holiday) the `.catch()` REPLACES this toast in place — the one toast
-    // morphs into the error instead of stacking a second "market closed" popup
-    // under a false "placed". Best of both: instant + no double popup.
-    const placedToastId = toast.success(
-      `${action} ${fmtLots(lotsToUse)} ${instrument.symbol} placed`,
-      { duration: 1500 },
-    );
+    // Fire the success toast OPTIMISTICALLY — on the same tick as the
+    // audio cue, before the network request leaves the device. Earlier
+    // this lived inside `.then()` after `OrderAPI.place()` resolved, so
+    // the toast was delayed by the full 500 ms – 2 s round-trip even
+    // though the click "felt" instant via the audio + sheet close. If
+    // the server rejects the order, the .catch() below downgrades this
+    // with a toast.error so the user still sees the failure.
+    toast.success(`${action} ${fmtLots(lotsToUse)} ${instrument.symbol} placed`, {
+      duration: 1500,
+    });
 
     const optimisticId = `optimistic_${Date.now()}`;
-    const fillPrice = orderType === "MARKET" ? sideQuote : Number(limitPrice || ltp) || ltp;
+    const fillPrice =
+      orderType === "MARKET"
+        ? action === "BUY"
+          ? buyPrice
+          : sellPrice
+        : Number(limitPrice || ltp) || ltp;
     const signedQty = (action === "BUY" ? 1 : -1) * lotsToUse * lotSize;
     const isImmediate = orderType === "MARKET";
 
@@ -618,43 +699,6 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
         else next[matchIdx] = merged;
         return next;
       });
-
-      // Mirror the fill into the Active-trades cache (per-fill, no merge) so
-      // the Active tab shows it instantly instead of waiting for the 2-3 s
-      // poll — the iOS Safari "trade lete hi position page 5-7 sec" lag.
-      qc.cancelQueries({ queryKey: ["positions", "active-trades"] });
-      qc.setQueryData<any[]>(["positions", "active-trades"], (old) => {
-        const prev = Array.isArray(old) ? old : [];
-        return [
-          {
-            id: optimisticId,
-            _optimistic: true,
-            symbol: instrument.symbol,
-            exchange: instrument.exchange,
-            segment: instrument.segment,
-            currency_quote: (instrument as any).currency_quote,
-            action,
-            side: action,
-            product_type: productType,
-            quantity: Math.abs(signedQty),
-            lots: lotsToUse,
-            lot_size: lotSize,
-            price: fillPrice,
-            avg_price: fillPrice,
-            ltp: ltp || fillPrice,
-            margin: intradayMargin,
-            used_margin: intradayMargin,
-            margin_used: intradayMargin,
-            stop_loss: slTpEnabled && Number(stopLoss) > 0 ? Number(stopLoss) : null,
-            target: slTpEnabled && Number(target) > 0 ? Number(target) : null,
-            token,
-            instrument_token: token,
-            status: "OPEN",
-            opened_at: new Date().toISOString(),
-          },
-          ...prev,
-        ];
-      });
     } else {
       // LIMIT order — park an optimistic row in the orders cache so the
       // pending-orders panel reacts instantly. Shape mirrors backend
@@ -718,33 +762,23 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
       is_amo: false,
       stop_loss: slTpEnabled && Number(stopLoss) > 0 ? Number(stopLoss) : null,
       target: slTpEnabled && Number(target) > 0 ? Number(target) : null,
-      expected_price: orderType === "MARKET" ? sideQuote : null,
+      // Pin the fill to the price for THIS action (BUY→ask, SELL→bid). Must
+      // read `action` (the tapped button), NOT the `side` state — the BUY/SELL
+      // buttons call submit(action) directly and never setSide, so `side`
+      // stayed "BUY" and every SELL wrongly sent the ask (buyPrice). That made
+      // a sell-to-close fill at the ask instead of the bid.
+      expected_price:
+        orderType === "MARKET" ? (action === "BUY" ? buyPrice : sellPrice) : null,
+      // User's per-order leverage choice. Backend ignores this when the
+      // segment's marginCalcMode is not "times". Always send so the
+      // server has an audit trail of the user's preference.
+      leverage_pct: leveragePct,
     })
       .then(() => {
-        // Success toast already fired instantly above; just reconcile caches.
+        // Success toast already fired optimistically above. Just reconcile
+        // the caches so the orders panel / wallet number catch up.
         qc.invalidateQueries({ queryKey: ["orders"] });
         qc.invalidateQueries({ queryKey: ["wallet"] });
-        // A MARKET order can (partially) close an opposite open position —
-        // refresh the Closed tab so the realised slice appears at once
-        // instead of waiting for its 10 s poll / a manual refresh. The
-        // delayed retry covers the brief Atlas read-replica lag where the
-        // closing Trade isn't on the replica yet on the first refetch.
-        if (isImmediate) {
-          qc.invalidateQueries({ queryKey: ["positions", "closed"] });
-          setTimeout(
-            () => qc.invalidateQueries({ queryKey: ["positions", "closed"] }),
-            1500,
-          );
-          // Reconcile the optimistic open + active rows to the REAL position
-          // fast. Prod Mongo is single-node (committed by the time this POST
-          // resolves), so a short ~600 ms delay swaps the placeholder for the
-          // real row almost immediately — no need to wait ~1.8 s for a
-          // hypothetical replica to catch up.
-          setTimeout(() => {
-            qc.invalidateQueries({ queryKey: ["positions", "open"] });
-            qc.invalidateQueries({ queryKey: ["positions", "active-trades"] });
-          }, 600);
-        }
       })
       .catch((e: any) => {
         // Roll the optimistic row back so the watchlist stays honest.
@@ -752,17 +786,12 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
           qc.setQueryData<any[]>(["positions", "open"], (old) =>
             Array.isArray(old) ? old.filter((p) => p.id !== optimisticId) : [],
           );
-          qc.setQueryData<any[]>(["positions", "active-trades"], (old) =>
-            Array.isArray(old) ? old.filter((p) => p.id !== optimisticId) : [],
-          );
         } else {
           qc.setQueryData<any[]>(["orders", "recent"], (old) =>
             Array.isArray(old) ? old.filter((o) => o.id !== optimisticId) : [],
           );
         }
-        // Morph the instant "placed" toast into the error IN PLACE (same id)
-        // → a reject shows ONE toast (placed → "market closed"), not two.
-        toast.error(e?.message || "Order rejected", { id: placedToastId });
+        toast.error(e?.message || "Order rejected");
       });
   }
 
@@ -877,39 +906,6 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
               </div>
             </div>
           </div>
-
-          {/* OHLC strip — full-width, 4 equal cells with vertical dividers.
-              Replaces the old flex-wrap "O x H x L x C x" row that wrapped
-              awkwardly onto multiple lines for long values (e.g. gold
-              4218.56), which looked cramped/unprofessional. */}
-          {(quote?.open > 0 ||
-            quote?.high > 0 ||
-            quote?.low > 0 ||
-            quote?.prev_close > 0) && (
-            <div className="mt-2.5 grid grid-cols-4 overflow-hidden rounded-lg border border-border">
-              {[
-                { k: "O", v: quote?.open, cls: "text-foreground" },
-                { k: "H", v: quote?.high, cls: "text-buy" },
-                { k: "L", v: quote?.low, cls: "text-sell" },
-                { k: "C", v: quote?.prev_close, cls: "text-foreground" },
-              ].map((c, i) => (
-                <div
-                  key={c.k}
-                  className={cn(
-                    "flex flex-col items-center justify-center py-1.5",
-                    i > 0 && "border-l border-border",
-                  )}
-                >
-                  <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    {c.k}
-                  </span>
-                  <span className={cn("font-tabular tabular-nums text-xs", c.cls)}>
-                    {c.v > 0 ? Number(c.v).toFixed(2) : "—"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* ── Action row ──────────────────────────────────────────── */}
@@ -987,8 +983,17 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
         {/* ── Lot info row ────────────────────────────────────────── */}
         <div className="flex items-end gap-3 px-4">
           <div className="flex flex-1 gap-4 text-[11px]">
-            <LotMeta label="Max Lots" value={maxLotTotal > 0 ? String(maxLotTotal) : "—"} />
-            <LotMeta label="Order Lots" value={maxLotPerOrder > 0 ? String(maxLotPerOrder) : "—"} />
+            {qtyBased ? (
+              <>
+                <LotMeta label="Max Qty" value={maxQtyTotal > 0 ? String(maxQtyTotal) : "—"} />
+                <LotMeta label="Order Qty" value={maxQtyPerOrder > 0 ? String(maxQtyPerOrder) : "—"} />
+              </>
+            ) : (
+              <>
+                <LotMeta label="Max Lots" value={maxLotTotal > 0 ? String(maxLotTotal) : "—"} />
+                <LotMeta label="Order Lots" value={maxLotPerOrder > 0 ? String(maxLotPerOrder) : "—"} />
+              </>
+            )}
             <LotMeta label="Lot Size" value={String(lotSize)} />
           </div>
           <button
@@ -1131,6 +1136,40 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
           </button>
         </div>
 
+        {/* ── Leverage usage chips (TIMES mode only) ────────────────
+            Per-order leverage scale. Defaults to 100% (= admin's
+            full leverage). Lowering the chip multiplies margin per
+            lot by the inverse ratio (45% → ~2.22× margin), giving
+            the user a smaller, safer exposure when they want it.
+            Hidden for fixed/percent segments where the math doesn't
+            apply. */}
+        {marginCalcMode === "times" && (
+          <div className="mt-3 px-4">
+            <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              Leverage usage
+            </div>
+            <div className="grid grid-cols-4 gap-1.5">
+              {[20, 45, 75, 100].map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setLeveragePct(p)}
+                  className={
+                    leveragePct === p
+                      ? "rounded-md border border-primary bg-primary/10 px-2 py-1.5 text-xs font-semibold text-primary"
+                      : "rounded-md border border-border bg-card px-2 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+                  }
+                >
+                  {p}%
+                </button>
+              ))}
+            </div>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Lower % = higher margin per lot = safer trade.
+            </p>
+          </div>
+        )}
+
         {/* ── SL / TP inputs ──────────────────────────────────────── */}
         {slTpEnabled && (
           <div className="mt-3 grid grid-cols-2 gap-2 px-4">
@@ -1161,49 +1200,81 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
           </div>
         )}
 
-        {/* ── Balance + margin (clean 3-up) ───────────────────────────
-            Operator spec: show ONLY the three numbers a trader needs
-            before placing an order —
-              1. Available (equity)  — free balance to deploy
-              2. Intraday            — this order's intraday margin
-              3. Carry Fwd           — this order's overnight margin
-            Replaces the old 5-tile layout (Total Balance / Equity / Used
-            Margin / Margin / Available) that crowded the mobile sheet. */}
+        {/* ── Wallet snapshot ──────────────────────────────────────────
+            Slim three-up of wallet-level numbers (Total Balance / Equity /
+            Used Margin) so the trader sees their wallet health on the
+            same screen as the order they're about to place. Equity =
+            total + open unrealised P/L, so it ticks live as positions
+            move. Mirrors the bottom-of-trade wallet footer on desktop. */}
         {(() => {
           const walletUsed = Number(walletSummary?.used_margin ?? 0);
           const walletAvail = Number(walletSummary?.available_balance ?? 0);
+          const walletTotal = walletUsed + walletAvail;
           const openUnrl = Number(
             (pnlSummary as any)?.open_unrealised ?? (pnlSummary as any)?.unrealized_pnl ?? 0,
           );
-          // Equity = total wallet (available + locked) + live open P/L.
-          const equity = walletUsed + walletAvail + openUnrl;
-          // Carry-forward = overnight margin. Infoway (crypto/forex) has no
-          // separate carry tier — the posted margin is held forever — so it
-          // equals the intraday figure there.
-          const carryFwd = isInfowaySeg ? intradayMargin : carryforwardMargin;
+          const equity = walletTotal + openUnrl;
           return (
             <div className="mt-4 grid grid-cols-3 gap-2 px-4 text-[11px]">
               <MarginCard
-                label="Available"
-                value={formatINRCompact(availableMargin)}
-                fullValue={`${formatINR(availableMargin)} free · Equity ${formatINR(equity)}${
-                  openUnrl !== 0 ? ` (open P/L ${openUnrl >= 0 ? "+" : ""}${formatINR(openUnrl)})` : ""
-                }`}
-                accent={availableMargin >= intradayMargin ? "ok" : "low"}
+                label="Total Balance"
+                value={formatINRCompact(walletTotal)}
+                fullValue={formatINR(walletTotal)}
               />
               <MarginCard
-                label="Intraday"
-                value={formatINRCompact(intradayMargin)}
-                fullValue={`Intraday margin · ${formatINR(intradayMargin)}`}
+                label="Equity"
+                value={formatINRCompact(equity)}
+                fullValue={`${formatINR(equity)} (incl. ${openUnrl >= 0 ? "+" : ""}${formatINR(openUnrl)} open P/L)`}
+                accent={openUnrl >= 0 ? "ok" : "low"}
               />
               <MarginCard
-                label="Carry Fwd"
-                value={formatINRCompact(carryFwd)}
-                fullValue={`Carry-forward (overnight) margin · ${formatINR(carryFwd)}`}
+                label="Used Margin"
+                value={formatINRCompact(walletUsed)}
+                fullValue={formatINR(walletUsed)}
               />
             </div>
           );
         })()}
+
+        {/* ── Margin cards ────────────────────────────────────────────
+            Order-level margin breakdown for the trade being composed.
+            Indian segments show Intraday + Holding side by side (admin
+            configures different overnight margin); Infoway segments
+            collapse to a single Margin tile because there is no carry
+            tier — the posted margin is held forever. */}
+        <div
+          className={cn(
+            "mt-2 grid gap-2 px-4 text-[11px]",
+            isInfowaySeg ? "grid-cols-2" : "grid-cols-3",
+          )}
+        >
+          {isInfowaySeg ? (
+            <MarginCard
+              label="Margin"
+              value={formatINRCompact(intradayMargin)}
+              fullValue={formatINR(intradayMargin)}
+            />
+          ) : (
+            <>
+              <MarginCard
+                label="Intraday"
+                value={formatINRCompact(intradayTileMargin)}
+                fullValue={formatINR(intradayTileMargin)}
+              />
+              <MarginCard
+                label="Holding"
+                value={formatINRCompact(carryforwardMargin)}
+                fullValue={formatINR(carryforwardMargin)}
+              />
+            </>
+          )}
+          <MarginCard
+            label="Available"
+            value={formatINRCompact(availableMargin)}
+            fullValue={formatINR(availableMargin)}
+            accent={availableMargin >= intradayMargin ? "ok" : "low"}
+          />
+        </div>
 
         {/* ── Big BUY / SELL ──────────────────────────────────────── */}
         <div className="mt-4 grid grid-cols-2 gap-2 px-4 pb-4">
@@ -1239,6 +1310,47 @@ function TradeDetailSheetInner({ token, open, onClose, onSwap, initialSide, seed
           </Button>
         </div>
       </DialogContent>
+
+      {/* Netting confirmation — offsetting an existing opposite position. */}
+      <Dialog open={!!netConfirm} onOpenChange={(v) => !v && setNetConfirm(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogTitle>Confirm order</DialogTitle>
+          {netConfirm && (
+            <div className="space-y-4">
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                {netConfirm.openLots > 0 ? (
+                  <>
+                    {netConfirm.closeLots} lot(s) will close your existing{" "}
+                    <b className="text-foreground">{netConfirm.heldSide}</b> position, and{" "}
+                    {netConfirm.openLots} lot(s) will open a new{" "}
+                    <b className="text-foreground">{netConfirm.action}</b> position.
+                  </>
+                ) : (
+                  <>
+                    This will close {netConfirm.closeLots} lot(s) of your existing{" "}
+                    <b className="text-foreground">{netConfirm.heldSide}</b> position.
+                  </>
+                )}
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setNetConfirm(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => {
+                    const a = netConfirm.action;
+                    setNetConfirm(null);
+                    void submit(a, true);
+                  }}
+                >
+                  Confirm
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
       {/* Option chain picker — only mounted for Indian rows. On pick we
           close the sheet AND navigate to terminal so the trader lands
           on the full chart + order panel for that strike, matching the
@@ -1321,14 +1433,14 @@ function MarginCard({
   accent?: "ok" | "low";
 }) {
   return (
-    <div className="min-w-0 rounded-lg border border-border bg-card px-2 py-2">
-      <div className="truncate text-[10px] uppercase tracking-wide text-muted-foreground">
+    <div className="min-w-0 rounded-lg border border-border bg-card px-2.5 py-2">
+      <div className="truncate text-[10px] uppercase tracking-wider text-muted-foreground">
         {label}
       </div>
       <div
         title={fullValue}
         className={cn(
-          "truncate font-tabular text-[12px] font-bold tabular-nums",
+          "truncate font-tabular text-[13px] font-bold tabular-nums",
           accent === "ok" && "text-buy",
           accent === "low" && "text-sell",
         )}

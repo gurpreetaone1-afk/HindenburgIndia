@@ -33,32 +33,31 @@ const config: Config = {
         loss: "hsl(var(--loss))",
         info: { DEFAULT: "hsl(var(--info))", foreground: "hsl(var(--info-foreground))" },
         atm: { DEFAULT: "hsl(var(--atm))", foreground: "hsl(var(--atm-foreground))" },
-
-        // ── Hindenburg India marketing palette (LOCKED design system) ──────────
-        // Scoped to the marketing pages via `.mp-scope` (light default) and
-        // flipped to the dark palette inside `.mp-dark` sections. Stored as
-        // space-separated RGB channels so Tailwind's `/<alpha>` modifier
-        // works (bg-mp-primary/10, border-mp-border/60, …). The trading app
-        // is untouched — it never sets `.mp-scope`.
-        mp: {
-          bg: "rgb(var(--mp-bg) / <alpha-value>)",
-          surface: "rgb(var(--mp-surface) / <alpha-value>)",
-          "surface-2": "rgb(var(--mp-surface-2) / <alpha-value>)",
-          border: "rgb(var(--mp-border) / <alpha-value>)",
-          text: "rgb(var(--mp-text) / <alpha-value>)",
-          "text-mut": "rgb(var(--mp-text-mut) / <alpha-value>)",
-          primary: "rgb(var(--mp-primary) / <alpha-value>)",
-          "primary-2": "rgb(var(--mp-primary-2) / <alpha-value>)",
-          accent: "rgb(var(--mp-accent) / <alpha-value>)",
-          gold: "rgb(var(--mp-gold) / <alpha-value>)",
-          danger: "rgb(var(--mp-danger) / <alpha-value>)",
-          success: "rgb(var(--mp-success) / <alpha-value>)",
+        // ── Brand palette (landing) — navy primary + gold secondary on white ──
+        navy: {
+          50: "#eef2f8",
+          100: "#d5e0ee",
+          200: "#aac1dd",
+          300: "#7a9bc6",
+          400: "#4d77ac",
+          500: "#2f5990",
+          600: "#264e7e",
+          700: "#1F4677", // primary
+          800: "#18375d",
+          900: "#112744",
         },
-      },
-      maxWidth: {
-        // Design-system content cap (1200px) + comfortable reading measure.
-        "mp-content": "1200px",
-        "mp-prose": "68ch",
+        gold: {
+          50: "#fdf8ec",
+          100: "#fbedc7",
+          200: "#f5dc92",
+          300: "#eecb5e",
+          400: "#E6B839", // secondary
+          500: "#cda127",
+          600: "#a87f1f",
+          700: "#8a621b",
+          800: "#6f4f1c",
+          900: "#5d4119",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -83,33 +82,40 @@ const config: Config = {
           "sans-serif",
         ],
         mono: ["ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
-        // Marketing display + numeric faces (loaded in app/layout.tsx).
-        // `font-display` → headings; `font-numeric` → prices/stats/payouts.
-        display: [
-          "var(--font-space-grotesk)",
-          "var(--font-inter)",
-          "system-ui",
-          "sans-serif",
-        ],
-        numeric: [
-          "var(--font-plex-mono)",
-          "ui-monospace",
-          "SFMono-Regular",
-          "Menlo",
-          "monospace",
-        ],
       },
       keyframes: {
         "accordion-down": { from: { height: "0" }, to: { height: "var(--radix-accordion-content-height)" } },
         "accordion-up": { from: { height: "var(--radix-accordion-content-height)" }, to: { height: "0" } },
         "flash-up": { "0%": { backgroundColor: "rgba(16, 185, 129, 0.25)" }, "100%": { backgroundColor: "transparent" } },
         "flash-down": { "0%": { backgroundColor: "rgba(239, 68, 68, 0.25)" }, "100%": { backgroundColor: "transparent" } },
+        // BackgroundGradientAnimation
+        moveHorizontal: {
+          "0%": { transform: "translateX(-50%) translateY(-10%)" },
+          "50%": { transform: "translateX(50%) translateY(10%)" },
+          "100%": { transform: "translateX(-50%) translateY(-10%)" },
+        },
+        moveInCircle: {
+          "0%": { transform: "rotate(0deg)" },
+          "50%": { transform: "rotate(180deg)" },
+          "100%": { transform: "rotate(360deg)" },
+        },
+        moveVertical: {
+          "0%": { transform: "translateY(-50%)" },
+          "50%": { transform: "translateY(50%)" },
+          "100%": { transform: "translateY(-50%)" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         "flash-up": "flash-up 0.6s ease-out",
         "flash-down": "flash-down 0.6s ease-out",
+        // BackgroundGradientAnimation
+        first: "moveVertical 30s ease infinite",
+        second: "moveInCircle 20s reverse infinite",
+        third: "moveInCircle 40s linear infinite",
+        fourth: "moveHorizontal 40s ease infinite",
+        fifth: "moveInCircle 20s ease infinite",
       },
     },
   },

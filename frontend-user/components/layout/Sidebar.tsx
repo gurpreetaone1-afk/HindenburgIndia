@@ -9,31 +9,41 @@ import {
   ChevronLeft,
   FileText,
   Home,
+  Mail,
   MessageCircle,
+  Repeat,
   ScrollText,
   User,
   Wallet,
 } from "lucide-react";
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
+import { BinaryAPI } from "@/lib/api";
+import { useAuthStore } from "@/stores/authStore";
 import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/layout/BrandLogo";
 import {
+  buildMailtoUrl,
   buildWhatsappUrl,
   useSupportContacts,
+  useSupportBrand,
 } from "@/lib/useSupport";
 
 const items = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
   { href: "/terminal", label: "Trading Terminal", icon: CandlestickChart },
+  { href: "/binary", label: "Binary Trading", icon: Repeat, demoHide: true },
   // Positions is the unified blotter — Position / Active / Closed /
   // Cancelled / Rejected tabs all live there. The old separate /orders
   // route was folded in per user request: "orders aur position dono
   // ka same kaam hai, bas position section rakho".
   { href: "/positions", label: "Positions", icon: Activity },
   { href: "/wallet", label: "Wallet", icon: Wallet },
-  { href: "/ledger", label: "Ledger", icon: ScrollText },
-  { href: "/reports/pnl", label: "Reports", icon: FileText },
+  // Hidden for demo (paper) accounts — these read the live ledger /
+  // reporting / binary surfaces, which demo accounts don't participate in.
+  { href: "/ledger", label: "Ledger", icon: ScrollText, demoHide: true },
+  { href: "/reports/pnl", label: "Reports", icon: FileText, demoHide: true },
   { href: "/alerts", label: "Alerts", icon: Bell },
   { href: "/profile", label: "Profile", icon: User },
 ];
@@ -41,12 +51,34 @@ const items = [
 export function Sidebar() {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  // Hide "Binary Trading" entirely when binary isn't available to this user
+  // (global off, per-user off, or their admin/broker pool isn't enabled).
+  const { data: binaryCfg } = useQuery({
+    queryKey: ["binary", "settings", ""],
+    queryFn: () => BinaryAPI.settings(),
+    // Short cache + refetch on focus so an admin enabling/disabling the
+    // pool reflects on the user's sidebar when they return to the tab,
+    // without a hard reload.
+    staleTime: 15_000,
+    refetchOnWindowFocus: true,
+  });
+  const binaryAvailable = Boolean((binaryCfg as any)?.available);
+  const isDemo = Boolean(useAuthStore((s) => s.user?.is_demo));
+  const visibleItems = items.filter((it) => {
+    if ((it as any).demoHide && isDemo) return false; // hide ledger/reports/binary for demo
+    if (it.href === "/binary" && !binaryAvailable) return false;
+    return true;
+  });
   const { data: support } = useSupportContacts();
+  const brand = useSupportBrand();
   const waUrl = buildWhatsappUrl(
     support?.whatsapp,
-    "Hi, I need help with my Hindenburg India account",
+    `Hi, I need help with my ${brand} account`,
   );
-  const hasAnySupport = !!waUrl;
+  const mailUrl = buildMailtoUrl(support?.email, {
+    subject: `${brand} support request`,
+  });
+  const hasAnySupport = !!(waUrl || mailUrl);
 
   return (
     <aside
@@ -73,7 +105,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 space-y-1 overflow-y-auto p-2 scrollbar-thin">
-        {items.map((it) => {
+        {visibleItems.map((it) => {
           const active =
             pathname === it.href ||
             (it.href !== "/dashboard" && pathname?.startsWith(it.href));
@@ -122,6 +154,16 @@ export function Sidebar() {
                   <MessageCircle className="size-4" />
                 </a>
               )}
+              {mailUrl && (
+                <a
+                  href={mailUrl}
+                  className="grid size-9 place-items-center rounded-md bg-primary/10 text-primary transition-colors hover:bg-primary/20"
+                  aria-label="Email support"
+                  title="Email support"
+                >
+                  <Mail className="size-4" />
+                </a>
+              )}
             </div>
           ) : (
             <div className="space-y-2">
@@ -137,6 +179,15 @@ export function Sidebar() {
                 >
                   <MessageCircle className="size-3.5" />
                   <span className="truncate">{support?.whatsapp || "WhatsApp"}</span>
+                </a>
+              )}
+              {mailUrl && (
+                <a
+                  href={mailUrl}
+                  className="flex items-center gap-2 rounded-md bg-primary/10 px-2 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
+                >
+                  <Mail className="size-3.5" />
+                  <span className="truncate">{support?.email || "Email"}</span>
                 </a>
               )}
             </div>

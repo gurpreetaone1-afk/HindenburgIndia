@@ -1,125 +1,185 @@
+import Link from "next/link";
 import type { Metadata } from "next";
 import { ArrowRight, Check } from "lucide-react";
-import {
-  MpButton,
-  MpCard,
-  MpHeading,
-  MpPageHero,
-  MpSection,
-} from "@/components/marketing/mp-ui";
 
 export const metadata: Metadata = {
-  title: "Pricing — Transparent Brokerage on NSE, BSE & MCX | Hindenburg India",
+  title: "Pricing",
   description:
-    "Simple, transparent brokerage. Free equity delivery, flat per-order intraday & F&O charges, and zero fees on direct mutual funds and IPOs.",
+    "Transparent flat-fee brokerage. ₹0 account opening. Full statutory breakdown on every trade.",
 };
 
-const BROKERAGE: [string, string][] = [
-  ["Equity Delivery", "₹0 — free"],
-  ["Equity Intraday", "₹20 or 0.03% per order (whichever is lower)"],
-  ["Equity Futures", "₹20 or 0.03% per order (whichever is lower)"],
-  ["Equity Options", "₹20 flat per order"],
-  ["Commodity (MCX)", "₹20 or 0.03% per order (whichever is lower)"],
-  ["Currency F&O", "₹20 or 0.03% per order (whichever is lower)"],
-  ["Direct Mutual Funds", "₹0 — free"],
-  ["IPO Application (UPI)", "₹0 — free"],
+const BROKERAGE = [
+  { segment: "Equity Delivery (CNC)", rate: "₹20 / order", note: "Flat per order on all delivery trades" },
+  { segment: "Equity Intraday (MIS)", rate: "₹20 / order", note: "or 0.03% — whichever is lower" },
+  { segment: "Equity F&O", rate: "₹20 / order", note: "Futures + options, flat" },
+  { segment: "Currency F&O", rate: "₹20 / order", note: "USDINR, EURINR, GBPINR, JPYINR" },
+  { segment: "Commodity (MCX)", rate: "₹20 / order", note: "Gold, Silver, Crude Oil, Natural Gas, …" },
+  { segment: "Crypto", rate: "0.10%", note: "Both legs · 24×7 markets" },
+  { segment: "Forex (CDS spot)", rate: "Spread-based", note: "Pricing built into the spread — no per-order fee" },
 ];
 
 const ACCOUNT = [
-  { title: "Account Opening", value: "₹0", note: "Open a Demat & trading account online, free." },
-  { title: "Maintenance (AMC)", value: "Low yearly", note: "A small annual demat maintenance charge applies." },
-  { title: "Funding", value: "₹0 fees", note: "Add funds via UPI or Net Banking with no deposit fees." },
+  { item: "Account opening", value: "₹0", highlight: true },
+  { item: "Annual maintenance (year 1)", value: "₹0", highlight: true },
+  { item: "Annual maintenance (year 2+)", value: "₹300/yr" },
+  { item: "Deposit fees", value: "₹0" },
+  { item: "Withdrawal fees", value: "₹0", note: "Up to 5 free withdrawals / month" },
+  { item: "Demat transaction (sell)", value: "₹13.5 / scrip" },
+  { item: "Call & trade", value: "₹50 / executed order" },
 ];
 
-const INCLUDED = [
-  "Equity, F&O, Commodities, IPO & Mutual Funds in one account",
-  "Web terminal, mobile app and desktop platform",
-  "Live NSE & BSE option chain and advanced charts",
-  "GTT, basket orders and price alerts",
-  "100+ technical indicators",
-  "Support in English and Hindi during IST hours",
+const STATUTORY = [
+  { label: "STT", desc: "Securities Transaction Tax — equity 0.1% delivery (both sides), intraday 0.025% (sell), F&O futures 0.02% (sell), options 0.1% (sell on premium)." },
+  { label: "Exchange charges", desc: "NSE / BSE / MCX transaction fee — slab-based, ~0.00345% notional." },
+  { label: "GST", desc: "18% on (brokerage + exchange + SEBI charges)." },
+  { label: "SEBI charges", desc: "₹10 per crore of notional." },
+  { label: "Stamp duty", desc: "Equity delivery 0.015%, intraday 0.003%, F&O 0.002% (state-dependent)." },
+  { label: "DP charges", desc: "₹13.5 + GST per scrip per day on debit (demat sell)." },
 ];
 
 export default function PricingPage() {
   return (
     <>
-      <MpPageHero
-        eyebrow="Pricing"
-        title="Simple, transparent brokerage."
-        lead="Free equity delivery, flat per-order charges on intraday and F&O, and zero fees on direct mutual funds and IPOs. No hidden conditions."
-      >
-        <MpButton href="/register" size="lg">
-          Open Account
-          <ArrowRight className="size-4" />
-        </MpButton>
-      </MpPageHero>
+      {/* Hero */}
+      <section className="border-b border-border bg-gradient-to-b from-primary/5 to-background">
+        <div className="mx-auto max-w-7xl px-4 py-16 text-center sm:px-6 sm:py-20 lg:px-8">
+          <span className="text-xs font-semibold uppercase tracking-wider text-primary">
+            Pricing
+          </span>
+          <h1 className="mt-2 text-4xl font-bold tracking-tight sm:text-5xl">
+            Flat ₹20 / order.
+            <br />
+            <span className="text-primary">No fine print.</span>
+          </h1>
+          <p className="mx-auto mt-4 max-w-2xl text-base text-muted-foreground sm:text-lg">
+            Whether you trade 1 share or 1 lakh, brokerage stays flat. Statutory
+            charges (STT, GST, exchange, SEBI, stamp) are itemised on every
+            trade — no hidden mark-ups.
+          </p>
+          <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
+            <Link
+              href="/register"
+              className="inline-flex h-11 items-center gap-2 rounded-md bg-primary px-6 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+            >
+              Open account <ArrowRight className="size-4" />
+            </Link>
+            <Link
+              href="#statutory"
+              className="inline-flex h-11 items-center rounded-md border border-border px-6 text-sm font-semibold text-foreground hover:bg-muted/40"
+            >
+              Statutory breakdown
+            </Link>
+          </div>
+        </div>
+      </section>
 
       {/* Brokerage table */}
-      <MpSection>
-        <MpHeading align="center" eyebrow="Brokerage" title="Brokerage by segment" />
-        <div className="mx-auto mt-10 max-w-3xl overflow-x-auto rounded-2xl border border-mp-border bg-mp-surface">
-          <table className="w-full min-w-[480px] text-left text-sm">
-            <thead>
-              <tr className="border-b border-mp-border text-xs uppercase tracking-wide text-mp-text-mut">
-                <th className="px-5 py-4 font-medium">Segment</th>
-                <th className="px-5 py-4 font-medium">Brokerage</th>
+      <section className="mx-auto max-w-5xl px-4 py-16 sm:px-6 lg:px-8">
+        <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">Brokerage by segment</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          One flat rate per order in each segment. No tiered pricing, no
+          volume-based discounts to chase.
+        </p>
+
+        <div className="mt-6 overflow-hidden rounded-xl border border-border bg-card">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40 text-xs uppercase tracking-wider text-muted-foreground">
+              <tr>
+                <th className="px-4 py-3 text-left font-semibold">Segment</th>
+                <th className="px-4 py-3 text-right font-semibold">Rate</th>
+                <th className="hidden px-4 py-3 text-left font-semibold sm:table-cell">Note</th>
               </tr>
             </thead>
-            <tbody>
-              {BROKERAGE.map((row) => (
-                <tr key={row[0]} className="border-b border-mp-border last:border-0">
-                  <td className="px-5 py-4 font-semibold text-mp-text">{row[0]}</td>
-                  <td className="mp-num px-5 py-4 text-mp-text-mut">{row[1]}</td>
+            <tbody className="divide-y divide-border">
+              {BROKERAGE.map((r) => (
+                <tr key={r.segment} className="hover:bg-muted/20">
+                  <td className="px-4 py-3 font-medium">{r.segment}</td>
+                  <td className="px-4 py-3 text-right font-tabular font-semibold text-primary">{r.rate}</td>
+                  <td className="hidden px-4 py-3 text-muted-foreground sm:table-cell">{r.note}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        <p className="mx-auto mt-4 max-w-3xl text-xs text-mp-text-mut">
-          Indicative pricing. Statutory charges — STT, exchange transaction
-          charges, GST, SEBI turnover fees and stamp duty — apply as per
-          prevailing regulations and are shown clearly before you place an order.
-        </p>
-      </MpSection>
+      </section>
 
-      {/* Account charges */}
-      <MpSection className="bg-mp-surface-2/60">
-        <MpHeading align="center" eyebrow="Account" title="Account & funding charges" />
-        <div className="mt-12 grid gap-5 lg:grid-cols-3">
-          {ACCOUNT.map((a) => (
-            <MpCard key={a.title} className="flex flex-col gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-mp-text-mut">
-                {a.title}
-              </span>
-              <span className="font-display text-3xl font-bold text-mp-primary">
-                {a.value}
-              </span>
-              <p className="text-sm leading-[1.6] text-mp-text-mut">{a.note}</p>
-            </MpCard>
-          ))}
+      {/* Account fees */}
+      <section className="border-y border-border bg-muted/20 py-16">
+        <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
+          <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">Account fees</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            What you actually pay to run an account with us.
+          </p>
+
+          <div className="mt-6 grid gap-3 sm:grid-cols-2">
+            {ACCOUNT.map((r) => (
+              <div
+                key={r.item}
+                className={
+                  "flex items-center justify-between rounded-lg border bg-card px-4 py-3 " +
+                  (r.highlight ? "border-primary/40 bg-primary/5" : "border-border")
+                }
+              >
+                <div>
+                  <div className="text-sm font-medium">{r.item}</div>
+                  {r.note && (
+                    <div className="text-[11px] text-muted-foreground">{r.note}</div>
+                  )}
+                </div>
+                <div
+                  className={
+                    "font-tabular text-base font-semibold " +
+                    (r.highlight ? "text-primary" : "text-foreground")
+                  }
+                >
+                  {r.value}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
-      </MpSection>
+      </section>
 
-      {/* What's included */}
-      <MpSection>
-        <MpHeading align="center" eyebrow="Included" title="What every account includes" />
-        <div className="mx-auto mt-12 grid max-w-4xl gap-4 sm:grid-cols-2">
-          {INCLUDED.map((item) => (
-            <div key={item} className="flex items-start gap-3">
-              <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full bg-mp-primary/10 text-mp-primary">
-                <Check className="size-3.5" />
-              </span>
-              <p className="text-sm leading-[1.6] text-mp-text-mut">{item}</p>
+      {/* Statutory charges */}
+      <section id="statutory" className="mx-auto max-w-5xl px-4 py-16 sm:px-6 lg:px-8">
+        <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">
+          Statutory & exchange charges
+        </h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          These are levied by the government / exchange — every Indian broker
+          charges these, we just show them transparently on every trade.
+        </p>
+
+        <div className="mt-6 space-y-3">
+          {STATUTORY.map((s) => (
+            <div key={s.label} className="rounded-lg border border-border bg-card p-4">
+              <div className="flex items-center gap-2">
+                <Check className="size-4 text-primary" />
+                <span className="text-sm font-semibold">{s.label}</span>
+              </div>
+              <p className="mt-1 pl-6 text-[13px] leading-relaxed text-muted-foreground">{s.desc}</p>
             </div>
           ))}
         </div>
-        <div className="mt-10 flex justify-center">
-          <MpButton href="/register" size="lg">
-            Open Account
-            <ArrowRight className="size-4" />
-          </MpButton>
+      </section>
+
+      {/* CTA */}
+      <section className="bg-primary/5 py-14">
+        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-4 text-center sm:flex-row sm:px-6 sm:text-left lg:px-8">
+          <div>
+            <h2 className="text-2xl font-bold">Ready when you are.</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Open in under 5 minutes — start trading the same day.
+            </p>
+          </div>
+          <Link
+            href="/register"
+            className="inline-flex h-11 items-center gap-2 rounded-md bg-primary px-6 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+          >
+            Open account <ArrowRight className="size-4" />
+          </Link>
         </div>
-      </MpSection>
+      </section>
     </>
   );
 }

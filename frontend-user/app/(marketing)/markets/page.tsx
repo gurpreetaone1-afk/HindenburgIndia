@@ -31,7 +31,7 @@ const SEGMENTS = [
     instruments: "All A-group + most B-group · 1,800+ scrips",
     hours: "Mon–Fri · 09:15 – 15:30 IST",
     lot: "1 share",
-    brokerage: "₹0 delivery (CNC) · ₹20 / order intraday (MIS)",
+    brokerage: "₹20 / order flat — delivery (CNC) & intraday (MIS)",
     statutory: "STT 0.1% delivery, 0.025% intraday sell · Exchange + GST + SEBI + stamp",
   },
   {
@@ -40,7 +40,7 @@ const SEGMENTS = [
     instruments: "All actively traded scrips · including SME",
     hours: "Mon–Fri · 09:15 – 15:30 IST",
     lot: "1 share",
-    brokerage: "₹0 delivery · ₹20 / order intraday",
+    brokerage: "₹20 / order flat — delivery & intraday",
     statutory: "Same as NSE cash · auto-routed via best-price logic when both segments are open",
   },
   {
@@ -121,7 +121,7 @@ const SEGMENTS = [
     instruments: "All NSE/BSE-listed ETFs — equity, debt, gold, international, smart-beta",
     hours: "Mon–Fri · 09:15 – 15:30 IST",
     lot: "1 unit",
-    brokerage: "₹0 delivery · ₹20 / order intraday",
+    brokerage: "₹20 / order flat — delivery & intraday",
     statutory: "STT 0.001% delivery (lower than equity) + standard exchange charges",
   },
   {
@@ -130,7 +130,7 @@ const SEGMENTS = [
     instruments: "All AMCs · equity, debt, hybrid, index, ELSS · direct plans only",
     hours: "Order before 15:00 IST for same-day NAV",
     lot: "Min as per scheme (typically ₹100 SIP, ₹500 lump sum)",
-    brokerage: "₹0 — we earn nothing on direct MF",
+    brokerage: "₹20 / order — direct plans",
     statutory: "Standard exit-load + capital-gains tax per scheme",
   },
 ];
@@ -148,9 +148,9 @@ export default function MarketsPage() {
   return (
     <>
       <section className="relative overflow-hidden border-b border-border">
-        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-b from-primary/8 via-background to-background" />
+        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-b from-primary/10 via-background to-background" />
         <div className="mx-auto max-w-5xl px-4 py-20 text-center sm:px-6 sm:py-24 lg:px-8">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-xs font-semibold text-primary">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
             <Sparkles className="size-3" /> 14+ live segments
           </span>
           <h1 className="mt-5 text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
@@ -194,7 +194,7 @@ export default function MarketsPage() {
           {SEGMENTS.map((s) => {
             const Icon = s.icon;
             return (
-              <div key={s.name} className="rounded-2xl border border-border/40 bg-card/60 p-6">
+              <div key={s.name} className="rounded-2xl border border-border bg-card p-6">
                 <div className="flex items-start gap-4">
                   <div className="grid size-12 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
                     <Icon className="size-6" />
@@ -228,7 +228,7 @@ export default function MarketsPage() {
         </div>
       </section>
 
-      <section className="border-y border-border/40 bg-card/40">
+      <section className="border-y border-border bg-card/40">
         <div className="mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-24 lg:px-8">
           <div className="grid items-start gap-12 lg:grid-cols-2">
             <div>
@@ -273,17 +273,17 @@ export default function MarketsPage() {
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
-        <div className="rounded-3xl border border-primary/20 bg-gradient-to-br from-primary/15 via-primary/5 to-background p-10 text-center sm:p-14">
+        <div className="rounded-3xl border border-primary/30 bg-gradient-to-br from-primary/15 via-primary/5 to-background p-10 text-center sm:p-14">
           <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">One account, every market that matters.</h2>
           <p className="mx-auto mt-3 max-w-xl text-muted-foreground">
             Switch from NIFTY to BTC to gold without logging out. Margins,
             P&amp;L and ledger update in one place.
           </p>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <Link href="/register" className="inline-flex h-12 items-center gap-2 rounded-full bg-primary px-7 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 hover:bg-primary/90">
+            <Link href="/register" className="inline-flex h-12 items-center gap-2 rounded-md bg-primary px-7 text-sm font-semibold text-primary-foreground hover:bg-primary/90">
               Open account <ArrowRight className="size-4" />
             </Link>
-            <Link href="/pricing" className="inline-flex h-12 items-center gap-2 rounded-full border border-border/60 bg-background px-7 text-sm font-semibold hover:bg-muted/50">
+            <Link href="/pricing" className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-background px-7 text-sm font-semibold hover:bg-muted/50">
               See pricing
             </Link>
           </div>

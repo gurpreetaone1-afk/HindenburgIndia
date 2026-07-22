@@ -8,12 +8,14 @@ import {
   ArrowLeft,
   AtSign,
   Bell,
+  CheckCircle2,
   ChevronRight,
   CreditCard,
   FileText,
   HelpCircle,
   IdCard,
   KeyRound,
+  Layers,
   Lock,
   LogOut,
   Mail,
@@ -27,18 +29,21 @@ import {
   User as UserIcon,
   Wallet as WalletIcon,
 } from "lucide-react";
-import { ProfileAPI, AuthAPI } from "@/lib/api";
+import { ProfileAPI, AuthAPI, KycAPI } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { KycSection } from "@/components/profile/KycSection";
 import { ThemeToggle } from "@/components/common/ThemeToggle";
 import { useAuthStore } from "@/stores/authStore";
 import {
   buildMailtoUrl,
   buildWhatsappUrl,
   useSupportContacts,
+  useSupportBrand,
 } from "@/lib/useSupport";
 import { cn } from "@/lib/utils";
+import { useBranding } from "@/lib/branding-context";
 
 /**
  * Mobile-first profile screen modelled on Zerodha Kite / Groww — a
@@ -57,44 +62,23 @@ import { cn } from "@/lib/utils";
 type SubView =
   | "main"
   | "personal"
+  | "kyc"
   | "security"
   | "appearance"
+  | "trading"
   | "support";
 
 export default function ProfilePage() {
-  // The persisted login user (zustand `nb.auth`) is our offline-safe seed.
-  // It carries every field the main profile screen renders (name, code,
-  // email, status, role, is_demo, 2FA), so we can paint a correct profile
-  // instantly and never show the error wall while a logged-in user's
-  // /users/me round-trip is in flight or briefly fails on a weak network.
-  const storeUser = useAuthStore((s) => s.user);
-  const {
-    data: fetched,
-    refetch,
-    isLoading,
-  } = useQuery({
-    queryKey: ["me"],
-    queryFn: () => ProfileAPI.me(),
-    // Seed from the persisted login user so the screen is populated on the
-    // very first paint. `initialDataUpdatedAt: 0` marks it stale so a fresh
-    // /users/me still fetches immediately on mount to fill the extra fields
-    // (kyc, created_at, last_login_at, …).
-    initialData: storeUser ? (storeUser as any) : undefined,
-    initialDataUpdatedAt: 0,
-    // Profile was the ONLY screen backed by a single one-shot fetch with no
-    // poll — every other page (positions 2s / orders 4s / wallet 10s) self-
-    // heals a transient mobile-network blip on its next tick, so the blip is
-    // invisible there. On Profile that one failed fetch stuck on "Could not
-    // load profile" until a manual Retry that also failed on weak signal
-    // ("bar bar problem"). Give it the same safety net: keep it gently
-    // refreshing and recover on focus / reconnect.
-    refetchOnWindowFocus: true,
-    refetchOnReconnect: true,
-    refetchInterval: 30_000,
-  });
-  // Prefer the freshest server copy; fall back to the persisted login user
-  // so a logged-in client always sees their profile, never a dead wall.
-  const me = fetched ?? storeUser;
+  const { data: me, refetch } = useQuery({ queryKey: ["me"], queryFn: () => ProfileAPI.me() });
+  const { data: kyc } = useQuery({ queryKey: ["kyc"], queryFn: () => KycAPI.status() });
+  // Footer label uses the tenant brand, not the platform's "Hindenburg India".
+  const { branding } = useBranding();
+  const brandLabel = (branding?.brand_name || "").trim() || "Hindenburg India";
+  // On a white-label tenant the platform's Terms / Privacy don't apply, so
+  // hide the About section for those users (it's stock4x's legal content).
+  const isWhiteLabel = Boolean(
+    (branding?.brand_name || "").trim() || branding?.custom_domain,
+  );
 
   const [subView, setSubView] = useState<SubView>("main");
   const [name, setName] = useState("");
@@ -102,21 +86,9 @@ export default function ProfilePage() {
     if (me?.full_name) setName(me.full_name);
   }, [me?.full_name]);
 
-  // Only a genuinely-logged-out state (no cached user AND nothing fetched)
-  // shows the loader / error wall now.
-  if (!me && isLoading) return <div className="text-sm text-muted-foreground">Loading…</div>;
-  if (!me) return (
-    <div className="flex flex-col items-center gap-3 py-12 text-center">
-      <p className="text-sm text-muted-foreground">Could not load profile. Please try again.</p>
-      <button
-        type="button"
-        onClick={() => void refetch()}
-        className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-      >
-        Retry
-      </button>
-    </div>
-  );
+  if (!me) return <div className="text-sm text-muted-foreground">Loading…</div>;
+
+  const kycStatus = (kyc?.status as string | undefined) ?? "NONE";
 
   // ── Sub-screens ─────────────────────────────────────────────────
   if (subView !== "main") {
@@ -133,8 +105,10 @@ export default function ProfilePage() {
             onSave={() => save(name, refetch)}
           />
         )}
+        {subView === "kyc" && <KycSection />}
         {subView === "security" && <SecurityForm me={me} />}
         {subView === "appearance" && <AppearanceForm />}
+        {subView === "trading" && <TradingPrefsForm me={me} onSaved={refetch} />}
         {subView === "support" && <SupportLinks />}
       </SubScreen>
     );
@@ -143,7 +117,7 @@ export default function ProfilePage() {
   // ── Main screen ────────────────────────────────────────────────
   return (
     <div className="space-y-4 pb-2">
-      <ProfileHeader me={me} />
+      <ProfileHeader me={me} kycStatus={kycStatus} />
 
       <ListGroup title="Account">
         <ListRow
@@ -153,30 +127,45 @@ export default function ProfilePage() {
           sub="Name, email, mobile, user code"
           onClick={() => setSubView("personal")}
         />
+        {/* KYC / bank / payouts are disabled for demo (paper) accounts. */}
+        {!me?.is_demo && (
+          <ListRow
+            icon={IdCard}
+            tone="warn"
+            label="KYC verification"
+            sub={kycSubLabel(kycStatus)}
+            badge={kycBadge(kycStatus)}
+            onClick={() => setSubView("kyc")}
+          />
+        )}
         <ListRowLink
           icon={WalletIcon}
           tone="buy"
           label="Wallet"
-          sub="Deposit, withdraw, balance"
+          sub={me?.is_demo ? "Demo paper balance" : "Deposit, withdraw, balance"}
           href="/wallet"
         />
-        <ListRowLink
-          icon={CreditCard}
-          tone="primary"
-          label="Bank accounts"
-          sub="Linked payout accounts"
-          href="/wallet#bank"
-        />
+        {!me?.is_demo && (
+          <ListRowLink
+            icon={CreditCard}
+            tone="primary"
+            label="Bank accounts"
+            sub="Linked payout accounts"
+            href="/wallet#bank"
+          />
+        )}
       </ListGroup>
 
       <ListGroup title="Trading & reports">
-        <ListRowLink
-          icon={ReceiptText}
-          tone="primary"
-          label="Reports"
-          sub="P&L · Tradebook · Margin · Brokerage · Tax"
-          href="/reports/pnl"
-        />
+        {!me?.is_demo && (
+          <ListRowLink
+            icon={ReceiptText}
+            tone="primary"
+            label="Reports"
+            sub="P&L · Tradebook · Margin · Brokerage · Tax"
+            href="/reports/pnl"
+          />
+        )}
         <ListRowLink
           icon={Bell}
           tone="warn"
@@ -184,13 +173,15 @@ export default function ProfilePage() {
           sub="Alerts, account activity, system"
           href="/notifications"
         />
-        <ListRowLink
-          icon={FileText}
-          tone="muted"
-          label="Ledger"
-          sub="Cash entries, charges"
-          href="/ledger"
-        />
+        {!me?.is_demo && (
+          <ListRowLink
+            icon={FileText}
+            tone="muted"
+            label="Ledger"
+            sub="Cash entries, charges"
+            href="/ledger"
+          />
+        )}
       </ListGroup>
 
       <ListGroup title="Security">
@@ -220,6 +211,17 @@ export default function ProfilePage() {
           sub="Switch between light and dark theme"
           onClick={() => setSubView("appearance")}
         />
+        <ListRow
+          icon={Layers}
+          tone="primary"
+          label="Trading preferences"
+          sub={
+            (me?.default_lot_size ?? 0) > 0
+              ? `Default lot size · ${me.default_lot_size}`
+              : "Default lot size · use instrument min"
+          }
+          onClick={() => setSubView("trading")}
+        />
       </ListGroup>
 
       <ListGroup title="Support">
@@ -232,25 +234,27 @@ export default function ProfilePage() {
         />
       </ListGroup>
 
-      <ListGroup title="About">
-        <ListRowLink
-          icon={FileText}
-          tone="muted"
-          label="Terms of service"
-          href="/about"
-        />
-        <ListRowLink
-          icon={FileText}
-          tone="muted"
-          label="Privacy policy"
-          href="/about#privacy"
-        />
-      </ListGroup>
+      {!isWhiteLabel && (
+        <ListGroup title="About">
+          <ListRowLink
+            icon={FileText}
+            tone="muted"
+            label="Terms of service"
+            href="/about"
+          />
+          <ListRowLink
+            icon={FileText}
+            tone="muted"
+            label="Privacy policy"
+            href="/about#privacy"
+          />
+        </ListGroup>
+      )}
 
       <SignOutRow />
 
       <p className="px-1 pb-4 pt-2 text-center text-[10px] text-muted-foreground">
-        Hindenburg India · v1.0.0
+        {brandLabel} · v1.0.0
       </p>
     </div>
   );
@@ -260,10 +264,14 @@ function subViewTitle(v: SubView): string {
   switch (v) {
     case "personal":
       return "Personal information";
+    case "kyc":
+      return "KYC verification";
     case "security":
       return "Security";
     case "appearance":
       return "Appearance";
+    case "trading":
+      return "Trading preferences";
     case "support":
       return "Help & support";
     default:
@@ -271,10 +279,40 @@ function subViewTitle(v: SubView): string {
   }
 }
 
+function kycSubLabel(status: string): string {
+  switch (status) {
+    case "APPROVED":
+      return "Verified · all good";
+    case "PENDING":
+      return "Under review";
+    case "RESUBMIT":
+      return "Re-submit required";
+    case "REJECTED":
+      return "Verification rejected";
+    default:
+      return "Complete your KYC";
+  }
+}
+
+function kycBadge(status: string): string | null {
+  switch (status) {
+    case "APPROVED":
+      return "Verified";
+    case "PENDING":
+      return "Review";
+    case "RESUBMIT":
+      return "Action";
+    case "REJECTED":
+      return "Rejected";
+    default:
+      return "Pending";
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Header
 // ─────────────────────────────────────────────────────────────────
-function ProfileHeader({ me }: { me: any }) {
+function ProfileHeader({ me, kycStatus }: { me: any; kycStatus: string }) {
   const initials = (me.full_name || me.user_code || "U")
     .split(" ")
     .map((s: string) => s[0])
@@ -303,6 +341,7 @@ function ProfileHeader({ me }: { me: any }) {
               <Pill tone={me.status === "ACTIVE" ? "buy" : "muted"}>{me.status}</Pill>
               <Pill tone="primary">{me.role}</Pill>
               {me.is_demo && <Pill tone="warn">DEMO</Pill>}
+              <KycPill status={kycStatus} />
             </div>
           </div>
         </div>
@@ -538,17 +577,15 @@ function PersonalForm({
               wide
             />
           )}
-          {me.created_at && (
-            <Fact
-              label="Joined"
-              value={new Date(me.created_at).toLocaleDateString("en-IN", {
-                day: "numeric",
-                month: "long",
-                year: "numeric",
-              })}
-              wide
-            />
-          )}
+          <Fact
+            label="Joined"
+            value={new Date(me.created_at).toLocaleDateString("en-IN", {
+              day: "numeric",
+              month: "long",
+              year: "numeric",
+            })}
+            wide
+          />
         </div>
         <div className="pt-1">
           <Button onClick={onSave}>Save changes</Button>
@@ -673,14 +710,95 @@ function AppearanceForm() {
   );
 }
 
+function TradingPrefsForm({
+  me,
+  onSaved,
+}: {
+  me: any;
+  onSaved: () => void;
+}) {
+  const [lots, setLots] = useState<string>(
+    String(Number(me?.default_lot_size ?? 0) || ""),
+  );
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    const n = Number(lots);
+    if (Number.isNaN(n) || n < 0) {
+      toast.error("Lot size must be a non-negative number");
+      return;
+    }
+    setSaving(true);
+    try {
+      await ProfileAPI.update({ default_lot_size: n });
+      toast.success(
+        n > 0
+          ? `Default lot size set to ${n}`
+          : "Default lot size reset — instrument min will be used",
+      );
+      onSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/12 text-primary">
+          <Layers className="size-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">Default lot size</div>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            Pre-fills the lot stepper on every BUY / SELL surface
+            (order panel, mobile quick-trade, watchlist one-click).
+            Leave at 0 to use each instrument&apos;s configured minimum
+            instead. Sub-lots allowed (0.01 for forex, 0.001 for
+            crypto). Final order still clamps up to the
+            instrument&apos;s min_lot if your value is smaller.
+          </p>
+          <div className="mt-3 flex items-center gap-2">
+            <Input
+              type="number"
+              min={0}
+              step={0.001}
+              value={lots}
+              onChange={(e) => setLots(e.target.value)}
+              placeholder="0 (use min)"
+              className="h-9 w-32 font-tabular tabular-nums"
+            />
+            <Button
+              type="button"
+              onClick={save}
+              loading={saving}
+              size="sm"
+              variant="buy"
+            >
+              Save
+            </Button>
+          </div>
+          <div className="mt-2 text-[10px] text-muted-foreground">
+            Examples: 1 (equity / future lot), 0.10 (forex mini),
+            0.001 (crypto fractional).
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function SupportLinks() {
   const { data: support } = useSupportContacts();
+  const brand = useSupportBrand();
   const waUrl = buildWhatsappUrl(
     support?.whatsapp,
-    "Hi, I need help with my Hindenburg India account",
+    `Hi, I need help with my ${brand} account`,
   );
   const mailUrl = buildMailtoUrl(support?.email, {
-    subject: "Hindenburg India support request",
+    subject: `${brand} support request`,
   });
   if (!waUrl && !mailUrl) {
     return (
@@ -840,3 +958,33 @@ function Pill({
   );
 }
 
+function KycPill({ status }: { status: string }) {
+  const cfg: Record<
+    string,
+    { label: string; tone: "primary" | "buy" | "warn" | "muted"; icon: any }
+  > = {
+    NONE: { label: "KYC pending", tone: "warn", icon: ShieldOff },
+    PENDING: { label: "KYC under review", tone: "warn", icon: ShieldOff },
+    APPROVED: { label: "KYC verified", tone: "buy", icon: CheckCircle2 },
+    REJECTED: { label: "KYC rejected", tone: "muted", icon: ShieldOff },
+    RESUBMIT: { label: "Resubmit KYC", tone: "warn", icon: ShieldOff },
+  };
+  const c = cfg[status] || cfg.NONE;
+  const Icon = c.icon;
+  const tones: Record<string, string> = {
+    primary: "bg-primary/15 text-primary",
+    buy: "bg-buy/15 text-buy",
+    warn: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+    muted: "bg-muted text-muted-foreground",
+  };
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+        tones[c.tone],
+      )}
+    >
+      <Icon className="size-3" /> {c.label}
+    </span>
+  );
+}

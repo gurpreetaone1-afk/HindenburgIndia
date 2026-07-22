@@ -42,6 +42,6 @@
   <circle cx="256" cy="256" r="5.5" fill="#000080"/>
   </g>
   <text x="72" y="41" font-family="Inter, 'Space Grotesk', -apple-system, system-ui, sans-serif" font-size="28" font-weight="700" letter-spacing="-0.5">
-    <tspan fill="#0a0a0a">Hindenburg</tspan><tspan fill="#138808"> India</tspan>
+    <tspan fill="#0a2540">Hindenburg</tspan><tspan fill="#138808"> India</tspan>
   </text>
 </svg>

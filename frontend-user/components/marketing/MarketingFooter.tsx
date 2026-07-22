@@ -1,88 +1,80 @@
+import Image from "next/image";
 import Link from "next/link";
-import { MpContainer } from "./mp-ui";
 
-// Broker sitemap — Trading markets, Platforms, Company and Support/Legal.
 const COLS: { title: string; links: { href: string; label: string }[] }[] = [
   {
-    title: "Trading",
+    title: "Product",
     links: [
-      { href: "/equity", label: "Equity" },
-      { href: "/futures-options", label: "Futures & Options" },
-      { href: "/commodities", label: "Commodities" },
-      { href: "/indices", label: "Indices" },
-    ],
-  },
-  {
-    title: "Platform",
-    links: [
-      { href: "/web-terminal", label: "Web Terminal" },
-      { href: "/pro", label: "Pro Account" },
-      { href: "/demo", label: "Paper Trading" },
+      { href: "/features", label: "Features" },
+      { href: "/markets", label: "Markets" },
       { href: "/pricing", label: "Pricing" },
+      { href: "/security", label: "Security" },
+      { href: "/register", label: "Open an account" },
     ],
   },
   {
     title: "Company",
     links: [
-      { href: "/about", label: "About" },
-      { href: "/blog", label: "Blog" },
-      { href: "/education", label: "Education" },
+      { href: "/about", label: "About us" },
+      { href: "/about#team", label: "Team" },
+      { href: "/about#careers", label: "Careers" },
       { href: "/contact", label: "Contact" },
     ],
   },
   {
-    title: "Support & Legal",
+    title: "Resources",
     links: [
-      { href: "/how-it-works", label: "How it works" },
-      { href: "/faq", label: "FAQ" },
-      { href: "/legal/refund", label: "Refund Policy" },
-      { href: "/legal/terms", label: "Terms & Conditions" },
-      { href: "/privacy", label: "Privacy Policy" },
+      { href: "/learn", label: "Learn" },
+      { href: "/faq", label: "FAQs" },
+      { href: "/contact", label: "Help centre" },
+      { href: "/contact#kyc", label: "KYC help" },
+    ],
+  },
+  {
+    title: "Legal",
+    links: [
+      { href: "/legal/terms", label: "Terms of use" },
+      { href: "/legal/privacy", label: "Privacy policy" },
+      { href: "/legal/disclosures", label: "Risk disclosures" },
+      { href: "/legal/grievance", label: "Grievance redressal" },
     ],
   },
 ];
 
 export function MarketingFooter() {
-  const year = new Date().getFullYear();
-
   return (
-    <footer className="mp-dark border-t border-mp-border bg-mp-bg text-mp-text">
-      <MpContainer className="py-14 sm:py-16">
-        <div className="grid grid-cols-2 gap-10 lg:grid-cols-6">
-          {/* Brand block — footer sits inside an `.mp-dark` scope, so use the
-              light brand mark (white wordmark) for contrast. */}
-          <div className="col-span-2">
-            <Link href="/" className="inline-flex items-center gap-2.5">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/logo-hindenburg-light.svg"
+    <footer className="border-t border-border bg-card/40">
+      <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-2 gap-8 lg:grid-cols-5">
+          {/* Brand block */}
+          <div className="col-span-2 lg:col-span-1">
+            <Link href="/" className="inline-flex items-center">
+              <Image
+                src="/logo1.png"
                 alt="Hindenburg India"
-                className="h-14 w-auto"
-                width={280}
-                height={56}
-                loading="lazy"
-                decoding="async"
+                width={150}
+                height={38}
+                className="select-none"
+                style={{ height: "36px", width: "auto" }}
               />
             </Link>
-            <p className="mt-4 max-w-xs text-sm leading-relaxed text-mp-text-mut">
-              A SEBI-registered stock broker built in India. Trade Equity, F&O,
-              Commodities, IPOs and Mutual Funds across NSE, BSE & MCX from a
-              single account.
+            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+              India's modern multi-segment trading platform — Equities, F&O,
+              Currencies, Commodities and Crypto on a single fast terminal.
             </p>
           </div>
 
-          {/* Link columns */}
           {COLS.map((col) => (
             <div key={col.title}>
-              <div className="text-sm font-semibold text-mp-text">
+              <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {col.title}
               </div>
-              <ul className="mt-4 space-y-2.5">
+              <ul className="mt-3 space-y-2">
                 {col.links.map((l) => (
                   <li key={l.href + l.label}>
                     <Link
                       href={l.href}
-                      className="text-sm text-mp-text-mut transition-colors hover:text-mp-text"
+                      className="text-sm text-foreground/80 transition-colors hover:text-foreground"
                     >
                       {l.label}
                     </Link>
@@ -93,21 +85,19 @@ export function MarketingFooter() {
           ))}
         </div>
 
-        {/* Compliance disclaimer (fixed copy) */}
-        <div className="mt-12 border-t border-mp-border pt-8">
-          <p className="max-w-4xl text-[12px] leading-relaxed text-mp-text-mut">
-            Hindenburg India is a SEBI-registered stock broker offering trading and
-            investing across NSE, BSE & MCX. Investments in the securities market
-            are subject to market risks; read all the related documents carefully
-            before investing. Nothing on this site is investment advice or a
-            solicitation to trade, and past performance does not guarantee future
-            results. Trade only with money you can afford to lose.
+        <div className="mt-10 border-t border-border pt-6 text-[11px] leading-relaxed text-muted-foreground">
+          <p>
+            <span className="font-semibold text-foreground">Disclaimer:</span>{" "}
+            Investments in securities markets are subject to market risks; read
+            all related documents carefully before investing. Brokerage will not
+            exceed SEBI prescribed limits. Past performance is not indicative of
+            future returns.
           </p>
-          <p className="mt-4 text-[12px] text-mp-text-mut">
-            © {year} Hindenburg India. All rights reserved.
-          </p>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <span>© {new Date().getFullYear()} Hindenburg India. All rights reserved.</span>
+          </div>
         </div>
-      </MpContainer>
+      </div>
     </footer>
   );
 }

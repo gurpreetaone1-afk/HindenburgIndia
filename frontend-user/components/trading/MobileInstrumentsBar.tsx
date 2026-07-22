@@ -3,29 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Plus, Search, Star, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Plus, Search, Star, X } from "lucide-react";
 import { InstrumentAPI, MarketwatchAPI, SegmentSettingsAPI } from "@/lib/api";
 import { useMarketStream } from "@/lib/useMarketStream";
+import { usePriceFlash } from "@/lib/usePriceFlash";
 import { cn, formatPrice, pnlColor } from "@/lib/utils";
-import { MobileOptionChain } from "@/components/trading/MobileOptionChain";
 
 interface Props {
   activeToken: string | null;
-  /** `seed` carries the row's last-known ltp/bid/ask + identity so the trade
-   *  card paints a price AND a usable instrument instantly, instead of
-   *  waiting ~5-7 s for its own fresh WS connection + REST fetches on first
-   *  open (which left it at "0.00" / "Instrument not loaded"). */
-  onSelect: (
-    token: string,
-    seed?: {
-      ltp?: number | null;
-      bid?: number | null;
-      ask?: number | null;
-      symbol?: string | null;
-      exchange?: string | null;
-      segment?: string | null;
-    },
-  ) => void;
+  onSelect: (token: string) => void;
 }
 
 type Bucket = {
@@ -67,7 +53,8 @@ const BUCKETS: Bucket[] = [
   { key: "stocks", label: "Stocks", mode: "filter", segments: ["STOCKS"], adminRows: ["STOCKS"] },
   { key: "commodities", label: "Commodities", mode: "filter", segments: ["COMMODITIES"], adminRows: ["COMMODITIES"] },
   { key: "forex", label: "Forex", mode: "filter", segments: ["FOREX"], adminRows: ["FOREX"] },
-  { key: "crypto", label: "Crypto", mode: "filter", segments: ["CRYPTO_PERPETUAL", "CRYPTO_SPOT", "CRYPTO_FUTURE"], adminRows: ["CRYPTO"] },
+  { key: "crypto", label: "Crypto", mode: "filter", segments: ["CRYPTO_SPOT"], adminRows: ["CRYPTO"] },
+  { key: "crypto_opt", label: "Crypto Options", mode: "filter", segments: ["CRYPTO_OPTION_BUY", "CRYPTO_OPTION_SELL"], adminRows: ["CRYPTO_OPT"] },
 ];
 
 /**
@@ -80,14 +67,7 @@ const BUCKETS: Bucket[] = [
  */
 export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
   const qc = useQueryClient();
-  // Always expanded — the collapse chevron was removed (operator: "iski
-  // zarurat nahi"). Kept as a const so the existing `expanded &&` query
-  // gates below stay valid without a wider refactor.
-  const [expanded] = useState(true);
-  // Top-level view toggle: the existing watchlist (default, unchanged) and
-  // the new Groww-style Options chain. The watchlist logic/queries below are
-  // untouched — the Options branch is purely additive.
-  const [view, setView] = useState<"watchlist" | "options">("watchlist");
+  const [expanded, setExpanded] = useState(true);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [bucketKey, setBucketKey] = useState<string>("favorites");
@@ -206,10 +186,7 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
   const { data: wlQuotes } = useQuery({
     queryKey: ["watchlist-quotes", activeWl?.id],
     queryFn: () => MarketwatchAPI.quotes(activeWl!.id),
-    // Stays enabled WHILE searching favorites too — the Favorites search is a
-    // local filter over these rows (see `list` below), so we keep the live
-    // quotes flowing instead of pausing them the moment the user types.
-    enabled: !!activeWl?.id && bucketKey === "favorites" && expanded,
+    enabled: !!activeWl?.id && bucketKey === "favorites" && search.trim().length === 0 && expanded,
     refetchInterval: 3000,
     staleTime: 2000,
     refetchOnWindowFocus: false,
@@ -266,15 +243,7 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
     queryKey: ["mobile-instruments-search", debouncedSearch, searchScopeSegments],
     queryFn: () =>
       InstrumentAPI.search(debouncedSearch, undefined, searchScopeSegments, 30),
-    // Favorites NEVER hits the global instrument search — searching the
-    // Favorites tab filters the starred rows locally (user: "fav me sirf fav
-    // vale search honge, all search nahi"). Only the segment/browse buckets
-    // run this query, and managed Indian segments stay scoped to their own
-    // segment via `searchScopeSegments`.
-    enabled:
-      debouncedSearch.trim().length > 0 &&
-      expanded &&
-      bucket?.mode !== "watchlist",
+    enabled: debouncedSearch.trim().length > 0 && expanded,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
     placeholderData: (prev) => prev,
@@ -311,18 +280,17 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
   const LIVE_TOKEN_CAP = 30;
   const tokensKey = useMemo<string>(() => {
     const all = (() => {
-      if (debouncedSearch.trim().length > 0 && bucket?.mode !== "watchlist") {
+      if (debouncedSearch.trim().length > 0) {
         return (searchHits ?? []).map((s: any) => s.token);
       }
       if (bucket?.mode === "watchlist") {
-        // Subscribe the FAVOURITE tokens to WS + batch quotes too. Without
-        // this the Favorites tab got no live overlay — `quoteByToken` was
-        // empty, so the enrich() below fell back to the /marketwatch/quotes
-        // REST ltp, which is 0 for Infoway (crypto/forex/metals). Result:
-        // those rows froze at 0.00 while every other bucket ticked live.
-        // instrument_token == symbol for Infoway, so they stream fine.
-        return (activeWl?.items ?? []).map((it: any) =>
-          String(it.instrument_token ?? it.token),
+        // Stream the Favorites tokens over WS too — the enrich() below already
+        // overlays live ticks onto the /marketwatch/quotes snapshot, but this
+        // used to return [] so useMarketStream never subscribed and the
+        // Favorites prices only moved on the 3 s REST refetch (felt frozen /
+        // laggy vs the desktop watchlist, which always streams).
+        return (wlQuotes ?? []).map((q: any) =>
+          String(q.instrument_token ?? q.token ?? ""),
         );
       }
       if (managedSegmentName) {
@@ -330,8 +298,8 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
       }
       return (bucketHits ?? []).map((s: any) => s.token);
     })();
-    return all.slice(0, LIVE_TOKEN_CAP).join(",");
-  }, [debouncedSearch, searchHits, bucketHits, bucket?.mode, managedSegmentName, segmentItems, activeWl?.items]);
+    return all.filter(Boolean).slice(0, LIVE_TOKEN_CAP).join(",");
+  }, [debouncedSearch, searchHits, bucketHits, bucket?.mode, managedSegmentName, segmentItems, wlQuotes]);
   const visibleTokens = useMemo<string[]>(
     () => (tokensKey ? tokensKey.split(",") : []),
     [tokensKey],
@@ -345,12 +313,9 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
     refetchInterval: false,
     refetchOnWindowFocus: false,
   });
-  // Skip WS subscription entirely when the bar is collapsed OR when the
-  // Options tab is showing (that view runs its own per-strike stream) — the
-  // user can't see the watchlist rows, no point burning sockets / handlers.
-  const streamQuotes = useMarketStream(
-    expanded && view === "watchlist" ? visibleTokens : [],
-  );
+  // Skip WS subscription entirely when the bar is collapsed — the user
+  // can't see anything, no point burning sockets / handlers.
+  const streamQuotes = useMarketStream(expanded ? visibleTokens : []);
   const quoteByToken = useMemo(() => {
     const map = new Map<string, any>();
     for (const q of liveQuotes ?? []) map.set(String(q.token), q);
@@ -368,38 +333,28 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
         segment: s.segment ?? s.instrument_type,
         bid: live?.bid ?? null,
         ask: live?.ask ?? null,
-        ltp: live?.ltp ?? null,
         change_pct: live?.change_pct ?? null,
       };
     };
-    // ── Favorites (watchlist) ──────────────────────────────────────────
-    // ALWAYS renders the user's starred rows. A search term filters them
-    // LOCALLY by symbol — it must NEVER fall through to the global
-    // all-instruments search (user complaint: typing in Favorites was
-    // searching every instrument instead of just the favorites). Live ticks
-    // are overlaid onto the REST snapshot so prices stay fresh.
+    if (debouncedSearch.trim().length > 0) return (searchHits ?? []).map(enrich);
     if (bucket?.mode === "watchlist") {
-      const rows = (wlQuotes ?? []).map((q: any) => {
+      // Watchlist rows used to be returned raw, which meant the Favorites
+      // tab never received WS overlay updates — only the REST snapshot
+      // from /marketwatch/quotes refreshed prices. Result: prices in
+      // Favorites felt frozen + flickered on each refetch.
+      // Now we also enrich watchlist rows so live ticks overlay onto
+      // the snapshot, matching every other bucket.
+      return (wlQuotes ?? []).map((q: any) => {
         const tok = String(q.instrument_token ?? q.token ?? "");
         const live = quoteByToken.get(tok);
         return {
           ...q,
           bid: live?.bid ?? q.bid ?? null,
           ask: live?.ask ?? q.ask ?? null,
-          ltp: live?.ltp ?? q.ltp ?? null,
           change_pct: live?.change_pct ?? q.change_pct ?? null,
         };
       });
-      const needle = debouncedSearch.trim().toLowerCase();
-      if (!needle) return rows;
-      return rows.filter((r: any) =>
-        String(r.symbol ?? "").toLowerCase().includes(needle),
-      );
     }
-    // ── Segment / browse buckets ────────────────────────────────────────
-    // A search term shows segment-scoped search hits (managed Indian
-    // segments stay scoped via `searchScopeSegments`); empty search browses.
-    if (debouncedSearch.trim().length > 0) return (searchHits ?? []).map(enrich);
     if (managedSegmentName) {
       return (segmentItems ?? []).map((it: any) =>
         enrich({
@@ -415,37 +370,26 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
   }, [debouncedSearch, searchHits, wlQuotes, bucketHits, bucket, quoteByToken, managedSegmentName, segmentItems]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background md:rounded-lg md:border md:border-border md:bg-card">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
       {/* Header — mirrors the desktop InstrumentsPanel ("INSTRUMENTS"
           uppercase label + close on the right). The collapse chevron is
           kept so the user can shrink the strip on phones that have less
           vertical room. */}
-      <div className="flex shrink-0 items-center gap-4 border-b border-border px-3 py-2">
-        {(["watchlist", "options"] as const).map((v) => (
-          <button
-            key={v}
-            type="button"
-            onClick={() => setView(v)}
-            className="relative py-0.5"
-          >
-            <span
-              className={cn(
-                "text-sm font-bold transition-colors",
-                view === v ? "text-foreground" : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {v === "watchlist" ? "Watchlist" : "Options"}
-            </span>
-            {view === v && (
-              <span className="absolute -bottom-[9px] left-0 right-0 h-0.5 rounded-full bg-foreground" />
-            )}
-          </button>
-        ))}
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Instruments
+        </span>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="ml-auto grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+          aria-label={expanded ? "Collapse instruments" : "Expand instruments"}
+        >
+          {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+        </button>
       </div>
 
-      {expanded && view === "options" && <MobileOptionChain onSelect={onSelect} />}
-
-      {expanded && view === "watchlist" && (
+      {expanded && (
         <>
           <div className="shrink-0 space-y-2 border-b border-border px-3 py-2">
             <div className="relative">
@@ -501,10 +445,10 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
                     className={cn(
                       // uppercase keeps Infoway chips ("Forex", "Stocks", …)
                       // visually consistent with Zerodha chips ("NSE EQ" etc).
-                      "h-8 shrink-0 snap-center whitespace-nowrap rounded-full border px-3.5 text-[12px] font-bold uppercase tracking-wide transition-colors",
+                      "h-7 shrink-0 snap-center whitespace-nowrap rounded-full border px-3 text-[11px] font-medium uppercase tracking-wide transition-colors",
                       bucketKey === b.key
                         ? "border-primary bg-primary/15 text-primary"
-                        : "border-border text-foreground/70 hover:bg-muted/40 hover:text-foreground",
+                        : "border-border text-muted-foreground hover:bg-muted/40 hover:text-foreground",
                     )}
                   >
                     {b.label}
@@ -514,10 +458,7 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
             </div>
           </div>
 
-          <div
-            className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain scrollbar-thin"
-            style={{ WebkitOverflowScrolling: "touch" }}
-          >
+          <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
             {list.length === 0 && (
               <div className="grid h-24 place-items-center px-4 text-center text-xs text-muted-foreground">
                 {search.trim()
@@ -534,7 +475,6 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
               const liveOverlay = quoteByToken.get(token);
               const bid = q.bid ?? liveOverlay?.bid ?? null;
               const ask = q.ask ?? liveOverlay?.ask ?? null;
-              const ltp = q.ltp ?? liveOverlay?.ltp ?? null;
               const changePct = q.change_pct ?? liveOverlay?.change_pct ?? null;
               const inSearchMode = debouncedSearch.trim().length > 0;
               const alreadyAdded = managedSegmentName ? addedTokenSet.has(token) : false;
@@ -610,10 +550,22 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
                     </div>
                   );
                 }
+              } else if (bucket?.mode === "watchlist" && starred) {
+                rightAction = (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleFavorite(token);
+                    }}
+                    aria-label={`Remove ${q.symbol} from favorites`}
+                    title="Remove from favorites"
+                    className="grid size-7 shrink-0 place-items-center rounded text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+                  >
+                    <X className="size-4" />
+                  </button>
+                );
               } else {
-                // Favorites + any non-managed bucket: a single star toggle
-                // (filled gold when favourited). Tapping a filled star removes
-                // it from favourites — same as the APK. (No separate X.)
                 rightAction = (
                   <button
                     type="button"
@@ -643,19 +595,9 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
                   segment={q.segment}
                   bid={bid}
                   ask={ask}
-                  ltp={ltp}
                   changePct={changePct}
                   isActive={isActive}
-                  onSelect={() =>
-                    onSelect(token, {
-                      ltp,
-                      bid,
-                      ask,
-                      symbol: q.symbol,
-                      exchange: q.exchange,
-                      segment: q.segment ?? q.instrument_type,
-                    })
-                  }
+                  onSelect={() => onSelect(token)}
                   rightAction={rightAction}
                 />
               );
@@ -684,7 +626,6 @@ function InstrumentRow({
   segment,
   bid,
   ask,
-  ltp,
   changePct,
   isActive,
   onSelect,
@@ -696,30 +637,12 @@ function InstrumentRow({
   segment?: string;
   bid: number | null;
   ask: number | null;
-  ltp: number | null;
   changePct: number | null;
   isActive: boolean;
   onSelect: () => void;
   rightAction: React.ReactNode;
 }) {
   const stickyChange = useStickyNumber(changePct);
-  // Two-price watchlist row (operator-approved layout): change% sits under
-  // the symbol on the left, and the SELL (bid, red) + BUY (ask, green)
-  // prices stack on the right so the trader sees both sides of the spread
-  // at a glance — the same shape as the broker app. Falls back to LTP for
-  // either side when only the last-traded price is available (e.g. a feed
-  // that publishes LTP but no book), so the row never collapses to "—"
-  // when there is a live price.
-  const rawBid = bid ?? ltp ?? null;
-  const rawAsk = ask ?? ltp ?? null;
-  const stickyBid = useStickyNumber(rawBid);
-  const stickyAsk = useStickyNumber(rawAsk);
-  const changeColor =
-    stickyChange == null || stickyChange === 0
-      ? "text-muted-foreground"
-      : stickyChange > 0
-        ? "text-emerald-500"
-        : "text-red-500";
   return (
     <div
       role="button"
@@ -739,41 +662,110 @@ function InstrumentRow({
         isActive ? "bg-primary/10" : "hover:bg-muted/30",
       )}
     >
-      {/* Bold symbol + change% (left, stacked) */}
+      {/* Symbol + change% + exchange (left, stacked) */}
       <div className="flex min-w-0 flex-col items-start leading-tight">
         <span
           className={cn(
-            "truncate text-[15px] font-bold tracking-tight",
+            "truncate font-semibold text-sm",
             isActive && "text-primary",
           )}
         >
           {symbol}
         </span>
-        <span
-          className={cn(
-            "mt-0.5 font-tabular tabular-nums text-[11px] font-semibold",
-            changeColor,
+        <div className="mt-0.5 flex items-baseline gap-1.5 text-[10px]">
+          {stickyChange != null ? (
+            <span
+              className={cn(
+                "font-medium tabular-nums",
+                stickyChange > 0
+                  ? "text-emerald-500"
+                  : stickyChange < 0
+                    ? "text-red-500"
+                    : "text-muted-foreground",
+              )}
+            >
+              {stickyChange >= 0 ? "+" : ""}
+              {stickyChange.toFixed(2)}%
+            </span>
+          ) : (
+            <span className="text-muted-foreground">—</span>
           )}
-        >
-          {stickyChange != null
-            ? `${stickyChange >= 0 ? "+" : ""}${stickyChange.toFixed(2)}%`
-            : "—"}
-        </span>
+          {exchange && (
+            <span className="truncate uppercase tracking-wider text-muted-foreground">
+              {exchange}
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* Bid (sell, red) on top + Ask (buy, green) below — both prices
-          shown so the trader reads the full spread at a glance. */}
-      <div className="flex flex-col items-end leading-tight">
-        <span className="whitespace-nowrap font-tabular tabular-nums text-sm font-bold text-red-500">
-          {stickyBid != null ? formatPrice(stickyBid, segment, exchange) : "—"}
-        </span>
-        <span className="mt-0.5 whitespace-nowrap font-tabular tabular-nums text-sm font-bold text-emerald-500">
-          {stickyAsk != null ? formatPrice(stickyAsk, segment, exchange) : "—"}
-        </span>
+      {/* Bid (red) over Ask (green) — stacked vertically */}
+      <div className="flex flex-col items-end gap-0.5 leading-tight">
+        <FlashCell
+          value={bid}
+          segment={segment}
+          exchange={exchange}
+          side="bid"
+        />
+        <FlashCell
+          value={ask}
+          segment={segment}
+          exchange={exchange}
+          side="ask"
+        />
       </div>
 
       {rightAction}
     </div>
+  );
+}
+
+/** Tick-flash cell — bid red / ask green by default, flashes green/red
+ *  on tick direction. Rendered inside a clickable row so this is a
+ *  `<span>`, not a button.
+ *
+ *  Sticky display: when the incoming `value` momentarily goes null /
+ *  zero (REST refetch in-flight, WS unsubscribed during scroll, feed
+ *  blip), we keep showing the last non-zero number we ever saw for
+ *  this cell. That eliminates the "price gayab → wapas aa gaya"
+ *  flicker the user reported in mobile market view — once a row has
+ *  shown a price, the cell never falls back to "—" for the lifetime
+ *  of the React node. Flash detection still tracks the RAW value so
+ *  a zero-tick doesn't fake a flash. */
+function FlashCell({
+  value,
+  segment,
+  exchange,
+  side,
+}: {
+  value: number | null;
+  segment?: string;
+  exchange?: string;
+  side: "bid" | "ask";
+}) {
+  const dir = usePriceFlash(value);
+  const lastGoodRef = useRef<number | null>(null);
+  if (value != null && Number.isFinite(value) && value !== 0) {
+    lastGoodRef.current = value;
+  }
+  const display = value != null && Number.isFinite(value) && value !== 0
+    ? value
+    : lastGoodRef.current;
+  const baseColor = side === "bid" ? "text-red-500" : "text-emerald-500";
+  const flashColor =
+    dir === "up"
+      ? "text-emerald-500"
+      : dir === "down"
+        ? "text-red-500"
+        : baseColor;
+  return (
+    <span
+      className={cn(
+        "whitespace-nowrap font-tabular tabular-nums text-[11px] font-medium transition-colors",
+        flashColor,
+      )}
+    >
+      {display != null ? formatPrice(display, segment, exchange) : "—"}
+    </span>
   );
 }
 

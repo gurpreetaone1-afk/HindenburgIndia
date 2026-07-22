@@ -33,7 +33,6 @@ export interface ApiResponse<T> {
   success: boolean;
   data: T | null;
   message?: string | null;
-  total?: number | null;
 }
 
 export interface ApiErrorResponse {

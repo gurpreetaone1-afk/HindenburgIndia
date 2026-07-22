@@ -62,10 +62,10 @@ const INFRA = [
 ];
 
 const REG_POINTS = [
-  "SEBI-aligned operating model · stock-broker membership in progress for NSE / BSE / MCX",
-  "Funds segregated in a SEBI-recognised settlement bank account",
+  "Transparent operating model with full audit trails on every order",
+  "Client funds segregated in a dedicated settlement bank account",
   "Statutory contract notes generated nightly, signed and emailed within T+1",
-  "Grievance redressal published — escalation path to SEBI SCORES in the footer",
+  "Grievance redressal policy published with a clear escalation path",
   "AML / KYC framework aligned with PMLA + RBI Master Direction on KYC",
   "DPDP Act compliance — Indian data principal rights honoured in the dashboard",
 ];
@@ -82,9 +82,9 @@ export default function SecurityPage() {
   return (
     <>
       <section className="relative overflow-hidden border-b border-border">
-        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-b from-primary/8 via-background to-background" />
+        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-b from-primary/10 via-background to-background" />
         <div className="mx-auto max-w-5xl px-4 py-20 text-center sm:px-6 sm:py-24 lg:px-8">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-xs font-semibold text-primary">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
             <ShieldCheck className="size-3" /> Security &amp; compliance
           </span>
           <h1 className="mt-5 text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
@@ -93,9 +93,9 @@ export default function SecurityPage() {
             <span className="mp-gradient-text">We just hold the door.</span>
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-muted-foreground sm:text-lg">
-            We operate under SEBI's framework for stock brokers and India's
-            DPDP Act for data. The systems below are how we keep both
-            promises — your capital and your information.
+            We follow India's DPDP Act for data and strong security
+            practices across our stack. The systems below are how we keep
+            both promises — your capital and your information.
           </p>
         </div>
       </section>
@@ -105,7 +105,7 @@ export default function SecurityPage() {
           {PILLARS.map((p) => {
             const Icon = p.icon;
             return (
-              <div key={p.title} className="rounded-2xl border border-border/40 bg-card/60 p-7">
+              <div key={p.title} className="rounded-2xl border border-border bg-card p-7">
                 <div className="grid size-12 place-items-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
                   <Icon className="size-6" />
                 </div>
@@ -117,7 +117,7 @@ export default function SecurityPage() {
         </div>
       </section>
 
-      <section className="border-y border-border/40 bg-muted/20">
+      <section className="border-y border-border bg-muted/20">
         <div className="mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-24 lg:px-8">
           <div className="max-w-2xl">
             <span className="text-xs font-semibold uppercase tracking-wider text-primary">Account controls</span>
@@ -131,7 +131,7 @@ export default function SecurityPage() {
             {CONTROLS.map((c) => {
               const Icon = c.icon;
               return (
-                <div key={c.title} className="rounded-2xl border border-border/40 bg-card/60 p-6">
+                <div key={c.title} className="rounded-2xl border border-border bg-card p-6">
                   <div className="grid size-10 place-items-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
                     <Icon className="size-5" />
                   </div>
@@ -163,7 +163,7 @@ export default function SecurityPage() {
             {INFRA.map((c) => {
               const Icon = c.icon;
               return (
-                <div key={c.title} className="rounded-2xl border border-border/40 bg-card/60 p-5">
+                <div key={c.title} className="rounded-2xl border border-border bg-card p-5">
                   <div className="flex items-start gap-3">
                     <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
                       <Icon className="size-5" />
@@ -180,7 +180,7 @@ export default function SecurityPage() {
         </div>
       </section>
 
-      <section className="border-y border-border/40 bg-card/40">
+      <section className="border-y border-border bg-card/40">
         <div className="mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-24 lg:px-8">
           <div className="grid items-start gap-12 lg:grid-cols-2">
             <div>
@@ -210,13 +210,13 @@ export default function SecurityPage() {
               anyone else. We pay for it, we credit you, and we never sue
               researchers acting in good faith.
             </p>
-            <Link href="mailto:security@hindenburgindia.live" className="mt-5 inline-flex h-11 items-center gap-2 rounded-full bg-primary px-6 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 hover:bg-primary/90">
+            <Link href="mailto:security@hindenburgindia.live" className="mt-5 inline-flex h-11 items-center gap-2 rounded-md bg-primary px-6 text-sm font-semibold text-primary-foreground hover:bg-primary/90">
               security@hindenburgindia.live <ArrowRight className="size-4" />
             </Link>
           </div>
           <ol className="space-y-3">
             {RESPONSIBLE_DISCLOSURE.map((r, i) => (
-              <li key={r} className="flex items-start gap-3 rounded-xl border border-border/40 bg-card/60 p-4">
+              <li key={r} className="flex items-start gap-3 rounded-xl border border-border bg-card p-4">
                 <span className="grid size-7 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-bold text-primary">
                   {i + 1}
                 </span>

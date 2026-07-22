@@ -1,33 +1,27 @@
-import { NextRequest } from "next/server";
+/**
+ * Dynamic PWA manifest.
+ *
+ * Resolution order:
+ *   1. `?u=<user_code>` → that admin's branding (referral installs on the
+ *      platform domain, before the broker has a custom domain).
+ *   2. Otherwise the requesting **Host** header → tenant branding by domain.
+ *      This is the load-bearing path for custom-domain white-labels
+ *      (e.g. tarundewangan.com): the bare `/manifest.webmanifest` the SSR
+ *      `<link rel="manifest">` points to — AND the URL Chrome re-fetches on
+ *      its periodic "did the installed app change?" check — now returns the
+ *      broker's OWN name/icon instead of the platform default. Without this
+ *      the host manifest fell back to "Hindenburg India", so Chrome popped the
+ *      "Review name and icon updates → Hindenburg India" warning on a Tarun-Trading
+ *      install.
+ *   3. Neither matches → platform default.
+ *
+ * Next 14 routes a single `/manifest.webmanifest` URL; a Route Handler is the
+ * only way to read the query string + Host + tenant data at request time.
+ */
 
-// Dynamic Web App Manifest for the user-facing frontend.
-//
-// PWA installs commit the manifest's name + icons into the OS launcher at
-// install time. To get a per-tenant install icon (so end users who reach a
-// broker's branded site install THAT broker's PWA, not the platform
-// default) we resolve the tenant two ways:
-//
-//   1. `?u=<USER_CODE>` — set by BrandingProvider once branding resolves
-//      client-side (covers `?ref=` platform links).
-//   2. The request HOST — for a tenant custom domain (e.g. stockcafe.live)
-//      we resolve the admin by domain. THIS is the install-time path that
-//      matters: Chrome reads the param-less `/manifest.webmanifest` BEFORE
-//      our JS can swap in `?u=`, so without host resolution the install
-//      captured the PLATFORM identity (wrong icon/name) and a not-yet-
-//      branded manifest sometimes never became "installable" — so the
-//      native prompt never fired and the manual "Add to Home screen" steps
-//      showed instead. Resolving by host makes the FIRST read already the
-//      tenant's branded, installable PWA.
-//
-// Falls back to the platform default when neither resolves — byte-identical
-// behaviour for non-branded visitors.
+import { NextResponse } from "next/server";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-
-const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
-
-const PLATFORM_DEFAULT = {
+const PLATFORM_MANIFEST = {
   name: "Hindenburg India",
   short_name: "Hindenburg",
   description:
@@ -35,135 +29,98 @@ const PLATFORM_DEFAULT = {
   start_url: "/dashboard",
   scope: "/",
   display: "standalone",
-  orientation: "portrait" as const,
+  orientation: "portrait",
   background_color: "#0a0a0a",
   theme_color: "#0a0a0a",
   categories: ["finance", "business"],
   icons: [
-    { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
-    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
-    { src: "/icons/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+    // Cache-buster `?v=2` forces Android Chrome and any installed PWA to
+    // re-fetch the icons instead of serving the placeholder emerald
+    // sprout from before the brand-mark switch. Bump again whenever the
+    // icon-{size}.png files change in this repo.
+    { src: "/icons/icon-192.png?v=2", sizes: "192x192", type: "image/png", purpose: "any" },
+    { src: "/icons/icon-512.png?v=2", sizes: "512x512", type: "image/png", purpose: "any" },
+    { src: "/icons/icon-maskable-512.png?v=2", sizes: "512x512", type: "image/png", purpose: "maskable" },
   ],
 };
 
-type ResolvedBrand = {
-  user_code: string;
-  brand_name: string | null;
-  logo_url: string | null;
-};
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-async function fetchBrandingByCode(userCode: string): Promise<ResolvedBrand | null> {
-  if (!API_BASE || !userCode) return null;
+// Hosts that are the platform itself (never a white-label) — skip the
+// per-domain branding lookup so the default manifest is served directly.
+const PLATFORM_HOSTS = new Set([
+  "localhost",
+  "127.0.0.1",
+  "hindenburgindia.live",
+  "www.hindenburgindia.live",
+]);
+
+export const dynamic = "force-dynamic"; // never cache — query string + host drive content
+export const revalidate = 0;
+
+/** Overlay a resolved brand onto the platform manifest. */
+function brandedManifest(brand: any): typeof PLATFORM_MANIFEST {
+  const name = String(brand?.brand_name || "").trim();
+  const logo = String(brand?.logo_url || "").trim();
+  const out = { ...PLATFORM_MANIFEST };
+  if (name) {
+    out.name = name;
+    out.short_name = name.length > 12 ? name.slice(0, 12) : name;
+  }
+  if (logo) {
+    const absoluteLogo = logo.startsWith("http") ? logo : `${API_URL}${logo}`;
+    // Install prompt picks the largest icon — the tenant logo isn't
+    // necessarily sized for 192/512, but the browser scales it; lesser evil
+    // vs a branded install carrying the platform icon.
+    out.icons = [
+      { src: absoluteLogo, sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: absoluteLogo, sizes: "512x512", type: "image/png", purpose: "any" },
+    ];
+  }
+  return out;
+}
+
+async function fetchBrand(path: string): Promise<any | null> {
   try {
-    const res = await fetch(
-      `${API_BASE}/api/v1/branding/by-code/${encodeURIComponent(userCode)}`,
-      { cache: "no-store", headers: { Accept: "application/json" } },
-    );
-    if (!res.ok) return null;
-    const data = (await res.json())?.data ?? null;
-    if (!data) return null;
-    return {
-      user_code: String(data.user_code ?? userCode),
-      brand_name: data.brand_name ?? null,
-      logo_url: data.logo_url ?? null,
-    };
+    const r = await fetch(`${API_URL}${path}`, { cache: "no-store" });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const brand = j?.data ?? null;
+    // Only treat as a real tenant when something brandable came back.
+    if (!brand || (!brand.brand_name && !brand.logo_url)) return null;
+    return brand;
   } catch {
     return null;
   }
 }
 
-async function fetchBrandingByDomain(domain: string): Promise<ResolvedBrand | null> {
-  if (!API_BASE || !domain) return null;
-  try {
-    const res = await fetch(
-      `${API_BASE}/api/v1/branding/by-domain?domain=${encodeURIComponent(domain)}`,
-      { cache: "no-store", headers: { Accept: "application/json" } },
-    );
-    // 404 on the platform host / an unknown domain — fall back to default.
-    if (!res.ok) return null;
-    const data = (await res.json())?.data ?? null;
-    if (!data?.user_code) return null;
-    return {
-      user_code: String(data.user_code),
-      brand_name: data.brand_name ?? null,
-      logo_url: data.logo_url ?? null,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function buildBrandedManifest(b: ResolvedBrand): Record<string, unknown> {
-  const code = b.user_code.trim().toUpperCase();
-  const name = b.brand_name?.trim() || PLATFORM_DEFAULT.name;
-  const shortName = (b.brand_name?.trim() || PLATFORM_DEFAULT.short_name).slice(0, 12);
-  const logo = b.logo_url ? `${API_BASE}${b.logo_url}` : null;
-  // Same-origin proxy so Chrome Android accepts the launcher icon — it
-  // ignores cross-origin icons on api.hindenburgindia.live and falls back to the
-  // platform leaf. `id` keeps each tenant's PWA distinct so installing
-  // admin-A doesn't overwrite admin-B on the same origin.
-  const proxyIcon = `/api/brand-icon?u=${encodeURIComponent(code)}`;
-  const ext = ((logo ?? "").split(".").pop() || "").toLowerCase();
-  const mimeType =
-    ext === "jpg" || ext === "jpeg" ? "image/jpeg"
-    : ext === "svg" ? "image/svg+xml"
-    : ext === "webp" ? "image/webp"
-    : "image/png";
-  const brandedIcons = [
-    { src: proxyIcon, sizes: "512x512", type: mimeType, purpose: "any" },
-    { src: proxyIcon, sizes: "192x192", type: mimeType, purpose: "any" },
-    { src: proxyIcon, sizes: "512x512", type: mimeType, purpose: "maskable" },
-  ];
-  return {
-    ...PLATFORM_DEFAULT,
-    // `id` keeps each tenant's PWA distinct on the same origin — it's an
-    // internal identifier, not a navigation URL, and the code is resolved
-    // per-request from the host (nothing hardcoded).
-    id: `/?brand=${encodeURIComponent(code)}`,
-    // Open the tenant's LOGIN page, NOT the marketing homepage (`/`). On a
-    // custom domain the branding is resolved by host, so the URL needs no
-    // ?ref= code — `/login` is generic and works for EVERY admin's domain.
-    // Authed users are auto-redirected to /dashboard by the login page.
-    start_url: "/login",
-    name,
-    short_name: shortName,
-    description: `${name} — trade Indian markets`,
-    icons: logo ? brandedIcons : PLATFORM_DEFAULT.icons,
-  };
-}
-
-export async function GET(req: NextRequest) {
-  const userCode = (req.nextUrl.searchParams.get("u") || "").trim().toUpperCase();
-  let resolved: ResolvedBrand | null = null;
-
-  if (userCode) {
-    // Explicit override (BrandingProvider sets ?u=<CODE> after it resolves).
-    resolved = await fetchBrandingByCode(userCode);
-  } else {
-    // Install-time path: resolve the tenant from the request host so the
-    // very first param-less read Chrome makes is already branded.
-    const host = (
-      req.headers.get("x-forwarded-host") ||
-      req.headers.get("host") ||
-      req.nextUrl.host ||
-      ""
-    )
-      .split(",")[0]
-      .split(":")[0]
-      .trim()
-      .toLowerCase();
-    if (host) resolved = await fetchBrandingByDomain(host);
-  }
-
-  const manifest: Record<string, unknown> =
-    resolved && (resolved.brand_name || resolved.logo_url)
-      ? buildBrandedManifest(resolved)
-      : { ...PLATFORM_DEFAULT };
-
-  return new Response(JSON.stringify(manifest), {
-    headers: {
-      "Content-Type": "application/manifest+json; charset=utf-8",
-      "Cache-Control": "private, no-store, max-age=0",
-    },
+function json(manifest: object, maxAge: number) {
+  return NextResponse.json(manifest, {
+    headers: { "Cache-Control": `public, max-age=${maxAge}` },
   });
+}
+
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const userCode = url.searchParams.get("u")?.trim();
+
+  // 1) Explicit ?u=<code> (referral install on the platform domain).
+  if (userCode) {
+    const brand = await fetchBrand(`/api/v1/branding/by-code/${encodeURIComponent(userCode)}`);
+    return json(brand ? brandedManifest(brand) : PLATFORM_MANIFEST, brand ? 120 : 60);
+  }
+
+  // 2) Host-based white-label — the custom-domain path. Resolve the tenant by
+  //    the requesting domain so the bare manifest URL (and Chrome's update
+  //    check) returns the broker's brand, not the platform default.
+  const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
+  if (host && !PLATFORM_HOSTS.has(host)) {
+    const brand = await fetchBrand(
+      `/api/v1/branding/by-domain?domain=${encodeURIComponent(host)}`,
+    );
+    if (brand) return json(brandedManifest(brand), 120);
+  }
+
+  // 3) Platform default.
+  return json(PLATFORM_MANIFEST, 300);
 }

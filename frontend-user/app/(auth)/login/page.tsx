@@ -7,14 +7,15 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Eye, EyeOff, Loader2, Mail, Lock, ShieldCheck, Smartphone, Zap } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, Loader2 } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
 import { ApiError, AuthAPI, ProfileAPI, setTokens } from "@/lib/api";
+import { useBranding } from "@/lib/branding-context";
+import { collectAndSubmitFingerprint } from "@/lib/useFingerprint";
 import { STORAGE_KEYS } from "@/lib/constants";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { InstallPwaButton } from "@/components/common/InstallPwaButton";
+import { authInputClass, authPrimaryButtonClass } from "@/components/auth/parts";
+import { cn } from "@/lib/utils";
 
 const schema = z.object({
   identifier: z.string().min(3, "Enter your email or mobile"),
@@ -34,12 +35,10 @@ export default function LoginPage() {
 function LoginSplash({ subtitle }: { subtitle: string }) {
   return (
     <div className="flex min-h-[280px] flex-col items-center justify-center gap-3 text-center">
-      <div className="grid size-12 place-items-center rounded-2xl bg-primary/10">
-        <Loader2 className="size-5 animate-spin text-primary" />
-      </div>
+      <Loader2 className="size-6 animate-spin text-[#2563eb]" />
       <div className="space-y-1">
-        <p className="text-sm font-medium text-foreground">Signing you in…</p>
-        <p className="text-xs text-muted-foreground">{subtitle}</p>
+        <p className="text-sm font-medium text-slate-900">Signing you in…</p>
+        <p className="text-xs text-slate-500">{subtitle}</p>
       </div>
     </div>
   );
@@ -50,12 +49,26 @@ function LoginPageInner() {
   const searchParams = useSearchParams();
   const login = useAuthStore((s) => s.login);
   const setUser = useAuthStore((s) => s.setUser);
+  const setSession = useAuthStore((s) => s.setSession);
   const hydrated = useAuthStore((s) => s.hydrated);
   const currentUser = useAuthStore((s) => s.user);
-  const setSession = useAuthStore((s) => s.setSession);
+  const { branding } = useBranding();
   const [showPwd, setShowPwd] = useState(false);
   const [needs2fa, setNeeds2fa] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
+
+  async function onTryDemo() {
+    setDemoLoading(true);
+    try {
+      const pair = await AuthAPI.demoLogin();
+      setSession(pair);
+      router.push("/dashboard");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Demo is unavailable right now");
+    } finally {
+      setDemoLoading(false);
+    }
+  }
 
   useEffect(() => {
     if (!hydrated || !currentUser) return;
@@ -99,24 +112,14 @@ function LoginPageInner() {
     defaultValues: { identifier: "", password: "", two_fa_code: "" },
   });
 
-  async function handleDemoLogin() {
-    setDemoLoading(true);
-    try {
-      const pair = await AuthAPI.demoLogin();
-      setSession(pair as any);
-      toast.success("Demo account ready — ₹50,00,000 virtual balance");
-      router.push("/dashboard");
-    } catch {
-      toast.error("Could not start demo. Please try again.");
-    } finally {
-      setDemoLoading(false);
-    }
-  }
-
   async function onSubmit(values: FormValues) {
     try {
       await login(values.identifier, values.password, values.two_fa_code || undefined);
       toast.success("Welcome back");
+      // Fire-and-forget device fingerprint registration. Errors here
+      // are intentionally swallowed — fingerprinting is best-effort
+      // for risk analysis, never blocks the login flow.
+      void collectAndSubmitFingerprint();
       router.push("/dashboard");
     } catch (err) {
       if (err instanceof ApiError) {
@@ -135,192 +138,142 @@ function LoginPageInner() {
   if (isImpersonating && !impersonationFailed) {
     return <LoginSplash subtitle="Redirecting to your dashboard" />;
   }
-
   if (!hydrated) {
     return <LoginSplash subtitle="Restoring your session…" />;
   }
-
   if (currentUser) {
     return <LoginSplash subtitle="Redirecting to your dashboard" />;
   }
 
   return (
-    <div className="space-y-4 lg:space-y-6">
-      {/* Compact header on mobile — tab bar in layout already labels
-          the page, so headline + sub-line are sized just enough for
-          context. Desktop keeps the larger treatment since there's
-          no tab bar above. */}
-      <div className="space-y-1">
-        <h2 className="text-lg font-bold tracking-tight lg:text-3xl">
-          Welcome back
-        </h2>
-        <p className="text-xs text-muted-foreground lg:text-sm">
-          Sign in to your trading account to continue.
-        </p>
+    <div className="space-y-6">
+      <div className="space-y-1.5">
+        <p className="text-sm text-slate-500">Login to</p>
+        <h1 className="font-serif text-3xl leading-[1.15] tracking-tight text-slate-900 sm:text-4xl">
+          Where Smart Traders Build Wealth
+        </h1>
       </div>
 
-      {/* Form */}
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3 lg:space-y-5">
-        <div className="space-y-1.5">
-          <Label htmlFor="identifier" className="text-xs font-medium lg:text-sm">
-            Email or Mobile
-          </Label>
-          <div className="relative">
-            <Mail className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              id="identifier"
-              placeholder="you@example.com or 9999900000"
-              autoComplete="username"
-              className="h-10 rounded-lg border-border/60 bg-muted/40 pl-9 text-sm transition-colors focus:border-primary/50 focus:bg-background lg:h-12 lg:rounded-xl lg:pl-10"
-              {...form.register("identifier")}
-            />
-          </div>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+        <div>
+          <input
+            id="identifier"
+            placeholder="Enter email"
+            autoComplete="username"
+            className={authInputClass}
+            {...form.register("identifier")}
+          />
           {form.formState.errors.identifier && (
-            <p className="text-xs text-destructive">{form.formState.errors.identifier.message}</p>
+            <p className="mt-1.5 text-xs font-medium text-rose-600">
+              {form.formState.errors.identifier.message}
+            </p>
           )}
         </div>
 
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="password" className="text-xs font-medium lg:text-sm">
-              Password
-            </Label>
-            <Link href="/forgot-password" className="text-xs font-medium text-primary hover:text-primary/80">
-              Forgot password?
-            </Link>
-          </div>
+        <div>
           <div className="relative">
-            <Lock className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
+            <input
               id="password"
               type={showPwd ? "text" : "password"}
               autoComplete="current-password"
-              className="h-10 rounded-lg border-border/60 bg-muted/40 pl-9 pr-10 text-sm transition-colors focus:border-primary/50 focus:bg-background lg:h-12 lg:rounded-xl lg:pl-10 lg:pr-12"
+              placeholder="Enter password"
+              className={cn(authInputClass, "pr-11")}
               {...form.register("password")}
             />
             <button
               type="button"
-              className="absolute inset-y-0 right-0 flex items-center px-3 text-muted-foreground transition-colors hover:text-foreground"
+              className="absolute inset-y-0 right-0 grid w-11 place-items-center text-slate-400 transition-colors hover:text-slate-700"
               onClick={() => setShowPwd((v) => !v)}
               aria-label={showPwd ? "Hide password" : "Show password"}
+              tabIndex={-1}
             >
               {showPwd ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
             </button>
           </div>
-          {form.formState.errors.password && (
-            <p className="text-xs text-destructive">{form.formState.errors.password.message}</p>
-          )}
+          <div className="mt-1.5 flex items-center justify-between gap-3">
+            <span className="text-xs font-medium text-rose-600">
+              {form.formState.errors.password?.message}
+            </span>
+            <Link
+              href="/forgot-password"
+              className="shrink-0 text-xs font-semibold text-[#2563eb] hover:underline"
+            >
+              Forgot password?
+            </Link>
+          </div>
         </div>
 
         {needs2fa && (
-          <div className="space-y-2">
-            <Label htmlFor="two_fa_code" className="text-sm font-medium">
-              2FA Code
-            </Label>
-            <div className="relative">
-              <ShieldCheck className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                id="two_fa_code"
-                inputMode="numeric"
-                maxLength={6}
-                placeholder="123456"
-                autoComplete="one-time-code"
-                className="h-12 rounded-xl border-border/60 bg-muted/40 pl-10 text-sm transition-colors focus:border-primary/50 focus:bg-background"
-                {...form.register("two_fa_code")}
-              />
-            </div>
-          </div>
+          <input
+            id="two_fa_code"
+            inputMode="numeric"
+            maxLength={6}
+            placeholder="Enter 2FA code"
+            autoComplete="one-time-code"
+            className={authInputClass}
+            {...form.register("two_fa_code")}
+          />
         )}
 
-        <Button
-          type="submit"
-          className="h-11 w-full rounded-lg border-0 bg-gradient-to-r from-[#16A34A] to-[#22C55E] text-sm font-semibold text-white shadow-lg shadow-green-500/30 transition-opacity hover:opacity-95 lg:h-12 lg:rounded-xl"
-          loading={form.formState.isSubmitting}
-        >
-          Sign in
-        </Button>
-      </form>
-
-      {/* Demo account CTA — minimalist green */}
-      <div className="space-y-2">
-        <div className="relative flex items-center">
-          <div className="flex-1 border-t border-border/50" />
-          <span className="mx-3 text-[10px] text-muted-foreground">or try for free</span>
-          <div className="flex-1 border-t border-border/50" />
-        </div>
         <button
-          type="button"
-          onClick={handleDemoLogin}
-          disabled={demoLoading}
-          className="flex w-full items-center gap-2.5 rounded-xl border border-mp-primary/25 bg-mp-primary/5 px-3 py-2.5 text-left transition-colors hover:bg-mp-primary/10 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-70"
+          type="submit"
+          disabled={form.formState.isSubmitting}
+          className={authPrimaryButtonClass}
         >
-          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-mp-primary text-white">
-            {demoLoading ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Zap className="size-4 fill-white" />
-            )}
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-semibold leading-tight text-foreground">
-              {demoLoading ? (
-                "Setting up demo…"
-              ) : (
-                <>
-                  Try Demo — ₹50,00,000
-                  <span className="hidden lg:inline"> virtual</span>
-                </>
-              )}
-            </span>
-            <span className="hidden text-[11px] text-muted-foreground lg:block">
-              No signup · Instant · Risk-free
-            </span>
-          </span>
-          {!demoLoading && (
-            <span className="shrink-0 rounded-full bg-mp-primary/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-mp-primary">
-              Free
-            </span>
+          {form.formState.isSubmitting ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <>
+              Sign in
+              <ArrowRight className="size-4" />
+            </>
           )}
         </button>
-      </div>
+      </form>
 
-      {/* Footer — "no account?" link + minimalist Install App CTA */}
-      <div className="space-y-3">
-        <p className="text-center text-xs text-muted-foreground lg:text-sm">
-          Don&apos;t have an account?{" "}
-          <Link href="/register" className="font-semibold text-mp-primary hover:text-mp-primary/80">
-            Create one
-          </Link>
-        </p>
+      {branding?.public_demo_enabled && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-3 text-xs text-slate-400">
+            <span className="h-px flex-1 bg-slate-200" />
+            or try for free
+            <span className="h-px flex-1 bg-slate-200" />
+          </div>
+          <button
+            type="button"
+            onClick={onTryDemo}
+            disabled={demoLoading}
+            className="flex w-full items-center justify-between rounded-xl border border-slate-200 px-4 py-3 text-left transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:opacity-60"
+          >
+            <span>
+              <span className="block text-sm font-semibold text-slate-900">
+                {demoLoading ? "Opening demo…" : `Try Demo — ₹${Number(branding.public_demo_balance || 0).toLocaleString("en-IN")} virtual`}
+              </span>
+              <span className="block text-xs text-slate-500">
+                No signup · Instant · Risk-free
+              </span>
+            </span>
+            {demoLoading ? (
+              <Loader2 className="size-4 animate-spin text-slate-400" />
+            ) : (
+              <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-white">
+                Free
+              </span>
+            )}
+          </button>
+        </div>
+      )}
 
-        <InstallAppBanner />
+      <p className="text-sm text-slate-500">
+        Don&apos;t have an account?{" "}
+        <Link href="/register" className="font-semibold text-[#2563eb] hover:underline">
+          Sign up
+        </Link>
+      </p>
+
+      <div className="flex">
+        <InstallPwaButton variant="compact" />
       </div>
     </div>
   );
 }
 
-/** Attractive "Install Hindenburg India App" promo banner used on the auth
- *  pages.  Wraps InstallPwaButton's click logic but renders a much
- *  richer surface — gradient ring, app icon tile, headline + sub-line,
- *  arrow chevron — so users actually notice it. */
-function InstallAppBanner() {
-  return (
-    <div className="flex items-center gap-2.5 rounded-xl border border-border/60 bg-muted/30 px-3 py-2.5">
-      <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-mp-primary/10 text-mp-primary">
-        <Smartphone className="size-4" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-semibold leading-tight text-foreground">
-          Get the app
-        </p>
-        <p className="hidden text-[11px] text-muted-foreground lg:block">
-          Faster orders, one-tap login.
-        </p>
-      </div>
-      <InstallPwaButton
-        variant="compact"
-        className="shrink-0 !border-mp-primary/30 !bg-mp-primary/10 !text-mp-primary hover:!bg-mp-primary/20"
-      />
-    </div>
-  );
-}

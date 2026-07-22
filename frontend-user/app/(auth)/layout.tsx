@@ -1,182 +1,85 @@
 "use client";
 
-import { Suspense, useState } from "react";
-import { usePathname, useSearchParams } from "next/navigation";
-import Link from "next/link";
-import { Sprout } from "lucide-react";
-import { useBranding } from "@/lib/branding-context";
-import { API_URL } from "@/lib/constants";
-import { cn } from "@/lib/utils";
-import { SmokeyBackground } from "@/components/ui/smokey-background";
+import { Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ArrowLeft } from "lucide-react";
+import { BrandLogo } from "@/components/layout/BrandLogo";
 
-/**
- * Tenant brand tile — ALWAYS renders the Sprout glyph on the brand
- * gradient so something is visible no matter what.  When the admin
- * has uploaded a logo AND the image successfully loads, it's
- * rendered on top of the Sprout (covers it).  If the image fails
- * to load or hasn't been configured, the user still sees the
- * original Sprout-on-gradient look from before the logo feature
- * existed.  This guarantees zero blank tiles in production.
- */
-function BrandTile({
-  logoSrc,
-  alt,
-  size = "lg",
-}: {
-  logoSrc: string | null;
-  alt: string;
-  size?: "sm" | "lg";
-}) {
-  const [imgLoaded, setImgLoaded] = useState(false);
-  const sizeCls = size === "lg" ? "size-16" : "size-10";
-  const iconCls = size === "lg" ? "size-8" : "size-5";
-  return (
-    <div
-      className={cn(
-        "relative grid place-items-center overflow-hidden rounded-2xl bg-gradient-to-br from-primary to-primary/80 text-primary-foreground shadow-lg shadow-primary/30 ring-2 ring-primary/20",
-        sizeCls,
-      )}
-    >
-      <Sprout className={iconCls} strokeWidth={2.5} />
-      {logoSrc && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={logoSrc}
-          alt={alt}
-          onLoad={() => setImgLoaded(true)}
-          onError={() => setImgLoaded(false)}
-          className={cn(
-            "absolute inset-0 rounded-2xl bg-card object-contain p-1 transition-opacity",
-            imgLoaded ? "opacity-100" : "opacity-0",
-          )}
-        />
-      )}
-    </div>
-  );
-}
-
+// Marketing-split layout is wrapped in a Suspense boundary so the inner
+// component can read `useSearchParams()` (Next.js 14 requires this).
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
-    <Suspense
-      fallback={<main className="min-h-screen w-full bg-background" />}
-    >
+    <Suspense fallback={<main className="min-h-screen w-full bg-white" />}>
       <AuthLayoutInner>{children}</AuthLayoutInner>
     </Suspense>
   );
 }
 
 function AuthLayoutInner({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
-  const pathname = usePathname() || "";
-  const { branding } = useBranding();
-  const tenantName = (branding?.brand_name ?? "").trim();
-  // Tenant logo uploaded by admin / super-admin via /settings/branding.
-  // Mirrors BrandLogo.tsx: paths are server-relative, so prefix API_URL.
-  // Falls back to the default Sprout glyph when no logo is configured.
-  const logoSrc = branding?.logo_url
-    ? `${API_URL}${branding.logo_url}`
-    : null;
-
+  // Admin "Login as user" path — same behaviour as before, render only a
+  // centred loader so the user never sees the auth chrome on the way to
+  // /dashboard.
   const isImpersonating = !!(
     searchParams?.get("access") && searchParams?.get("refresh")
   );
 
-  // Show the Login/Register tab bar only on those two routes; hide on
-  // forgot-password / 2fa / impersonation handoff so those pages keep a
-  // clean single-purpose layout.
-  const showTabs = pathname === "/login" || pathname === "/register";
-  const onRegister = pathname === "/register";
-
   if (isImpersonating) {
     return (
-      <main className="grid min-h-screen w-full place-items-center bg-background">
+      <main className="grid min-h-screen w-full place-items-center bg-white">
         {children}
       </main>
     );
   }
 
-  const tabs = showTabs ? (
-    <div className="mb-6 inline-flex w-full rounded-xl bg-muted/40 p-1 ring-1 ring-inset ring-border/40">
-      <Link
-        href="/login"
-        className={cn(
-          "flex-1 rounded-lg px-3 py-2 text-center text-sm font-semibold transition-all",
-          !onRegister
-            ? "bg-background text-foreground shadow-sm"
-            : "text-muted-foreground hover:text-foreground",
-        )}
-      >
-        Login
-      </Link>
-      <Link
-        href="/register"
-        className={cn(
-          "flex-1 rounded-lg px-3 py-2 text-center text-sm font-semibold transition-all",
-          onRegister
-            ? "bg-background text-foreground shadow-sm"
-            : "text-muted-foreground hover:text-foreground",
-        )}
-      >
-        Register
-      </Link>
-    </div>
-  ) : null;
-
-  const brandMark = (
-    <Link href="/" className="mb-6 inline-flex items-center gap-2.5">
-      {logoSrc ? (
-        <>
-          <BrandTile logoSrc={logoSrc} alt={tenantName || "Logo"} size="sm" />
-          <span className="text-lg font-bold tracking-tight text-foreground">
-            {tenantName || "Hindenburg India"}
-          </span>
-        </>
-      ) : (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src="/logo-hindenburg-dark.svg"
-          alt="Hindenburg India"
-          className="h-9 w-auto"
-        />
-      )}
-    </Link>
-  );
-
   return (
-    <main className="grid min-h-screen w-full place-items-center bg-gradient-to-br from-muted/40 via-background to-muted/40 p-4 sm:p-6">
-      <div className="grid w-full max-w-5xl overflow-hidden rounded-3xl border border-border/50 bg-card shadow-2xl shadow-primary/10 lg:grid-cols-2">
-        {/* ── Left panel (desktop) — animated green smoke shader ──── */}
-        <div className="relative hidden flex-col justify-end gap-8 overflow-hidden bg-[#06140d] p-10 text-white lg:flex">
-          {/* Interactive WebGL smoke, brand-green */}
-          <SmokeyBackground color="#16A34A" backdropBlurAmount="sm" />
-          {/* Bottom fade so the tagline stays legible over the smoke */}
-          <div
-            className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/50 via-black/10 to-transparent"
-            aria-hidden
-          />
+    <main className="relative min-h-screen w-full overflow-hidden">
+      {/* ── Full-bleed background ───────────────────────────────────────────
+          Swap this gradient for a real (blurred) image later, e.g.:
+          style={{ backgroundImage: "url('/auth-bg.jpg')", backgroundSize: "cover",
+                   backgroundPosition: "center" }} */}
+      <div
+        className="absolute inset-0"
+        style={{ background: "linear-gradient(160deg, #0f2238 0%, #16314f 55%, #1F4677 100%)" }}
+      />
+      <div className="absolute inset-0 bg-black/10 backdrop-blur-[2px]" />
 
-          <div className="relative z-10">
-            <p className="text-sm font-medium text-white/80">You can easily</p>
-            <h2 className="mt-2 max-w-sm text-2xl font-bold leading-snug text-white xl:text-3xl">
-              Trade Indian markets with clarity, speed and control.
-            </h2>
-            <p className="mt-4 max-w-sm text-sm leading-relaxed text-white/75">
-              Equity, F&amp;O, Commodities, IPOs and Mutual Funds — all from one
-              account on NSE, BSE &amp; MCX.
-            </p>
+      {/* Page-level Back — top-left over the background, bold + white */}
+      <button
+        type="button"
+        onClick={() => router.back()}
+        className="absolute left-5 top-5 z-20 inline-flex items-center gap-2 text-base font-bold text-white transition-opacity hover:opacity-80 sm:left-8 sm:top-7"
+      >
+        <ArrowLeft className="size-5" />
+        Back
+      </button>
+
+      {/* ── Centered card ───────────────────────────────────────────────── */}
+      <div className="relative z-10 flex min-h-screen items-center justify-center p-4 sm:p-6">
+        <div className="grid w-full max-w-5xl overflow-hidden rounded-[2rem] bg-white shadow-2xl lg:grid-cols-2">
+
+          {/* LEFT — login banner image */}
+          <div className="relative hidden min-h-[620px] lg:block">
+            <img
+              src="/login_banner.png"
+              alt="Hindenburg India — where smart traders build wealth"
+              className="absolute inset-0 h-full w-full object-cover"
+            />
           </div>
 
-          <div className="relative z-10 text-xs text-white/60">
-            &copy; {new Date().getFullYear()} {tenantName || "Hindenburg India"} · All
-            rights reserved
-          </div>
-        </div>
+          {/* RIGHT — form column */}
+          <div className="flex min-h-[620px] flex-col p-6 sm:p-8">
+            {/* Top — brand logo */}
+            <div className="mb-5">
+              <BrandLogo href="/" size="sm" />
+            </div>
 
-        {/* ── Right form panel ───────────────────────────────────── */}
-        <div className="relative bg-card p-6 sm:p-10">
-          {brandMark}
-          {tabs}
-          {children}
+            {/* Page content (heading + form) */}
+            <div className="flex flex-1 flex-col justify-center">
+              <div className="w-full">{children}</div>
+            </div>
+          </div>
         </div>
       </div>
     </main>

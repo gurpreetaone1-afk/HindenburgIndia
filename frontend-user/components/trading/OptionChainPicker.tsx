@@ -7,16 +7,6 @@ import { InstrumentAPI, OptionChainAPI } from "@/lib/api";
 import { Dialog, DialogContent, DialogPortal, DialogOverlay } from "@/components/ui/dialog";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { cn, formatNumber } from "@/lib/utils";
-import { useMarketStream } from "@/lib/useMarketStream";
-import { usePriceFlash } from "@/lib/usePriceFlash";
-
-// Cap on how many strike tokens the picker live-subscribes on its OWN
-// marketdata socket. useMarketStream opens a dedicated WS per hook instance,
-// so this budget is independent of the user's watchlist/positions streams —
-// no starving. We stream the strikes NEAREST the ATM (both CE + PE) up to this
-// count; strikes beyond the cap still update on the 1 s REST poll. 60 stays
-// well under useMarketStream's 70-token per-connection cap.
-const MAX_CHAIN_STREAM = 60;
 
 interface UnderlyingCfg {
   label: string;
@@ -153,7 +143,7 @@ export function OptionChainPicker({ open, onOpenChange, onPick, initialUnderlyin
     queryKey: ["option-chain-picker", focusedUnd, activeExpiry],
     queryFn: () => OptionChainAPI.fetch(focusedUnd, activeExpiry),
     enabled: open && !!focusedUnd && !search.trim(),
-    refetchInterval: 1000,
+    refetchInterval: 2000,
     staleTime: 5000,
     placeholderData: (prev) => prev,
   });
@@ -187,57 +177,6 @@ export function OptionChainPicker({ open, onOpenChange, onPick, initialUnderlyin
     });
   }, [rows, search]);
 
-  // LIVE overlay — subscribe the strikes nearest the ATM (both CE + PE) on the
-  // marketdata WS so per-strike LTP pushes in realtime (~100-250 ms) instead of
-  // only on the 1 s REST poll. Previously the picker streamed NOTHING and rode
-  // the 1 s poll alone, which felt 1-2 s behind Zerodha/Upstox. This runs on
-  // the picker's OWN WS connection (useMarketStream opens one per instance), so
-  // the ~60-token budget is independent of the user's watchlist/positions
-  // stream — no "Subscription limit reached" starving. The 1 s poll still
-  // drives spot/ATM recentring and fills any strike beyond the cap; `liveRows`
-  // below reads `live.get(token)` and falls back to the poll price otherwise.
-  const streamTokens = useMemo<string[]>(() => {
-    if (rows.length === 0) return [];
-    // Order rows by distance from the ATM so the visible centre of the chain
-    // streams first when the strike count exceeds the token budget.
-    const ordered =
-      atmStrike == null
-        ? rows
-        : [...rows].sort(
-            (a, b) =>
-              Math.abs(Number(a.strike) - atmStrike) -
-              Math.abs(Number(b.strike) - atmStrike),
-          );
-    const toks: string[] = [];
-    for (const r of ordered) {
-      const ceTok = r.ce?.token;
-      const peTok = r.pe?.token;
-      if (ceTok) toks.push(String(ceTok));
-      if (peTok) toks.push(String(peTok));
-      if (toks.length >= MAX_CHAIN_STREAM) break;
-    }
-    return toks.slice(0, MAX_CHAIN_STREAM);
-  }, [rows, atmStrike]);
-  const live = useMarketStream(streamTokens);
-
-  const liveRows = useMemo(() => {
-    if (live.size === 0) return filteredRows;
-    const merge = (leg: any) => {
-      if (!leg?.token) return leg;
-      const l = live.get(String(leg.token));
-      if (!l) return leg;
-      return {
-        ...leg,
-        ltp: l.ltp ?? leg.ltp,
-        bid: l.bid ?? leg.bid,
-        ask: l.ask ?? leg.ask,
-        change_pct: l.change_pct ?? leg.change_pct,
-        volume: l.volume ?? leg.volume,
-      };
-    };
-    return filteredRows.map((r) => ({ ...r, ce: merge(r.ce), pe: merge(r.pe) }));
-  }, [filteredRows, live]);
-
   // Auto-scroll to ATM when it changes
   const atmRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -254,9 +193,7 @@ export function OptionChainPicker({ open, onOpenChange, onPick, initialUnderlyin
         <DialogOverlay />
         <DialogPrimitive.Content
           className={cn(
-            // Mobile: true full-screen page. Desktop (md+): centered modal.
-            "fixed inset-0 z-50 flex h-[100dvh] w-full flex-col overflow-hidden border-border bg-card shadow-2xl",
-            "md:inset-auto md:left-1/2 md:top-1/2 md:h-auto md:max-h-[85vh] md:w-[min(1100px,95vw)] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-lg md:border",
+            "fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(1100px,95vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-border bg-card shadow-2xl",
             "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
           )}
         >
@@ -468,13 +405,13 @@ export function OptionChainPicker({ open, onOpenChange, onPick, initialUnderlyin
 
               {/* Rows */}
               <div className="flex-1 overflow-y-auto scrollbar-thin">
-                {liveRows.length === 0 ? (
+                {filteredRows.length === 0 ? (
                   <div className="grid h-32 place-items-center text-xs text-muted-foreground">
                     {isFetching ? "Loading…" : "No options. Subscribe instruments via admin → Zerodha Connect."}
                   </div>
                 ) : (
                   <div>
-                    {liveRows.map((r) => {
+                    {filteredRows.map((r) => {
                       const isATM = r.strike === atmStrike;
                       return (
                         <div
@@ -572,12 +509,6 @@ function Leg({
   onPick: (token: string, symbol: string) => void;
   side: "ce" | "pe";
 }) {
-  // Brief green/red flash whenever this leg's LTP ticks — gives the chain
-  // the live "tick tick" pulse. Called before the early return so hook
-  // order stays stable for strikes missing a leg on one side.
-  const flashDir = usePriceFlash(leg?.ltp != null ? Number(leg.ltp) : null, 300);
-  const flashBg =
-    flashDir === "up" ? "bg-buy/20" : flashDir === "down" ? "bg-sell/20" : "";
   if (!leg) {
     return (
       <div className="font-tabular text-[11px] text-muted-foreground">
@@ -637,7 +568,7 @@ function Leg({
         side === "ce" ? "text-right" : "text-left",
       )}
     >
-      <div className={cn("inline-block rounded px-1 text-sm font-bold transition-colors", ltpColor, flashBg)}>
+      <div className={cn("text-sm font-bold", ltpColor)}>
         {hasLtp ? formatNumber(ltp) : "—"}
       </div>
       {hasChange && (
@@ -674,7 +605,7 @@ function Leg({
           </span>
           <span className="text-muted-foreground">{fmtPrice(bid)}</span>
           <span className="text-muted-foreground">{fmtPrice(ask)}</span>
-          <span className={cn("rounded text-right font-semibold transition-colors", ltpColor, flashBg)}>
+          <span className={cn("text-right font-semibold", ltpColor)}>
             {hasLtp ? formatNumber(ltp) : "—"}
           </span>
         </div>
@@ -700,7 +631,7 @@ function Leg({
       )}
       <div className="relative md:hidden">{mobileCell}</div>
       <div className="relative hidden grid-cols-5 gap-1 px-1 py-0.5 text-[11px] font-tabular md:grid">
-        <span className={cn("rounded font-semibold transition-colors", ltpColor, flashBg)}>
+        <span className={cn("font-semibold", ltpColor)}>
           {hasLtp ? formatNumber(ltp) : "—"}
         </span>
         <span className="text-muted-foreground">{fmtPrice(bid)}</span>

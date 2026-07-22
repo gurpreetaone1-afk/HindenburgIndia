@@ -1,7 +1,6 @@
 "use client";
 
-import { TrendingUp, TrendingDown, IndianRupee } from "lucide-react";
-import { HindenburgMark } from "@/components/layout/HindenburgMark";
+import { Sprout, TrendingUp, TrendingDown, IndianRupee } from "lucide-react";
 
 const ORBIT_SLOW = [
   { sym: "NIFTY 50",  val: "22,841.55", chg: "+0.42%", dir: "up" },
@@ -181,11 +180,11 @@ export function HeroAnimation() {
         <div className="relative grid size-32 place-items-center rounded-full bg-gradient-to-br from-primary via-primary/80 to-primary/60 shadow-[0_0_60px_rgba(120,90,240,0.55)]">
           <div className="absolute inset-0 rounded-full mp-shimmer" />
           <div className="absolute -inset-1.5 -z-10 rounded-full bg-primary/30 blur-2xl mp-spark" />
-          <div className="relative grid size-28 place-items-center rounded-full bg-[#0a0a0a] backdrop-blur-sm">
-            <HindenburgMark className="size-16 drop-shadow" />
+          <div className="relative grid size-28 place-items-center rounded-full bg-background/30 backdrop-blur-sm">
+            <Sprout className="size-12 text-primary-foreground drop-shadow" />
           </div>
           <span className="absolute -bottom-7 rounded-full border border-primary/30 bg-background/80 px-2.5 py-0.5 text-[10px] font-semibold tracking-wider text-primary backdrop-blur">
-            HINDENBURG CORE
+            HINDENBURG INDIA CORE
           </span>
         </div>
       </div>

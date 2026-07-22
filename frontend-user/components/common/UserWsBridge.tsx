@@ -10,22 +10,22 @@ import {
   playNotifyPing,
   showNativeNotification,
   subscribeForWebPush,
-  userNotificationsEnabled,
 } from "@/lib/notify-sound";
 
-/** Format an INR amount string ("1500.00" → "₹1,500.00"). Defensive
- *  against junk values — falls back to the raw string if Number() can't
- *  parse it. */
+/** "₹1,234.56" — absolute value, two decimals. Blank for empty/NaN. */
 function fmtINR(raw: string | number | undefined | null): string {
   if (raw === undefined || raw === null || raw === "") return "";
   const n = Number(raw);
   if (!Number.isFinite(n)) return String(raw);
-  return `₹${Math.abs(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `₹${Math.abs(n).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
-/** Translate a wallet-event `reason` + signed amount into a toast title +
- *  body. Returns null when this kind of wallet move shouldn't ping the
- *  user (intra-trade brokerage, margin lock/release, etc.). */
+/** Maps a wallet pub/sub event to the operator-facing copy. Returns null
+ *  for silent reasons (brokerage / margin / P&L) — the trader explicitly
+ *  doesn't want a buzz on every fill. */
 function walletReasonToToast(
   reason: string | undefined,
   amount: string | undefined,
@@ -33,38 +33,15 @@ function walletReasonToToast(
   const r = String(reason || "").toUpperCase();
   const n = Number(amount ?? 0);
   const credit = Number.isFinite(n) ? n > 0 : true;
-  switch (r) {
-    case "DEPOSIT":
-      return {
-        kind: "in",
-        title: "✅ Deposit approved",
-        body: `${fmtINR(amount)} added to your wallet`,
-      };
-    case "WITHDRAWAL":
-      return {
-        kind: "out",
-        title: "✅ Withdrawal processed",
-        body: `${fmtINR(amount)} sent to your bank`,
-      };
-    case "ADJUSTMENT":
-      // Admin manual Add / Deduct Fund — sign tells us which way.
-      return credit
-        ? {
-            kind: "in",
-            title: "💰 Funds added by admin",
-            body: `${fmtINR(amount)} credited to your wallet`,
-          }
-        : {
-            kind: "out",
-            title: "⚠️ Funds deducted by admin",
-            body: `${fmtINR(amount)} debited from your wallet`,
-          };
-    default:
-      // Brokerage / margin / settlement / P&L bookings — silent. The
-      // wallet card still refreshes via the query invalidate below;
-      // we just don't pop a toast for every trade fill.
-      return null;
-  }
+  if (r.includes("DEPOSIT"))
+    return { kind: "in", title: "✅ Deposit approved", body: `${fmtINR(amount)} added to your wallet` };
+  if (r.includes("WITHDRAW"))
+    return { kind: "out", title: "✅ Withdrawal processed", body: `${fmtINR(amount)} sent to your bank` };
+  if (r.includes("ADJUST"))
+    return credit
+      ? { kind: "in", title: "💰 Funds added by admin", body: `${fmtINR(amount)} credited to your wallet` }
+      : { kind: "out", title: "⚠️ Funds deducted by admin", body: `${fmtINR(amount)} debited from your wallet` };
+  return null;
 }
 
 /**
@@ -90,11 +67,9 @@ export function UserWsBridge() {
         ? window.localStorage.getItem(STORAGE_KEYS.accessToken)
         : null;
     if (!access) return;
-    // Request OS notification permission once per session so the wallet
-    // toasts below can surface in the Android tray / desktop banner
-    // when the PWA is backgrounded. After permission lands, subscribe
-    // for Web Push so the backend can wake the phone even when the PWA
-    // is force-stopped (the WebSocket above is dead in that case).
+
+    // First-mount: prompt for notifications → if granted, register a
+    // Web Push subscription so wallet pings reach a force-stopped PWA.
     void (async () => {
       const ok = await ensureNotificationPermission();
       if (ok) await subscribeForWebPush();
@@ -107,31 +82,11 @@ export function UserWsBridge() {
 
     function connect() {
       if (stopped) return;
-      // Read the access token fresh on every connect attempt. The token
-      // captured at mount becomes stale after the 15-min expiry — the
-      // axios interceptor rotates it in localStorage but the closure
-      // here would still carry the old value, causing an endless 403
-      // loop (backend rejects the expired JWT before the WS upgrade).
-      const freshToken =
-        typeof window !== "undefined"
-          ? window.localStorage.getItem(STORAGE_KEYS.accessToken)
-          : null;
-      if (!freshToken) return;
-      const url = `${WS_URL.replace(/\/$/, "")}/ws/user?token=${encodeURIComponent(freshToken)}`;
+      const url = `${WS_URL.replace(/\/$/, "")}/ws/user?token=${encodeURIComponent(access ?? "")}`;
       ws = new WebSocket(url);
 
-      // 25 s heartbeat — mirrors AdminWsBridge. Stops corporate / mobile
-      // proxies and Android battery savers from idling out the WS while
-      // the PWA sits in the background.
-      let pingTimer: ReturnType<typeof setInterval> | null = null;
       ws.onopen = () => {
         attempt = 0;
-        if (pingTimer) clearInterval(pingTimer);
-        pingTimer = setInterval(() => {
-          try {
-            if (ws && ws.readyState === WebSocket.OPEN) ws.send("ping");
-          } catch {}
-        }, 25_000);
       };
 
       ws.onmessage = (ev) => {
@@ -143,67 +98,107 @@ export function UserWsBridge() {
         }
         switch (msg?.type) {
           case "position_update":
+            // Cover EVERY query key that displays position-derived
+            // data — without `["positions", "closed"]` an admin edit
+            // to a closed trade's realised P&L stayed invisible on
+            // the user's Closed tab; the reports + pnl-summary
+            // additions guarantee the same for the dashboard tile
+            // and the /reports/* pages.
             qc.invalidateQueries({ queryKey: ["positions"] });
             qc.invalidateQueries({ queryKey: ["positions", "open"] });
+            qc.invalidateQueries({ queryKey: ["positions", "closed"] });
+            qc.invalidateQueries({ queryKey: ["positions", "pnl-summary"] });
+            qc.invalidateQueries({ queryKey: ["dashboard"] });
             qc.invalidateQueries({ queryKey: ["wallet"] });
+            qc.invalidateQueries({ queryKey: ["reports"] });
+            qc.invalidateQueries({ queryKey: ["trades"] });
             break;
           case "order_update":
             qc.invalidateQueries({ queryKey: ["orders"] });
             qc.invalidateQueries({ queryKey: ["orders", "recent"] });
+            // Order transitioning to EXECUTED (especially on a
+            // squareoff / closing fill) almost always changes the
+            // position state too. Without this the positions cache
+            // stayed stale until the 3-s background poll, so a 1-s
+            // configured re-order close was felt as 2-4 s before
+            // the row vanished + the deferred "<symbol> closed"
+            // toast fired. Cheap broad invalidate; the next poll
+            // tick is debounced by the existing closingPositionIds
+            // gate against the 3-s poll, so we don't add flicker.
+            qc.invalidateQueries({ queryKey: ["positions"] });
+            qc.invalidateQueries({ queryKey: ["positions", "open"] });
+            qc.invalidateQueries({ queryKey: ["active-trades"] });
             break;
           case "trade_update":
             qc.invalidateQueries({ queryKey: ["trades"] });
+            qc.invalidateQueries({ queryKey: ["reports"] });
             break;
-          case "wallet_update":
+          case "wallet": {
+            // Balance-moving event from `_publish_wallet_event`
+            // (`user:{id}:wallet`). Refresh wallet/dashboard, then — for
+            // the four operator-facing reasons — toast + chime + tray.
             qc.invalidateQueries({ queryKey: ["wallet"] });
-            break;
-          case "wallet":
-            // Backend `_publish_wallet_event` uses type="wallet" (not
-            // "wallet_update") and ships a {reason, amount, balance_after}
-            // payload. Refresh the wallet cache AND show a WhatsApp-style
-            // toast + ping when the move is operator-facing — deposit
-            // approval, withdrawal payout, admin Add/Deduct Fund.
-            qc.invalidateQueries({ queryKey: ["wallet"] });
-            qc.invalidateQueries({ queryKey: ["ledger"] });
-            {
-              const p = (msg as any).payload || {};
-              const t = walletReasonToToast(p.reason, p.amount);
-              if (t && userNotificationsEnabled()) {
-                if (t.kind === "in") {
-                  toast.success(t.title, { description: t.body, duration: 7000 });
-                } else {
-                  toast.warning(t.title, { description: t.body, duration: 7000 });
-                }
-                playNotifyPing();
-                // Unique tag per event so successive admin Add Fund /
-                // deposit approvals each show as their own tray row
-                // instead of collapsing onto the first one.
-                showNativeNotification(t.title, t.body, {
-                  tag: `mp-wallet-${Date.now()}`,
-                });
-              }
+            qc.invalidateQueries({ queryKey: ["dashboard"] });
+            const p = (msg as any).payload || {};
+            const t = walletReasonToToast(p.reason, p.amount);
+            if (t) {
+              if (t.kind === "in")
+                toast.success(t.title, { description: t.body, duration: 7000 });
+              else toast.warning(t.title, { description: t.body, duration: 7000 });
+              playNotifyPing();
+              showNativeNotification(t.title, t.body, {
+                tag: `wallet-${String(p.reason || "move").toUpperCase()}`,
+                url: "/wallet",
+              });
             }
             break;
-          case "marketwatch":
-            // Cross-tab / cross-device sync: when this user adds /
-            // removes an instrument on web, the apk (or another web
-            // tab) repaints within ~1 s instead of waiting for the
-            // next REST poll. `segment-items` is keyed by segment
-            // name, so we don't have the name in scope — broad
-            // invalidate the whole prefix.
-            qc.invalidateQueries({ queryKey: ["watchlists"] });
-            qc.invalidateQueries({ queryKey: ["watchlist-quotes"] });
-            qc.invalidateQueries({ queryKey: ["segment-items"] });
+          }
+          case "wallet_update":
+            qc.invalidateQueries({ queryKey: ["wallet"] });
+            qc.invalidateQueries({ queryKey: ["dashboard"] });
+            break;
+          case "kyc_update":
+            qc.invalidateQueries({ queryKey: ["kyc"] });
+            qc.invalidateQueries({ queryKey: ["profile", "me"] });
+            break;
+          case "binary_settled":
+            // Server published this when a BinaryOption transitioned
+            // out of OPEN. Active panel sheds the row, History tab
+            // gains it, wallet may have just been credited (win/tie).
+            qc.invalidateQueries({ queryKey: ["binary", "active"] });
+            qc.invalidateQueries({ queryKey: ["binary", "history"] });
+            qc.invalidateQueries({ queryKey: ["wallet"] });
+            break;
+          case "notification_update":
+            // Admin broadcast or a system-emitted in-app notification.
+            // Invalidate the listing and the unread-count badge so the
+            // bell + /notifications page refresh immediately. We don't
+            // toast here — the notifications page renders the title /
+            // message itself, and the bell badge update is enough of
+            // a poke for users to see they have something new.
+            qc.invalidateQueries({ queryKey: ["notifications"] });
+            qc.invalidateQueries({ queryKey: ["notifications", "unread-count"] });
+            break;
+          case "bonus_granted":
+            toast.success(`Bonus credited: ₹${msg.amount}`);
+            qc.invalidateQueries({ queryKey: ["user-bonuses"] });
+            qc.invalidateQueries({ queryKey: ["wallet"] });
+            break;
+          case "bonus_completed":
+            toast.success(`Bonus unlocked: ₹${msg.amount} moved to your balance`);
+            qc.invalidateQueries({ queryKey: ["user-bonuses"] });
+            qc.invalidateQueries({ queryKey: ["wallet"] });
+            break;
+          case "bonus_cancelled":
+          case "bonus_expired":
+            qc.invalidateQueries({ queryKey: ["user-bonuses"] });
+            qc.invalidateQueries({ queryKey: ["wallet"] });
             break;
           // hello / heartbeat — ignore
         }
       };
 
       ws.onclose = () => {
-        if (pingTimer) {
-          clearInterval(pingTimer);
-          pingTimer = null;
-        }
         if (stopped) return;
         attempt += 1;
         const delay = Math.min(15_000, 1_000 * 2 ** Math.min(attempt, 4));
@@ -216,28 +211,11 @@ export function UserWsBridge() {
       };
     }
 
-    // Reconnect when the PWA comes back from background. Browsers
-    // (especially Android) kill idle WS in hidden tabs to save battery;
-    // without this nudge the user would have to sit and wait for the
-    // exponential-backoff retry to climb back down to a fresh open.
-    const onVisible = () => {
-      if (document.visibilityState === "visible" && (!ws || ws.readyState >= 2)) {
-        if (reconnectTimer) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = null;
-        }
-        attempt = 0;
-        connect();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisible);
-
     connect();
 
     return () => {
       stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      document.removeEventListener("visibilitychange", onVisible);
       ws?.close();
     };
   }, [qc, user?.id]);
