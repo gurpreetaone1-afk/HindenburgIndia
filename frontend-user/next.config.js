@@ -24,6 +24,18 @@ const nextConfig = {
           },
         ],
       },
+      {
+        // PWA "shows old code" fix. Mirrors the admin app: the standalone
+        // install was serving stale HTML because Chrome's HTTP cache
+        // kept the index doc across opens (no service worker here —
+        // pure manifest install). Force HTML / route docs to never
+        // cache; _next/static/* keeps its long immutable cache because
+        // those filenames embed a content hash.
+        source: "/((?!_next/static|_next/image|api|.*\\.).*)",
+        headers: [
+          { key: "Cache-Control", value: "no-store, must-revalidate" },
+        ],
+      },
     ];
   },
 };

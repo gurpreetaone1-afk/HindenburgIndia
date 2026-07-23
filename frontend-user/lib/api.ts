@@ -10,7 +10,16 @@ export const api = axios.create({
   timeout: 30_000,
 });
 
-let refreshPromise: Promise<string | null> | null = null;
+// Refresh dedup state. `inFlight` is per-tab; `withRefreshLock` adds a
+// cross-tab exclusive lock on top of it so two tabs never hit the
+// backend's rotating /refresh endpoint with the same (now-single-use)
+// refresh token.
+let inFlightRefresh: Promise<string | null> | null = null;
+const REFRESH_LOCK = "mp.user.auth.refresh";
+// Refresh proactively when the access token has < this many seconds left.
+// 120 s is enough headroom for a slow mobile request to land on the
+// backend before the JWT actually expires.
+const REFRESH_MARGIN_SEC = 120;
 
 function getAccessToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -44,13 +53,58 @@ export function clearTokens() {
   window.localStorage.removeItem("nb.auth");
 }
 
-api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  const token = getAccessToken();
-  if (token && config.headers) {
-    config.headers.Authorization = `Bearer ${token}`;
+// ── JWT exp decoding (no verification — we only read the public
+//    payload to know when to proactively rotate). Returns the unix
+//    timestamp in seconds, or null if the token is malformed or has no
+//    `exp` claim. Pure client-side; the server is the actual
+//    authority on validity.
+function jwtExpSec(token: string | null): number | null {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    // Base64url → base64 → bytes → utf-8.
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    const json = typeof atob === "function" ? atob(padded) : "";
+    const obj = JSON.parse(json);
+    return typeof obj?.exp === "number" ? obj.exp : null;
+  } catch {
+    return null;
   }
-  return config;
-});
+}
+function isExpiringSoon(token: string | null, marginSec = REFRESH_MARGIN_SEC): boolean {
+  const exp = jwtExpSec(token);
+  if (exp == null) return false;
+  return exp * 1000 - Date.now() < marginSec * 1000;
+}
+function isExpired(token: string | null): boolean {
+  const exp = jwtExpSec(token);
+  if (exp == null) return false;
+  return exp * 1000 <= Date.now();
+}
+
+// Cross-tab exclusive lock. The Web Locks API is the canonical way to
+// serialise critical sections across all tabs of an origin — a single
+// holder at any moment, queueing for the rest. This prevents the
+// "morning logout" race where dashboard + option-chain tabs woke up
+// after midnight, both hit a 24-h-stale access token, both fired
+// /refresh with the same refresh token, the backend rotated the jti
+// for whichever request landed first, and the second one got a 401
+// (jti gone) → clearTokens() → bounce to /login. With this lock only
+// one tab actually calls /refresh; the others wait, then re-read
+// localStorage and inherit the freshly-minted pair without a network
+// round trip. Falls back to a same-tab promise on the (rare) browsers
+// that don't expose `navigator.locks`.
+async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+  if (
+    typeof navigator !== "undefined" &&
+    typeof (navigator as any).locks?.request === "function"
+  ) {
+    return (navigator as any).locks.request(REFRESH_LOCK, fn);
+  }
+  return fn();
+}
 
 /**
  * Try to mint a fresh access token from the stored refresh token.
@@ -68,7 +122,7 @@ api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
  *                    /login, which is the "PWA bar bar logout" the user
  *                    reported even with a 30-day refresh TTL.
  */
-async function refreshAccessToken(): Promise<
+async function callRefreshEndpoint(): Promise<
   { kind: "ok"; access: string } | { kind: "auth_failed" | "transient" }
 > {
   const refresh = getRefreshToken();
@@ -100,26 +154,91 @@ async function refreshAccessToken(): Promise<
   }
 }
 
+/**
+ * The single entry point every code path uses to obtain a fresh
+ * access token. Deduplicates within a tab via `inFlightRefresh`,
+ * across tabs via `withRefreshLock`, and short-circuits if some
+ * other tab already wrote a fresh token to localStorage while we
+ * were queued behind the lock. Returns `null` only on auth_failed
+ * (i.e. the user is genuinely signed out); transient failures
+ * preserve the refresh token and surface as `null` too — the caller
+ * decides whether to redirect (response interceptor only redirects
+ * when the refresh token is GONE, not just on a single failed call).
+ */
+export async function ensureFreshAccessToken(): Promise<string | null> {
+  inFlightRefresh ||= (async () => {
+    try {
+      return await withRefreshLock(async () => {
+        // Re-check after acquiring the lock — a sibling tab may have
+        // refreshed while we were queued. If the current token is
+        // valid for at least a few seconds, reuse it instead of
+        // burning a one-shot refresh token.
+        const current = getAccessToken();
+        if (current && !isExpiringSoon(current, 30)) return current;
+        const r = await callRefreshEndpoint();
+        return r.kind === "ok" ? r.access : null;
+      });
+    } finally {
+      inFlightRefresh = null;
+    }
+  })();
+  return inFlightRefresh;
+}
+
+api.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
+  let token = getAccessToken();
+  // Proactive refresh: if the access token will expire within the
+  // next REFRESH_MARGIN_SEC seconds, rotate it BEFORE this request
+  // leaves the client. Eliminates the 401-storm that hits when six
+  // dashboard widgets all mount simultaneously the morning after a
+  // 24-h-old login.
+  if (token && getRefreshToken() && isExpiringSoon(token)) {
+    const fresh = await ensureFreshAccessToken();
+    if (fresh) token = fresh;
+  }
+  if (token && config.headers) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 api.interceptors.response.use(
   (resp) => resp,
   async (error: AxiosError<ApiErrorResponse>) => {
     const original = error.config as (AxiosRequestConfig & { _retry?: boolean }) | undefined;
     const status = error.response?.status;
+
+    // Account blocked / deactivated by an admin. The backend re-checks the
+    // user on EVERY request and returns 403 (ACCOUNT_BLOCKED / ACCOUNT_INACTIVE)
+    // the instant an admin blocks them — and that check runs BEFORE the
+    // session-epoch 401, so a blocked user NEVER reaches the 401 refresh path
+    // below. It's not a token problem, so refreshing can't help; wipe the
+    // creds and send them to /login instead of leaving them staring at an
+    // empty ₹0 dashboard. Gate on the error code so ordinary 403s (permission
+    // denied, segment-not-allowed) do NOT log the user out.
+    if (status === 403) {
+      const code = error.response?.data?.error?.code;
+      if (
+        (code === "ACCOUNT_BLOCKED" || code === "ACCOUNT_INACTIVE") &&
+        typeof window !== "undefined"
+      ) {
+        clearTokens();
+        if (!window.location.pathname.startsWith("/login")) {
+          window.location.href = "/login";
+        }
+      }
+      return Promise.reject(error);
+    }
+
     if (status === 401 && original && !original._retry) {
       original._retry = true;
-      refreshPromise ||= (async () => {
-        const r = await refreshAccessToken();
-        return r.kind === "ok" ? r.access : null;
-      })().finally(() => {
-        refreshPromise = null;
-      });
-      const newToken = await refreshPromise;
+      const newToken = await ensureFreshAccessToken();
       if (newToken) {
         original.headers = { ...(original.headers || {}), Authorization: `Bearer ${newToken}` };
         return api.request(original);
       }
       // Only redirect to /login when we KNOW the refresh was rejected
-      // (auth_failed → tokens already cleared inside refreshAccessToken).
+      // (auth_failed → tokens already cleared inside callRefreshEndpoint).
       // For transient failures the tokens are still around — let the next
       // call retry naturally; the user keeps their session.
       const stillHaveRefresh = typeof window !== "undefined" && !!getRefreshToken();
@@ -134,6 +253,10 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+// Re-export for callers that still want the old name.
+export const refreshAccessToken = ensureFreshAccessToken;
+export { jwtExpSec, isExpired, isExpiringSoon };
 
 export class ApiError extends Error {
   code: string;
@@ -161,14 +284,40 @@ export async function unwrap<T>(p: Promise<{ data: ApiResponse<T> }>): Promise<T
   }
 }
 
+export async function unwrapPage<T>(
+  p: Promise<{ data: ApiResponse<T[]> }>,
+): Promise<{ items: T[]; total: number }> {
+  try {
+    const res = await p;
+    if (!res.data?.success || res.data.data == null) {
+      throw new ApiError(res.data?.message || "Unknown error", "UNKNOWN");
+    }
+    return { items: res.data.data as T[], total: res.data.total ?? 0 };
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    const ax = err as AxiosError<ApiErrorResponse>;
+    const e = ax.response?.data?.error;
+    throw new ApiError(e?.message || ax.message || "Network error", e?.code || "NETWORK", e?.details);
+  }
+}
+
 // ── Auth ─────────────────────────────────────────────────────────────
 export const AuthAPI = {
   login: (body: { identifier: string; password: string; two_fa_code?: string }) =>
     unwrap<TokenPair>(api.post("/user/auth/login", body)),
-  // Passwordless login into the tenant's shared "Try Demo" account.
-  demoLogin: () => unwrap<TokenPair>(api.post("/user/auth/demo-login")),
-  register: (body: { email: string; mobile: string; password: string; full_name: string; pan?: string }) =>
-    unwrap(api.post("/user/auth/register", body)),
+  register: (body: {
+    email: string;
+    mobile: string;
+    password: string;
+    full_name: string;
+    pan?: string;
+    // White-label attribution. When the user landed on /register?ref=<ADM…>
+    // (or on a tenant's custom domain), the BrandingProvider plumbs the
+    // admin's user_code through here. Backend treats it as the admin's
+    // ``user_code`` and stamps ``signup_origin`` accordingly. Optional —
+    // omitting it preserves the pre-rollout behaviour (super-admin pool).
+    referral_code?: string;
+  }) => unwrap(api.post("/user/auth/register", body)),
   logout: (refresh_token?: string) => unwrap(api.post("/user/auth/logout", { refresh_token })),
   refresh: (refresh_token: string) => unwrap<TokenPair>(api.post("/user/auth/refresh", { refresh_token })),
   forgotPassword: (identifier: string) => unwrap(api.post("/user/auth/forgot-password", { identifier })),
@@ -179,12 +328,7 @@ export const AuthAPI = {
   twoFASetup: () => unwrap<{ secret: string; provisioning_uri: string }>(api.post("/user/auth/2fa/setup")),
   twoFAEnable: (code: string) => unwrap(api.post("/user/auth/2fa/enable", { code })),
   twoFADisable: (password: string, code: string) => unwrap(api.post("/user/auth/2fa/disable", { password, code })),
-  // Phase 5 — Device fingerprint registration. Called from the
-  // useFingerprint hook after a successful login (or any other auth
-  // event we want a fingerprint snapshot for). Fire-and-forget on
-  // the UI side — a failure here MUST NOT block the user.
-  fingerprint: (body: { hash: string; signals: Record<string, unknown> }) =>
-    unwrap<any>(api.post("/user/auth/fingerprint", body)),
+  demoLogin: () => unwrap<TokenPair>(api.post("/user/auth/demo")),
 };
 
 export const ProfileAPI = {
@@ -192,74 +336,23 @@ export const ProfileAPI = {
   update: (body: Record<string, unknown>) => unwrap<any>(api.put("/user/users/me", body)),
 };
 
-export interface ConsentDeclaration {
-  required: boolean;
-  state: "none" | "pending" | "accepted";
-  brand: string;
-  to_email: string;
-  subject: string;
-  body: string;
-  reject_reason: string | null;
+// Shape returned by `WalletAPI.wdRules`. Both rules carry the same set of
+// fields — backend serialises Decimal128 amounts as strings, weekday list
+// as 0=Mon..6=Sun ints, time windows as ISO HH:MM strings.
+export interface WdRule {
+  min_amount: string | null;
+  max_amount: string | null;
+  daily_limit: string | null;
+  allowed_days: number[] | null;
+  allowed_times: { start: string; end: string }[] | null;
+  charges_flat: string | null;
+  charges_percent: number;
+  auto_approve_under: string | null;
+  mandatory_remark: boolean;
 }
-
-export const ConsentAPI = {
-  declaration: () =>
-    unwrap<ConsentDeclaration>(api.get("/user/consent/declaration")),
-  submit: () =>
-    unwrap<{ ok: boolean; state: string }>(api.post("/user/consent/declaration/submit")),
-};
-
-export const BinaryAPI = {
-  // Effective settings — pass `symbol` to fold the per-asset override
-  // in too (drives the trade panel's stake bounds + payout preview).
-  settings: (symbol?: string) =>
-    unwrap<any>(api.get("/user/binary/settings", { params: symbol ? { symbol } : undefined })),
-  place: (body: {
-    symbol: string;
-    direction: "HIGHER" | "LOWER";
-    stake: number;
-    duration_sec: number;
-  }) => unwrap<any>(api.post("/user/binary/place", body)),
-  active: () => unwrap<any[]>(api.get("/user/binary/active")),
-  history: (params?: { page?: number; page_size?: number }) =>
-    unwrap<{ items: any[]; meta: any }>(
-      api.get("/user/binary/history", { params }),
-    ),
-  candles: (symbol: string, resolution: number, count = 200) =>
-    unwrap<any[]>(
-      api.get("/user/binary/candles", { params: { symbol, resolution, count } }),
-    ),
-  quote: (symbol: string) =>
-    unwrap<any>(api.get(`/user/binary/quote/${encodeURIComponent(symbol)}`)),
-};
-
-export const KycAPI = {
-  status: () => unwrap<any>(api.get("/user/kyc")),
-  submit: (body: {
-    id_proof_type: string;
-    id_proof_number?: string;
-    id_proof_url: string;
-    address_proof_type: string;
-    address_proof_url: string;
-    address_text: string;
-  }) => unwrap<any>(api.post("/user/kyc/submit", body)),
-  uploadProof: (file: File) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    return unwrap<{ url: string; size: number }>(
-      api.post("/user/kyc/upload", fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      })
-    );
-  },
-};
 
 export const WalletAPI = {
   summary: () => unwrap<any>(api.get("/user/wallet/summary")),
-  demoReset: () =>
-    unwrap<{ available_balance: string; initial_balance: string }>(
-      api.post("/user/wallet/demo/reset")
-    ),
   transactions: (limit = 100, skip = 0) =>
     unwrap<any[]>(api.get("/user/wallet/transactions", { params: { limit, skip } })),
   companyBanks: () => unwrap<any[]>(api.get("/user/wallet/company-banks")),
@@ -267,6 +360,15 @@ export const WalletAPI = {
   myDeposits: () => unwrap<any[]>(api.get("/user/wallet/deposits")),
   createWithdrawal: (body: any) => unwrap<any>(api.post("/user/wallet/withdrawals", body)),
   myWithdrawals: () => unwrap<any[]>(api.get("/user/wallet/withdrawals")),
+  // Effective deposit + withdrawal rules for this user — already resolved
+  // through the broker → admin → super-admin → global cascade by the
+  // backend. Used by the deposit/withdraw dialogs to render the inline
+  // info banner ("min ₹100, ₹10k daily, Mon–Fri 10:00–18:00 IST").
+  wdRules: () =>
+    unwrap<{
+      deposit: WdRule;
+      withdrawal: WdRule;
+    }>(api.get("/user/wallet/wd-rules")),
   myBankAccounts: () => unwrap<any[]>(api.get("/user/wallet/bank-accounts")),
   addBankAccount: (body: any) => unwrap<any>(api.post("/user/wallet/bank-accounts", body)),
   uploadScreenshot: (file: File) => {
@@ -339,21 +441,7 @@ export const SegmentSettingsAPI = {
 };
 
 export const OrderAPI = {
-  // Existing callers expect a flat array — keep that contract by unwrapping
-  // the new paginated `{items, meta}` shape into just the items. Pass
-  // `page` / `page_size` via `params` to control the page (defaults to
-  // page=1, page_size=50 on the server). For consumers that need the
-  // `meta` (pagination UI), use `listPaginated` below.
-  list: async (status?: string, params?: { page?: number; page_size?: number }) => {
-    const r = await unwrap<{ items: any[]; meta: any }>(
-      api.get("/user/orders", { params: { status, ...(params || {}) } }),
-    );
-    return r.items;
-  },
-  listPaginated: (params: { status?: string; page?: number; page_size?: number }) =>
-    unwrap<{ items: any[]; meta: { page: number; page_size: number; total: number; total_pages: number } }>(
-      api.get("/user/orders", { params }),
-    ),
+  list: (status?: string) => unwrap<any[]>(api.get("/user/orders", { params: { status } })),
   detail: (id: string) => unwrap<any>(api.get(`/user/orders/${id}`)),
   place: (body: any) => unwrap<any>(api.post("/user/orders", body)),
   modify: (id: string, body: any) => unwrap<any>(api.put(`/user/orders/${id}`, body)),
@@ -362,20 +450,11 @@ export const OrderAPI = {
 
 export const PositionAPI = {
   open: () => unwrap<any[]>(api.get("/user/positions/open")),
-  closed: () => unwrap<any[]>(api.get("/user/positions/closed")),
+  closed: (page = 1, pageSize = 25) =>
+    unwrapPage<any>(api.get("/user/positions/closed", { params: { page, page_size: pageSize } })),
   squareoff: (id: string, lots?: number) =>
     unwrap<any>(api.post(`/user/positions/${id}/squareoff`, undefined, { params: lots ? { lots } : {} })),
-  squareoffAll: (filter?: "profit" | "loss") =>
-    unwrap<any>(
-      api.post("/user/positions/squareoff-all", null, {
-        params: filter ? { filter } : undefined,
-      }),
-    ),
-  /** Returns the next-expiry instrument matching this position's
-   *  underlying + strike + option_type. 404 when no later expiry is
-   *  available or the contract is non-derivative. */
-  rolloverTarget: (id: string) =>
-    unwrap<any>(api.get(`/user/positions/${id}/rollover-target`)),
+  squareoffAll: () => unwrap<any>(api.post("/user/positions/squareoff-all")),
   updateSlTp: (id: string, body: { stop_loss?: number | null; target?: number | null }) =>
     unwrap<any>(api.put(`/user/positions/${id}/sl-tp`, body)),
   pnlSummary: () => unwrap<any>(api.get("/user/positions/pnl-summary")),
@@ -391,18 +470,15 @@ export const DashboardAPI = {
 };
 
 export const LedgerAPI = {
-  list: (params?: {
-    from_date?: string;
-    to_date?: string;
-    page?: number;
-    page_size?: number;
-  }) => unwrap<any>(api.get("/user/ledger", { params })),
+  list: (params?: { from_date?: string; to_date?: string; limit?: number }) =>
+    unwrap<any>(api.get("/user/ledger", { params })),
 };
 
 export const ReportsAPI = {
   pnl: (params?: any) => unwrap<any>(api.get("/user/reports/pnl", { params })),
   tradebook: (params?: any) => unwrap<any[]>(api.get("/user/reports/tradebook", { params })),
   brokerage: (params?: any) => unwrap<any>(api.get("/user/reports/brokerage", { params })),
+  tax: () => unwrap<any>(api.get("/user/reports/tax")),
   margin: () => unwrap<any>(api.get("/user/reports/margin")),
 };
 
@@ -426,24 +502,16 @@ export const NotificationsAPI = {
   unreadCount: () => unwrap<{ count: number }>(api.get("/user/notifications/unread-count")),
 };
 
-export const BonusesUserAPI = {
-  myBonuses: () => unwrap<any[]>(api.get("/user/bonuses")),
-  eligible: (amount: string) =>
-    unwrap<any>(api.get("/user/bonuses/eligible", { params: { amount } })),
-  ledger: (id: string) => unwrap<any[]>(api.get(`/user/bonuses/${id}/ledger`)),
-};
-
+/** Web Push subscription endpoints — paired with `notify-sound.ts`'s
+ *  subscribeForWebPush helper so the SW (public/sw.js) receives
+ *  backend pushes for deposit / withdrawal approvals and admin
+ *  Add/Deduct Fund events. */
 export const PushAPI = {
   vapidKey: () => unwrap<{ public_key: string }>(api.get("/user/push/vapid-key")),
-  subscribe: (body: {
-    endpoint: string;
-    keys: { p256dh: string; auth: string };
-    label?: string;
-  }) => unwrap<{ id: string; created: boolean }>(api.post("/user/push/subscribe", body)),
+  subscribe: (body: { endpoint: string; keys: { p256dh: string; auth: string }; label?: string }) =>
+    unwrap<{ id: string; created: boolean }>(api.post("/user/push/subscribe", body)),
   unsubscribe: (endpoint: string) =>
-    unwrap<{ ok: boolean; found: boolean }>(
-      api.post("/user/push/unsubscribe", { endpoint }),
-    ),
+    unwrap<{ ok: boolean; found: boolean }>(api.post("/user/push/unsubscribe", { endpoint })),
 };
 
 export { getAccessToken, getRefreshToken };

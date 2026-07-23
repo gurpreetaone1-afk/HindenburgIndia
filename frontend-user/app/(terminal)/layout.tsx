@@ -8,22 +8,23 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
   Layers,
-  ListChecks,
   LogOut,
   Wallet as WalletIcon,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/common/ThemeToggle";
 import { UserWsBridge } from "@/components/common/UserWsBridge";
-import { BottomNav } from "@/components/layout/BottomNav";
-import { DemoBanner } from "@/components/layout/DemoBanner";
 import { InstrumentsPanel } from "@/components/trading/InstrumentsPanel";
 import { OptionChainPicker } from "@/components/trading/OptionChainPicker";
 import { TradeDetailSheet } from "@/components/trading/TradeDetailSheet";
 import { InstrumentAPI, OptionChainAPI } from "@/lib/api";
 
 type SidePanel = "instruments" | null;
+
+// Remembers whether the trader kept the MARKET (instruments) panel open.
+const INSTRUMENTS_OPEN_KEY = "setupfx.terminal.instrumentsOpen";
 
 /**
  * Full-bleed broker layout — top header (back · instruments toggle ·
@@ -41,7 +42,44 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
   const logout = useAuthStore((s) => s.logout);
 
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Instruments ("MARKET") side panel. Starts null to avoid an SSR/mobile
+  // flash, then the mount effect decides: first-ever visit opens it on
+  // desktop by default (user wants the market list visible on open); after
+  // that we honour the saved open/closed preference.
   const [sidePanel, setSidePanel] = useState<SidePanel>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem(INSTRUMENTS_OPEN_KEY);
+    if (saved === "0") {
+      setSidePanel(null);
+      return;
+    }
+    if (saved === "1") {
+      setSidePanel("instruments");
+      return;
+    }
+    // First visit — default OPEN on desktop; keep closed on phones so the
+    // panel doesn't cover the chart (the header toggle is desktop-only).
+    const isDesktop = window.matchMedia("(min-width: 768px)").matches;
+    setSidePanel(isDesktop ? "instruments" : null);
+  }, []);
+
+  // Toggle + remember the choice so it sticks across reloads.
+  function toggleInstruments() {
+    setSidePanel((cur) => {
+      const next: SidePanel = cur === "instruments" ? null : "instruments";
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(INSTRUMENTS_OPEN_KEY, next ? "1" : "0");
+      }
+      return next;
+    });
+  }
+  function closeInstruments() {
+    setSidePanel(null);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(INSTRUMENTS_OPEN_KEY, "0");
+    }
+  }
   // Slide-up trade card token — mobile-only. When the user picks a
   // strike from the Option Chain picker on the terminal page, instead
   // of swapping the chart underneath (the old behaviour) we open the
@@ -120,11 +158,10 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
           download from blocking the page's interactive paint. */}
       <Script
         src="/charting_library/charting_library.standalone.js"
-        strategy="lazyOnload"
+        strategy="afterInteractive"
       />
 
       <UserWsBridge />
-      <DemoBanner />
 
       {/* ── Top header ───────────────────────────────────────────
           Mobile: only the "Option chain" pill is visible — back arrow,
@@ -132,7 +169,7 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
           since the new BottomNav covers navigation (Home/Market/Trade/
           Orders/Profile) and the chart canvas needs the vertical room.
           Desktop (md+) keeps the full toolbar untouched. */}
-      <header className="relative z-20 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-3">
+      <header className="relative z-20 hidden h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-3 md:flex">
         <Button asChild variant="ghost" size="icon" aria-label="Back to dashboard" className="hidden size-8 md:inline-flex">
           <Link href="/dashboard">
             <ArrowLeft className="size-4" />
@@ -140,16 +177,19 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
         </Button>
         <Button
           type="button"
-          variant={sidePanel === "instruments" ? "secondary" : "ghost"}
-          size="icon"
-          aria-label="Toggle instruments panel"
-          title="Instruments"
-          className="hidden size-8 md:inline-flex"
-          onClick={() =>
-            setSidePanel(sidePanel === "instruments" ? null : "instruments")
-          }
+          variant="outline"
+          size="sm"
+          aria-label="Toggle market instruments panel"
+          title="Market instruments"
+          className={cn(
+            "hidden h-8 px-3 text-xs font-bold uppercase tracking-wide md:inline-flex",
+            sidePanel === "instruments"
+              ? "border-primary bg-primary/10 text-primary hover:bg-primary/15"
+              : "border-primary/60 text-primary hover:bg-primary/10",
+          )}
+          onClick={toggleInstruments}
         >
-          <ListChecks className="size-4" />
+          MARKET
         </Button>
 
         <div className="ml-auto flex items-center gap-1.5">
@@ -162,7 +202,7 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
             title="Open option chain"
           >
             <Layers className="size-4" />
-            <span className="text-xs font-medium">Option chain</span>
+            <span className="text-xs font-bold">Option chain</span>
           </Button>
           <div className="hidden items-center gap-1.5 md:flex">
             <ThemeToggle />
@@ -190,7 +230,7 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
           rail's 40-px column was pure dead weight on phones. */}
       <div className="flex min-h-0 flex-1">
         {sidePanel === "instruments" && (
-          <InstrumentsPanel onClose={() => setSidePanel(null)} />
+          <InstrumentsPanel onClose={closeInstruments} />
         )}
         {/* Mobile/md: allow vertical scroll so the chart + order panel +
             positions strip can all be reached. The previous unconditional
@@ -205,15 +245,13 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
             rahi usko bhi ramove karo"). The nav adds its own
             safe-area-inset-bottom padding so iPhone home-bar overlap
             is handled there, not here. */}
-        <main className="min-h-0 flex-1 overflow-y-auto pb-14 md:pb-0 lg:overflow-hidden">{children}</main>
+        <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
       </div>
 
-      {/* Mobile-only bottom nav — same edge-to-edge style as the rest
-          of the app (dashboard, marketwatch, positions) so the chart
-          page doesn't look out of place with a floating pill. User
-          rejected the "boxed" compact mode: "ye jo box ke andar rakh
-          hai waisa mat rakh yrr". */}
-      <BottomNav />
+      {/* App bottom-nav intentionally NOT rendered on the chart route
+          (operator: "niche nav bar mat dikh chart me"). Navigation back
+          is via the in-page header's back arrow; the bottom of the chart
+          card is the compact SELL / BUY trade strip instead. */}
 
       {/* Footer status bar (Equity / Free / Margin / Balance / Margin
           level / connection) removed per user request — those numbers

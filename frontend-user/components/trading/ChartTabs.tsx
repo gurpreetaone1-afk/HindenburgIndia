@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Plus, X } from "lucide-react";
-import { AddInstrumentDialog } from "@/components/trading/AddInstrumentDialog";
+import { OptionChainPicker } from "@/components/trading/OptionChainPicker";
 import { cn } from "@/lib/utils";
 
 export interface ChartTab {
@@ -91,11 +91,7 @@ export function ChartTabs({ tabs, active, onSelect, onClose, onAdded }: Props) {
         <Plus className="size-4" />
       </button>
 
-      {/* General instrument picker — search any equity / future / option
-          / forex / crypto. The "Browse option chain" entry inside this
-          dialog hands off to OptionChainPicker for users who want to
-          pick an option leg by strike + expiry. */}
-      <AddInstrumentDialog
+      <OptionChainPicker
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         onPick={addTab}

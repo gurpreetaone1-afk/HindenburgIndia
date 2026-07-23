@@ -244,6 +244,14 @@ export function AdminWsBridge() {
               });
             }
             break;
+          case "kyc_update":
+            // KYC review queue + the user row (approval flips
+            // kyc.is_verified) + dashboard/compliance counters. Fires on
+            // user submit and on any admin's approve/reject echo.
+            qc.invalidateQueries({ queryKey: ["admin", "kyc"] });
+            qc.invalidateQueries({ queryKey: ["admin", "users"] });
+            qc.invalidateQueries({ queryKey: ["admin", "dashboard"] });
+            break;
           case "pnl_sharing_update":
             // Refetch all P&L sharing data (list, agreement detail, report
             // rows, settlement history, me/agreement) so the live SharingCard

@@ -11,6 +11,7 @@
 import {
   Activity,
   Banknote,
+  BadgeCheck,
   Calendar,
   ClipboardList,
   Cog,
@@ -62,6 +63,7 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
     title: "Users",
     items: [
       { href: "/users", label: "All users", icon: Users, perm: "users" },
+      { href: "/kyc", label: "KYC Review", icon: BadgeCheck, perm: "kyc" },
     ],
   },
   {

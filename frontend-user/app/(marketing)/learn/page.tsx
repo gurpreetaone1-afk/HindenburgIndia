@@ -163,9 +163,9 @@ export default function LearnPage() {
   return (
     <>
       <section className="relative overflow-hidden border-b border-border">
-        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-b from-primary/10 via-background to-background" />
+        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-b from-primary/8 via-background to-background" />
         <div className="mx-auto max-w-5xl px-4 py-20 text-center sm:px-6 sm:py-24 lg:px-8">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-xs font-semibold text-primary">
             <Lightbulb className="size-3" /> The Learn hub
           </span>
           <h1 className="mt-5 text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
@@ -195,7 +195,7 @@ export default function LearnPage() {
           {TRACKS.map((t) => {
             const Icon = t.icon;
             return (
-              <div key={t.name} className="group rounded-2xl border border-border bg-card p-6 transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-xl hover:shadow-primary/5">
+              <div key={t.name} className="group rounded-2xl border border-border/40 bg-card/60 p-6 transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-xl hover:shadow-primary/10">
                 <div className="flex items-start gap-4">
                   <div className="grid size-12 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
                     <Icon className="size-6" />
@@ -224,7 +224,7 @@ export default function LearnPage() {
         </div>
       </section>
 
-      <section className="border-y border-border bg-muted/20">
+      <section className="border-y border-border/40 bg-muted/20">
         <div className="mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-24 lg:px-8">
           <div className="flex items-end justify-between">
             <div className="max-w-2xl">
@@ -267,7 +267,7 @@ export default function LearnPage() {
         </div>
         <dl className="mt-10 grid gap-4 sm:grid-cols-2">
           {GLOSSARY.map((g) => (
-            <div key={g.term} className="rounded-2xl border border-border bg-card p-5">
+            <div key={g.term} className="rounded-2xl border border-border/40 bg-card/60 p-5">
               <dt className="flex items-center gap-2 text-sm font-bold text-primary">
                 <BookOpen className="size-4" />
                 {g.term}
@@ -279,7 +279,7 @@ export default function LearnPage() {
       </section>
 
       <section className="mx-auto max-w-7xl px-4 pb-24 sm:px-6 lg:px-8">
-        <div className="rounded-3xl border border-primary/30 bg-gradient-to-br from-primary/15 via-primary/5 to-background p-10 sm:p-14">
+        <div className="rounded-3xl border border-primary/20 bg-gradient-to-br from-primary/15 via-primary/5 to-background p-10 sm:p-14">
           <div className="grid items-center gap-8 lg:grid-cols-[1fr_auto]">
             <div className="max-w-2xl">
               <ScrollText className="size-10 text-primary" />
@@ -297,7 +297,7 @@ export default function LearnPage() {
               />
               <button
                 type="submit"
-                className="inline-flex h-11 items-center gap-2 rounded-md bg-primary px-5 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+                className="inline-flex h-11 items-center gap-2 rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/20 hover:bg-primary/90"
               >
                 Subscribe
               </button>

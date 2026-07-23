@@ -1,15 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { LogOut, Pencil, X } from "lucide-react";
-import { OrderAPI, PositionAPI, ProfileAPI, SegmentSettingsAPI, WalletAPI } from "@/lib/api";
+import { Inbox, Layers, Lock, LogOut, Pencil, Shield, Target, X } from "lucide-react";
+import { OrderAPI, PositionAPI, WalletAPI } from "@/lib/api";
 import { useMarketStream } from "@/lib/useMarketStream";
 import { usePriceFlash } from "@/lib/usePriceFlash";
-import { isInstrumentMarketOpen, marketLabel } from "@/lib/marketHours";
+import { isInstrumentMarketOpen } from "@/lib/marketHours";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
@@ -17,10 +18,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { PageHeader } from "@/components/common/PageHeader";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { DataTable, type Column } from "@/components/common/DataTable";
+
 import { StatusPill } from "@/components/common/StatusPill";
-import { ClosePositionDialog, type ClosePositionTarget } from "@/components/common/ClosePositionDialog";
 import { TradeDetailSheet } from "@/components/trading/TradeDetailSheet";
 import { cn, formatINR, formatIST, formatPrice, pnlColor } from "@/lib/utils";
 
@@ -50,32 +51,38 @@ function fmtFeedPrice(
 }
 
 /**
- * Extract a readable expiry chip from an NSE/MCX derivative symbol.
- * Handles both encoding styles NSE uses for FUT + options:
+ * Extract a readable expiry chip from an NSE/MCX derivative symbol,
+ * including the full 4-digit year so a position that carries into the
+ * next calendar year is unambiguous on screen.
  *
  *  • Monthly (alphabetic month):   `CRUDEOIL26JUNFUT` / `NIFTY26JUN23700PE`
- *                                  → "26 JUN"
+ *                                  → "26 JUN 2026"
  *  • Weekly NIFTY/BANKNIFTY etc:   `NIFTY2651923800PE` (YY=26, M=5,
- *                                  D=19, strike, side) → "19 MAY 26"
+ *                                  D=19, strike, side) → "19 MAY 2026"
  *  • Weekly Oct/Nov/Dec:           NSE encodes those single chars as
  *                                  "O" / "N" / "D" in the month slot —
  *                                  same parser handles that path.
  *
  * Returns null for spot stocks, indices, or anything that doesn't match
- * the two encodings above.
+ * the two encodings above. Operator request: "date show kar, actual
+ * data kya hai expiry ka woh dikha" — earlier the chip dropped the
+ * year and you couldn't tell a Jun-26 contract from a Jun-27 one.
  */
 function extractExpiryLabel(symbol: string | null | undefined): string | null {
   if (!symbol) return null;
   const sym = String(symbol).toUpperCase();
   const MONTH_NAMES = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
                        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  // YY → 4-digit year. NSE / MCX symbols carry the 2-digit form
+  // (`26` for 2026); 20xx is the only century in scope here.
+  const fullYear = (yy: string) => `20${yy}`;
 
   // Monthly pattern — `<UNDERLYING><YY><MMM>...`. The regex anchors on
   // the YY+MMM tuple so it works for any underlying prefix and for both
   // FUT (CRUDEOIL26JUNFUT) and option (NIFTY26JUN23700PE) suffixes.
   const monthly =
     /(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/.exec(sym);
-  if (monthly) return `${monthly[1]} ${monthly[2]}`;
+  if (monthly) return `${monthly[1]} ${monthly[2]} ${fullYear(monthly[1])}`;
 
   // Weekly numeric pattern — `<ALPHA><YY><M><DD>...<CE|PE>` where M is
   // a single char: 1-9 for Jan-Sep, then O/N/D for Oct/Nov/Dec. So
@@ -97,7 +104,7 @@ function extractExpiryLabel(symbol: string | null | undefined): string | null {
       monthIdx = 11;                             // Dec
     }
     if (monthIdx < 0 || monthIdx > 11) return null;
-    return `${dd} ${MONTH_NAMES[monthIdx]} ${yy}`;
+    return `${dd} ${MONTH_NAMES[monthIdx]} ${fullYear(yy)}`;
   }
 
   return null;
@@ -105,7 +112,7 @@ function extractExpiryLabel(symbol: string | null | undefined): string | null {
 
 // Compact pill that translates Position.close_reason into a human label
 // with a tone-matching color. Same legal set as
-// stock4x_ind/backend/app/models/position.py:close_reason.
+// marginplant_ind/backend/app/models/position.py:close_reason.
 const CLOSE_REASON_META: Record<
   string,
   { label: string; cls: string }
@@ -120,24 +127,61 @@ const CLOSE_REASON_META: Record<
     label: "Stop-out",
     cls: "bg-amber-500/10 text-amber-400 ring-amber-500/30",
   },
+  // Carry-forward failure — wallet couldn't cover the overnight margin
+  // at EOD rollover, so the platform flattened MIS at market before
+  // converting to NRML. Distinct chip so the user can tell this apart
+  // from a stop-out (which is a live margin breach during the day).
+  CARRY_FORWARD_FAIL: {
+    label: "CF · Insufficient funds",
+    cls: "bg-amber-500/10 text-amber-400 ring-amber-500/30",
+  },
+  // Segment doesn't allow overnight at all (intraday-only product).
+  EOD_OVERNIGHT_DISABLED: {
+    label: "EOD · Intraday only",
+    cls: "bg-amber-500/10 text-amber-400 ring-amber-500/30",
+  },
+  ADMIN_CLOSE: {
+    label: "Admin Close",
+    cls: "bg-purple-500/10 text-purple-400 ring-purple-500/30",
+  },
   AUTO: {
     label: "Auto",
     cls: "bg-muted/40 text-muted-foreground ring-border",
   },
 };
 
-// Overnight (carry-forward) margin estimate for a single position or
-// active-trade row. MIS blocks ~40% less margin intraday than NRML, so
-// rolling a MIS position past 3:20 PM needs roughly 1.4× the current
-// block; NRML/CNC already sits at full margin so it's unchanged. Used
-// by the per-position "Holding Margin" tile AND the wallet strip's CF
-// Required aggregate so both stay in lockstep — previously the strip
-// summed `margin_used` (intraday) which made it identical to the Used
-// Margin tile and meaningless as a CF indicator.
+// Format a position/order quantity for display, killing floating-point noise.
+// qty is computed as lots × lot_size, and a qty→lots→qty roundtrip on
+// fractional lots leaves garbage like 65.00999999999999 (really 65.01, and the
+// .01 is itself accumulated lot-rounding error → the user meant 65). We round
+// to 3 dp, then SNAP values ≥1 that sit within 0.02 of an integer back to the
+// integer (futures qty is whole). Genuine sub-1 crypto/forex sizes (0.001, 0.5)
+// are left untouched so they don't collapse to 0.
+function fmtQty(q: any): string {
+  const n = Math.abs(Number(q) || 0);
+  if (n === 0) return "0";
+  const r = Math.round(n * 1000) / 1000;
+  const nearest = Math.round(r);
+  if (n >= 1 && Math.abs(r - nearest) < 0.02) return String(nearest);
+  return String(r);
+}
+
+// Overnight (carry-forward) margin requirement for a single position or
+// active-trade row. PREFERS the backend-computed `holding_margin` value
+// (resolved per-position against the user's effective overnight margin
+// settings — MCX FUT 70× / NSE OPT 100% / Fixed-per-lot, whatever the
+// admin matrix said). The old client-side `intraday × 1.4` heuristic
+// was a guess that matched NSE equity but was wildly wrong on MCX
+// (operator's CRUDEOIL row showed ₹2,648 instead of ₹13,511).
+// Falls back to the locked intraday margin if the backend hasn't
+// stamped a value yet (stale cached payloads from before the upgrade).
 function holdingMarginFor(row: any): number {
-  const used = Number(row?.margin_used ?? row?.margin ?? row?.used_margin ?? 0);
-  const isMIS = String(row?.product_type ?? "").toUpperCase() === "MIS";
-  return isMIS ? +(used * 1.4).toFixed(2) : used;
+  const stamped = row?.holding_margin;
+  if (stamped !== null && stamped !== undefined && stamped !== "") {
+    const n = Number(stamped);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return Number(row?.margin_used ?? row?.margin ?? row?.used_margin ?? 0);
 }
 
 function CloseReasonChip({ reason }: { reason?: string | null }) {
@@ -161,38 +205,6 @@ function CloseReasonChip({ reason }: { reason?: string | null }) {
 
 export default function PositionsPage() {
   const qc = useQueryClient();
-  // Per-user re-order config — when reorder_effective_delay_sec > 0 the
-  // backend parks every MARKET squareoff for ~N seconds before the
-  // matching engine actually flattens the position. The OPTIMISTIC
-  // remove paths below must skip in that case, otherwise the row
-  // vanishes on click, the 2-s positions poll fires WHILE the server
-  // still sees the row as OPEN and the cache gets refilled, then ~N s
-  // later the close finally lands and the row vanishes again — same
-  // flash-in / flash-out pattern as the open-side re-order bug.
-  const { data: me } = useQuery<any>({
-    queryKey: ["users", "me"],
-    queryFn: () => ProfileAPI.me(),
-    staleTime: 60_000,
-    refetchInterval: 60_000,
-  });
-  const reorderDelayActive =
-    Number(me?.reorder_effective_delay_sec ?? 0) > 0;
-  // Per-row "close in flight" tracker — populated when the user
-  // clicks X Close (via squareoff / exitActive / ClosePositionDialog
-  // onSubmit), drained when the matching engine actually flattens
-  // the position (the row vanishes from `open`). Drives BOTH the
-  // loading spinner on the row's Close button AND the deferred
-  // "Closed <symbol>" toast that fires only after the position has
-  // actually been flattened (user explicit ask: notification trade
-  // close hone ke baad aana chahiye). The symbol is captured at
-  // click time so the toast can name the right instrument once the
-  // drain effect picks up the disappearance.
-  const [closingPositionIds, setClosingPositionIds] = useState<
-    Map<string, { symbol: string }>
-  >(() => new Map());
-  const [closingActiveTradeIds, setClosingActiveTradeIds] = useState<
-    Map<string, { symbol: string }>
-  >(() => new Map());
   const [tab, setTab] = useState<TabKey>("position");
   // `source` discriminates between the two tabs that share the same edit
   // dialog. Active-trade rows hit the per-trade SL/TP endpoint by their
@@ -211,6 +223,28 @@ export default function PositionsPage() {
   // potion ko click karne par bhi same buy/sell ke liye card open
   // ho jaisa option chain me kiya hai".
   const [sheetToken, setSheetToken] = useState<string | null>(null);
+  // Pending-order edit dialog state. Set when the user taps the pencil
+  // on a pending order card; cleared on cancel / successful save.
+  const [editingPending, setEditingPending] = useState<any | null>(null);
+  // Confirmation dialog for the header "Square off all" action. Opens on
+  // tap (mobile + desktop); the actual squareoff fires only on confirm.
+  const [confirmAllOpen, setConfirmAllOpen] = useState(false);
+  // Row pending the themed single-close confirmation card (desktop only).
+  const [closeRow, setCloseRow] = useState<any | null>(null);
+
+  // Close-button entry point. Mobile fires immediately (no popup, per user
+  // spec); desktop opens the themed confirmation card instead of the old
+  // native confirm().
+  function requestClose(r: any) {
+    const isMobileUi =
+      typeof window !== "undefined" &&
+      window.matchMedia("(max-width: 767px)").matches;
+    if (isMobileUi) {
+      void squareoff(r.id);
+      return;
+    }
+    setCloseRow(r);
+  }
 
   // ── Data ────────────────────────────────────────────────────────────
   // Open positions are always fetched so the tab badge stays current and
@@ -218,19 +252,47 @@ export default function PositionsPage() {
   const { data: open, isFetching: openLoading } = useQuery<any[]>({
     queryKey: ["positions", "open"],
     queryFn: () => PositionAPI.open(),
-    refetchInterval: 3000,
+    // Fast 2 s poll. Prod Mongo is single-node (immediate read consistency,
+    // NO Atlas replica lag), so the old dataUpdatedAt "pause poll for 3.5 s"
+    // dance just made open/close reflect slowly for no benefit. The
+    // open/close handlers cancelQueries on tap + fire a short-delay
+    // invalidate post-commit, so a fast poll can't resurrect a closed row.
+    refetchInterval: 2000,
+    // Brief freshness window so an optimistic row written by the trade sheet
+    // survives the on-navigate mount without an immediate wipe.
+    staleTime: 1500,
   });
-  const { data: closed, isFetching: closedLoading } = useQuery<any[]>({
+  const {
+    data: closedPages,
+    isFetching: closedLoading,
+    fetchNextPage: fetchMoreClosed,
+    hasNextPage: hasMoreClosed,
+    isFetchingNextPage: loadingMoreClosed,
+  } = useInfiniteQuery<{ items: any[]; total: number }>({
     queryKey: ["positions", "closed"],
-    queryFn: () => PositionAPI.closed(),
-    refetchInterval: 10000,
+    queryFn: ({ pageParam }) => PositionAPI.closed(pageParam as number, 25),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.items.length === 25 ? allPages.length + 1 : undefined,
+    staleTime: 0,
     enabled: tab === "closed",
   });
+  const closed: any[] = closedPages?.pages.flatMap((p) => p.items) ?? [];
+  const closedTotal: number = closedPages?.pages[0]?.total ?? 0;
+  // Active trades poll in the BACKGROUND (not gated on the active tab) so:
+  //   1. the Active badge count is correct before you open the tab, and
+  //   2. switching to Active shows the already-warm list instantly instead
+  //      of a cold fetch that — with Atlas read-replica lag — left the tab
+  //      blank for 6-7 s after placing a trade (user-flagged). A
+  //      freshly-placed trade now lands within one 3 s poll, same cadence
+  //      as the open-positions list, so Active feels as live as Position.
   const { data: activeTrades, isFetching: activeLoading } = useQuery<any[]>({
     queryKey: ["positions", "active-trades"],
     queryFn: () => PositionAPI.activeTrades(),
-    refetchInterval: 3000,
-    enabled: tab === "active",
+    // Fast 2 s poll — see the open-positions query above (single-node Mongo,
+    // so no replica-lag flicker to pause around).
+    refetchInterval: 2000,
+    staleTime: 1500,
   });
   // pnlSummary is used for live USD/INR + wallet strip; always polled
   // (cheap, single endpoint, 5 s) so the header tracker stays current
@@ -241,104 +303,43 @@ export default function PositionsPage() {
     refetchInterval: 5000,
   });
 
-  // Drain closingPositionIds once the matching engine has actually
-  // flattened the position (= row no longer in the open list). At
-  // that moment we ALSO pop the deferred "Closed <symbol>" toast,
-  // so the notification matches the row vanishing from Positions —
-  // even when the close went through the re-order delay window.
-  useEffect(() => {
-    if (closingPositionIds.size === 0) return;
-    const ids = new Set((open ?? []).map((p: any) => String(p.id)));
-    const drained: { symbol: string }[] = [];
-    setClosingPositionIds((prev) => {
-      let changed = false;
-      const next = new Map(prev);
-      for (const [id, meta] of prev) {
-        if (!ids.has(id)) {
-          next.delete(id);
-          drained.push(meta);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-    for (const meta of drained) {
-      toast.success(`${meta.symbol} closed`, { duration: 1500 });
-    }
-  }, [open, closingPositionIds]);
-
-  // Same drain pattern for active-trade close buttons.
-  useEffect(() => {
-    if (closingActiveTradeIds.size === 0) return;
-    const ids = new Set((activeTrades ?? []).map((t: any) => String(t.id)));
-    const drained: { symbol: string }[] = [];
-    setClosingActiveTradeIds((prev) => {
-      let changed = false;
-      const next = new Map(prev);
-      for (const [id, meta] of prev) {
-        if (!ids.has(id)) {
-          next.delete(id);
-          drained.push(meta);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-    for (const meta of drained) {
-      toast.success(`${meta.symbol} exited`, { duration: 1500 });
-    }
-  }, [activeTrades, closingActiveTradeIds]);
-
-  // Per-tab pagination state. Resets to page 1 when the user opens
-  // each tab (most users want the latest entries first). Page size
-  // matches the backend default (50) so the page-count math lines up.
-  const [pendingPage, setPendingPage] = useState(1);
-  const [cancelledPage, setCancelledPage] = useState(1);
-  const [rejectedPage, setRejectedPage] = useState(1);
-  // Phase-5C close-position dialog target. Opens the partial-close +
-  // rollover dialog when the user taps a row's Close button. The
-  // existing `squareoff(id)` fast-path stays for `squareoffAll` and
-  // any future flow that needs to fire a market close without the
-  // dialog ceremony.
-  const [closeTarget, setCloseTarget] = useState<ClosePositionTarget | null>(null);
-
-  // Pending orders — LIMIT / SL-M parked in the order book waiting for
-  // their trigger condition. Status is OPEN at this point (PENDING is the
-  // brief validation window before the order is accepted). Polled live
-  // (3 s) so a trigger-fire moves the row out of this tab the moment the
-  // matching engine flips status → EXECUTED.
-  const { data: pendingPaginated, isFetching: pendingLoading } = useQuery({
-    queryKey: ["orders", "OPEN", pendingPage],
-    queryFn: () => OrderAPI.listPaginated({ status: "OPEN", page: pendingPage, page_size: 50 }),
-    refetchInterval: 3000,
-    enabled: tab === "pending",
-    placeholderData: (prev) => prev,
-  });
-  const pending = pendingPaginated?.items;
-  const pendingMeta = pendingPaginated?.meta;
-
   // Cancelled / Rejected feed orders, not positions — fold them in here
   // so the user has one unified blotter for every order state. Lazy
   // (only fetched when the tab is selected) and a slow 10 s poll since
   // cancelled/rejected don't change live.
-  const { data: cancelledPaginated, isFetching: cancelledLoading } = useQuery({
-    queryKey: ["orders", "CANCELLED", cancelledPage],
-    queryFn: () => OrderAPI.listPaginated({ status: "CANCELLED", page: cancelledPage, page_size: 50 }),
+  const { data: cancelled, isFetching: cancelledLoading } = useQuery<any[]>({
+    queryKey: ["orders", "CANCELLED"],
+    queryFn: () => OrderAPI.list("CANCELLED") as Promise<any[]>,
     refetchInterval: 10000,
     enabled: tab === "cancelled",
-    placeholderData: (prev) => prev,
   });
-  const cancelled = cancelledPaginated?.items;
-  const cancelledMeta = cancelledPaginated?.meta;
-  const { data: rejectedPaginated, isFetching: rejectedLoading } = useQuery({
-    queryKey: ["orders", "REJECTED", rejectedPage],
-    queryFn: () => OrderAPI.listPaginated({ status: "REJECTED", page: rejectedPage, page_size: 50 }),
+  // Pending = OPEN / PENDING / TRIGGERED orders (limit / SL-M waiting
+  // for the matching engine to fire). Filtered client-side from the
+  // unfiltered /orders list because the backend's status filter
+  // accepts only one status at a time while pending here spans 3
+  // states. Fast poll (3 s) so newly-placed pending orders appear
+  // promptly + cancels reflect immediately.
+  const { data: pendingRaw, isFetching: pendingLoading } = useQuery<any[]>({
+    queryKey: ["orders", "PENDING-LIKE"],
+    queryFn: () => OrderAPI.list() as Promise<any[]>,
+    refetchInterval: 3000,
+    enabled: tab === "pending",
+  });
+  const pending = useMemo(
+    () =>
+      (pendingRaw ?? []).filter((o: any) =>
+        ["PENDING", "OPEN", "TRIGGERED"].includes(
+          String(o?.status ?? "").toUpperCase(),
+        ),
+      ),
+    [pendingRaw],
+  );
+  const { data: rejected, isFetching: rejectedLoading } = useQuery<any[]>({
+    queryKey: ["orders", "REJECTED"],
+    queryFn: () => OrderAPI.list("REJECTED") as Promise<any[]>,
     refetchInterval: 10000,
     enabled: tab === "rejected",
-    placeholderData: (prev) => prev,
   });
-  const rejected = rejectedPaginated?.items;
-  const rejectedMeta = rejectedPaginated?.meta;
 
   // Wallet snapshot for the top status strip.
   const { data: wallet } = useQuery<any>({
@@ -350,7 +351,7 @@ export default function PositionsPage() {
 
   // ── Counts ──────────────────────────────────────────────────────────
   const counts = {
-    closed: closed?.length ?? 0,
+    closed: closedTotal || closed?.length || 0,
     position: open?.length ?? 0,
     active: activeTrades?.length ?? 0,
     pending: pending?.length ?? 0,
@@ -488,6 +489,64 @@ export default function PositionsPage() {
   );
 
   // ── Actions ─────────────────────────────────────────────────────────
+
+  // Resolve a just-opened (optimistic_…) row to its real DB position id by
+  // matching the instrument token in a freshly-refetched open-positions list.
+  // The backend ObjectId lands within ~500ms via the WS push / next poll, so
+  // a couple of quick refetches almost always finds it — turning an instant
+  // open→close into a smooth close instead of "Order still settling".
+  async function resolveRealPositionId(optimisticId: string): Promise<string | null> {
+    const cur = qc.getQueryData<any[]>(["positions", "open"]) ?? [];
+    const opt = cur.find((p) => p.id === optimisticId);
+    // Token from the optimistic row; fall back to the lone open row when the
+    // poll already swapped the optimistic id out from under the tap.
+    const tok =
+      String(opt?.instrument_token ?? opt?.token ?? "") ||
+      (cur.length === 1 ? String(cur[0]?.instrument_token ?? cur[0]?.token ?? "") : "");
+    if (!tok) return null;
+    // Be PATIENT: a "buy then instantly exit" taps Close while the BUY's
+    // own POST is still in flight, so the real position row may take up to
+    // ~1-2 s to land. 8 attempts × 400 ms (~3.2 s) almost always catches it
+    // — most fills resolve on the 1st-2nd try, only the sub-second
+    // open→close race needs the longer budget. Beats the old 3-try (~1.2 s)
+    // that surfaced "Order still settling" on a fast buy→exit.
+    const ATTEMPTS = 8;
+    for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+      try {
+        await qc.refetchQueries({ queryKey: ["positions", "open"] });
+      } catch {
+        /* ignore — try the cache anyway */
+      }
+      const fresh = qc.getQueryData<any[]>(["positions", "open"]) ?? [];
+      const real = fresh.find(
+        (p) =>
+          !String(p.id).startsWith("optimistic_") &&
+          String(p.instrument_token ?? p.token ?? "") === tok &&
+          (p.status ?? "OPEN") === "OPEN",
+      );
+      if (real?.id) return String(real.id);
+      if (attempt < ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 400));
+    }
+    return null;
+  }
+
+  // A close error we treat as "reconcile, don't alarm": already gone / in
+  // flight / network / timeout — the B-Book close usually went through anyway
+  // and the 2s poll settles the truth. Stops the re-tap → lock loop.
+  function isBenignCloseError(e: any): boolean {
+    const msg = String(e?.message ?? "").toLowerCase();
+    const code = String(e?.code ?? "").toUpperCase();
+    return (
+      code === "NETWORK" ||
+      msg.includes("in flight") ||
+      msg.includes("network") ||
+      msg.includes("timeout") ||
+      msg.includes("already closed") ||
+      msg.includes("not found") ||
+      msg.includes("no open position")
+    );
+  }
+
   async function squareoff(id: string) {
     // Optimistic rows have synthetic IDs (`optimistic_<ts>`) created by
     // OrderPanel before the backend confirms the trade. They're not real
@@ -496,271 +555,269 @@ export default function PositionsPage() {
     // middleware can't decorate — the browser sees it as a CORS error).
     // Block here and tell the user to wait a beat for the server to land
     // the real row; the WS push usually reconciles within 500 ms.
+    let targetId = id;
     if (id.startsWith("optimistic_")) {
-      toast.error("Order still settling — try again in a second");
-      return;
+      // Just-bought position whose real DB id hasn't reconciled yet. Instead
+      // of poll-waiting for the id (the "Closing… settling" lag), close BY
+      // TOKEN — the backend resolves the user's open position for that token
+      // (with a short retry for the buy commit). Instant close, no wait.
+      const cur = qc.getQueryData<any[]>(["positions", "open"]) ?? [];
+      const optRow = cur.find((p) => p.id === id);
+      const tok = String(optRow?.instrument_token ?? optRow?.token ?? "");
+      if (tok) {
+        targetId = `token:${tok}`;
+      } else {
+        // No token on the row (shouldn't happen) — fall back to the resolve
+        // poll so the close still works.
+        const resolved = await resolveRealPositionId(id);
+        if (!resolved) {
+          toast.error("Order still settling — try Exit again in a moment");
+          return;
+        }
+        targetId = resolved;
+      }
     }
-    // Market-hours guard — must run BEFORE the optimistic remove,
-    // otherwise the row vanishes for a flash, the backend rejects
-    // with "market closed", and we roll back (flicker). Show the
-    // toast and leave the row in place instead.
-    const row = (open ?? []).find((p: any) => p.id === id);
-    if (row && !isInstrumentMarketOpen(row.segment_type, row.exchange)) {
-      toast.error(
-        `${marketLabel(row.segment_type, row.exchange)} market is closed — try closing ${row.symbol} during trading hours`,
-        { duration: 4000 },
-      );
-      return;
-    }
-    // Mobile UX — skip the native confirm() dialog and just fire. The
-    // user explicitly asked for "close karne par pop mat aaye" on
-    // phones; desktop still gets the confirm step to protect against
-    // accidental clicks on a wider hit-area. Bootstrap-md breakpoint
-    // (768px) matches the rest of the responsive layout here.
+    // Confirmation is handled upstream: desktop opens the themed
+    // ConfirmDialog card via requestClose(); mobile fires straight through
+    // (user spec: "close karne par pop mat aaye" on phones). The ugly
+    // browser confirm() is gone. isMobileUi only drives toast wording now.
     const isMobileUi =
       typeof window !== "undefined" &&
       window.matchMedia("(max-width: 767px)").matches;
-    if (!isMobileUi && !confirm("Square off this position at market?")) return;
 
     // OPTIMISTIC REMOVE — drop the row from the cache in the SAME frame
-    // as the click so the UI feels instant. Skipped when the user is on
-    // the re-order pipeline (backend will park the close for N seconds
-    // before actually flattening), otherwise the row would flash out,
-    // get refilled by the 2-s positions poll while the server still
-    // sees it as OPEN, and vanish again only when the executor fires
-    // ~N s later.
+    // as the click so the UI feels instant ("close karne me time lag
+    // raha hai 200 ms" was the user complaint). Earlier we awaited the
+    // API and only invalidated afterwards, so the row sat with its
+    // disabled state for the full round-trip. Mirror of the pattern
+    // already used in components/trading/PositionsTabs.tsx:squareoff.
     qc.cancelQueries({ queryKey: ["positions", "open"] });
     qc.cancelQueries({ queryKey: ["positions", "summary"] });
-    qc.cancelQueries({ queryKey: ["active-trades"] });
+    qc.cancelQueries({ queryKey: ["positions", "active-trades"] });
     const posSnapshot = qc.getQueryData<any[]>(["positions", "open"]);
-    const tradesSnapshot = qc.getQueryData<any[]>(["active-trades"]);
-    if (!reorderDelayActive) {
-      qc.setQueryData<any[]>(["positions", "open"], (old) =>
-        Array.isArray(old) ? old.filter((p) => p.id !== id) : [],
-      );
-      qc.setQueryData<any[]>(["active-trades"], (old) =>
-        Array.isArray(old) ? old.filter((t) => t.position_id !== id) : [],
-      );
-    }
-
-    // Mark the row as "closing" — drives the spinner on the Close
-    // button until the matching engine actually flattens it (drained
-    // by the useEffect above when the row vanishes from `open`). The
-    // drain effect also pops the deferred "<symbol> closed" toast at
-    // that moment, so we stash the symbol here.
-    const sym = String(row?.symbol ?? "");
-    setClosingPositionIds((prev) =>
-      new Map(prev).set(id, { symbol: sym }),
+    const tradesSnapshot = qc.getQueryData<any[]>(["positions", "active-trades"]);
+    qc.setQueryData<any[]>(["positions", "open"], (old) =>
+      Array.isArray(old) ? old.filter((p) => p.id !== id && p.id !== targetId) : [],
+    );
+    // Drop every active-trade row tied to this position too — same key the
+    // Active tab actually reads (`["positions","active-trades"]`). The old
+    // code targeted a bare `["active-trades"]` key that no query used, so
+    // the Active rows lingered for a full poll after the position vanished.
+    qc.setQueryData<any[]>(["positions", "active-trades"], (old) =>
+      Array.isArray(old)
+        ? old.filter((t) => t.position_id !== id && t.position_id !== targetId)
+        : [],
     );
 
-    // Suppress the synchronous toast for re-order users — the deferred
-    // "<symbol> closed" toast pops in the drain effect once the
-    // position actually disappears. Non-reorder users still get the
-    // instant feedback because their fill is sub-second.
-    const pendingToastId = reorderDelayActive
-      ? null
-      : toast.success(
-          isMobileUi ? "Closed" : "Submitted",
-          { duration: 1500 },
-        );
+    // Sync toast: pops in the same frame as the click + optimistic
+    // remove. Dismissed on rejection so we don't leave a misleading
+    // "Closed" up next to a restored row.
+    const pendingToastId = toast.success(
+      isMobileUi ? "Closed" : "Submitted",
+      { duration: 1500 },
+    );
     try {
-      await PositionAPI.squareoff(id);
-      // DO NOT invalidate positions here — Mongo Atlas can briefly
-      // return the just-closed position as still OPEN on the read
-      // replica for a tick, which would re-add the row and cause a
-      // flicker. The 2 s background poll handles eventual consistency.
+      await PositionAPI.squareoff(targetId);
       qc.invalidateQueries({ queryKey: ["orders"] });
       qc.invalidateQueries({ queryKey: ["wallet"] });
+      // Reconcile open + active FAST. The close POST has returned, so on
+      // single-node Mongo the row is already committed-closed — a short
+      // delayed refetch confirms the removal within ~400 ms instead of
+      // waiting for the 2 s poll. cancelQueries above already killed any
+      // in-flight poll, so this can't resurrect the row.
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["positions", "open"] });
+        qc.invalidateQueries({ queryKey: ["positions", "active-trades"] });
+      }, 400);
+      // Refresh the Closed tab too — delayed retry covers any tiny lag.
+      qc.invalidateQueries({ queryKey: ["positions", "closed"] });
+      setTimeout(
+        () => qc.invalidateQueries({ queryKey: ["positions", "closed"] }),
+        1500,
+      );
     } catch (e: any) {
-      // Rollback both caches so the row reappears (no-op when we
-      // didn't optimistically remove in the first place).
-      if (!reorderDelayActive) {
-        if (posSnapshot) qc.setQueryData(["positions", "open"], posSnapshot);
-        if (tradesSnapshot) qc.setQueryData(["active-trades"], tradesSnapshot);
+      if (isBenignCloseError(e)) {
+        // Already-gone / in-flight / network — keep the optimistic removal
+        // and let the (paused) poll reconcile. Do NOT invalidate open /
+        // active-trades here: an immediate refetch races the close commit
+        // and resurrects the row for ~1 s. Only side caches refresh now.
+        qc.invalidateQueries({ queryKey: ["positions", "closed"] });
+        qc.invalidateQueries({ queryKey: ["wallet"] });
+        return;
       }
-      // Clear the closing-spinner flag — API rejected outright, the
-      // row's still open so the button must come back to "Close".
-      setClosingPositionIds((prev) => {
-        const next = new Map(prev);
-        next.delete(id);
-        return next;
-      });
-      if (pendingToastId !== null) toast.dismiss(pendingToastId);
+      // Genuine rejection — restore the row + surface the message.
+      if (posSnapshot) qc.setQueryData(["positions", "open"], posSnapshot);
+      if (tradesSnapshot) qc.setQueryData(["positions", "active-trades"], tradesSnapshot);
+      toast.dismiss(pendingToastId);
       toast.error(e?.message || "Failed");
     }
   }
-  async function squareoffAll(filter?: "profit" | "loss") {
+  async function squareoffAll() {
     if (!open?.length) return;
-    let eligible = open.filter((p) => {
-      if (filter === "profit") return Number(p.unrealized_pnl ?? 0) >= 0;
-      if (filter === "loss") return Number(p.unrealized_pnl ?? 0) < 0;
-      return true;
-    });
-    // Market-hours filter — drop positions whose segment is closed
-    // so the backend doesn't reject them mid-fan-out (which would
-    // leave the cache in a weird half-cleared state). Tell the user
-    // exactly how many got skipped so the partial action is honest.
-    const closed = eligible.filter(
-      (p: any) => !isInstrumentMarketOpen(p.segment_type, p.exchange),
-    );
-    if (closed.length) {
-      eligible = eligible.filter(
-        (p: any) => isInstrumentMarketOpen(p.segment_type, p.exchange),
-      );
-      toast.error(
-        `${closed.length} position(s) skipped — market closed for those segments`,
-        { duration: 4000 },
-      );
-    }
-    if (eligible.length === 0) {
-      toast.info(
-        filter === "profit"
-          ? "No positions in profit"
-          : filter === "loss"
-            ? "No positions in loss"
-            : "No open positions",
-      );
-      return;
-    }
-    const isMobileUi =
-      typeof window !== "undefined" &&
-      window.matchMedia("(max-width: 767px)").matches;
-    if (!isMobileUi) {
-      const msg =
-        filter === "profit"
-          ? `Square off ALL ${eligible.length} position(s) in profit?`
-          : filter === "loss"
-            ? `Square off ALL ${eligible.length} position(s) in loss?`
-            : "Square off ALL open positions?";
-      if (!confirm(msg)) return;
-    }
+    // Confirmation is handled by the themed ConfirmDialog wired to the
+    // header button (mobile + desktop). This function just performs the
+    // squareoff once the user has confirmed.
 
-    // Same optimistic-clear pattern as single squareoff — wipe the rows
-    // the server is about to flatten so the empty state shows
-    // instantly. Skipped on re-order users (the backend parks each
-    // close for N s before flattening, so the rows would re-appear on
-    // the next 2-s poll).
+    // Same optimistic-clear pattern as single squareoff — wipe all open
+    // rows the moment the user taps, so the empty state shows
+    // instantly. Backend reconciles via the 2 s poll.
     qc.cancelQueries({ queryKey: ["positions", "open"] });
     qc.cancelQueries({ queryKey: ["positions", "summary"] });
-    qc.cancelQueries({ queryKey: ["active-trades"] });
+    qc.cancelQueries({ queryKey: ["positions", "active-trades"] });
     const posSnapshot = qc.getQueryData<any[]>(["positions", "open"]);
-    const tradesSnapshot = qc.getQueryData<any[]>(["active-trades"]);
-    const eligibleIds = new Set(eligible.map((p) => p.id));
-    if (!reorderDelayActive) {
-      if (filter) {
-        qc.setQueryData<any[]>(["positions", "open"], (oldData) =>
-          Array.isArray(oldData) ? oldData.filter((p) => !eligibleIds.has(p.id)) : [],
+    const tradesSnapshot = qc.getQueryData<any[]>(["positions", "active-trades"]);
+    qc.setQueryData<any[]>(["positions", "open"], () => []);
+    qc.setQueryData<any[]>(["positions", "active-trades"], () => []);
+
+    const pendingToastId = toast.success(`Squaring off ${open.length}…`, {
+      duration: 1500,
+    });
+    try {
+      const r = await PositionAPI.squareoffAll();
+      toast.dismiss(pendingToastId);
+      const squared = r?.squared_off ?? 0;
+      const total = r?.total ?? 0;
+      const marketClosed = r?.blocked_by_market_closed ?? 0;
+      const holdBlocked = r?.blocked_by_hold_time ?? 0;
+      // When NOTHING closed and the only reason was a closed market, show
+      // a clear "market band hai" popup instead of a confusing "0/N".
+      if (squared === 0 && marketClosed > 0) {
+        toast.error(
+          `Market is closed — ${marketClosed} position${marketClosed > 1 ? "s" : ""} can only be closed once the market reopens.`,
         );
-        qc.setQueryData<any[]>(["active-trades"], (oldData) =>
-          Array.isArray(oldData)
-            ? oldData.filter((t) => !eligibleIds.has(t.position_id))
-            : [],
+      } else if (marketClosed > 0) {
+        toast.success(
+          `Squared off ${squared}/${total}. ${marketClosed} skipped — market closed.`,
+        );
+      } else if (holdBlocked > 0) {
+        toast.success(
+          `Squared off ${squared}/${total}. ${holdBlocked} skipped — hold-time not met.`,
         );
       } else {
-        qc.setQueryData<any[]>(["positions", "open"], () => []);
-        qc.setQueryData<any[]>(["active-trades"], () => []);
+        toast.success(`Squared off ${squared}/${total}`);
       }
-    }
-
-    // Mark every eligible row as "closing" — each X Close button
-    // shows its spinner until the matching engine drains the row.
-    // Stash the symbol so the per-row "closed" toast names the right
-    // instrument when the drain effect picks it up.
-    setClosingPositionIds((prev) => {
-      const next = new Map(prev);
-      for (const p of eligible) {
-        next.set(String(p.id), { symbol: String(p.symbol ?? "") });
-      }
-      return next;
-    });
-
-    const verb =
-      filter === "profit" ? "in-profit" : filter === "loss" ? "in-loss" : "all";
-    // For re-order users skip the immediate "Squaring off…" toast —
-    // each row's deferred close-toast already announces the actual
-    // landing. Non-reorder users keep the existing inline summary.
-    const pendingToastId = reorderDelayActive
-      ? null
-      : toast.success(
-          `Squaring off ${eligible.length} ${verb} position(s)…`,
-          { duration: 1500 },
-        );
-    try {
-      const r = await PositionAPI.squareoffAll(filter);
-      if (pendingToastId !== null) toast.dismiss(pendingToastId);
-      if (!reorderDelayActive) {
-        toast.success(`Squared off ${r?.squared_off ?? 0}/${r?.total ?? eligible.length}`);
+      // Some rows were intentionally left open (market closed / hold-time)
+      // — restore the snapshot so the user still sees them instead of an
+      // empty list, then let the next poll reconcile.
+      if ((marketClosed > 0 || holdBlocked > 0) && posSnapshot) {
+        qc.setQueryData(["positions", "open"], posSnapshot);
+        if (tradesSnapshot) qc.setQueryData(["positions", "active-trades"], tradesSnapshot);
       }
       qc.invalidateQueries({ queryKey: ["orders"] });
       qc.invalidateQueries({ queryKey: ["wallet"] });
+      // Same as single squareoff — pull the freshly-closed rows into the
+      // Closed tab at once, with a delayed retry for read-replica lag.
+      qc.invalidateQueries({ queryKey: ["positions", "closed"] });
+      setTimeout(
+        () => qc.invalidateQueries({ queryKey: ["positions", "closed"] }),
+        1500,
+      );
     } catch (e: any) {
-      if (!reorderDelayActive) {
-        if (posSnapshot) qc.setQueryData(["positions", "open"], posSnapshot);
-        if (tradesSnapshot) qc.setQueryData(["active-trades"], tradesSnapshot);
-      }
-      // Clear spinners on bulk-close failure — none of the rows got
-      // closed so the buttons must come back to "Close".
-      setClosingPositionIds((prev) => {
-        const next = new Map(prev);
-        for (const p of eligible) next.delete(String(p.id));
-        return next;
-      });
-      if (pendingToastId !== null) toast.dismiss(pendingToastId);
+      if (posSnapshot) qc.setQueryData(["positions", "open"], posSnapshot);
+      if (tradesSnapshot) qc.setQueryData(["positions", "active-trades"], tradesSnapshot);
+      toast.dismiss(pendingToastId);
       toast.error(e?.message || "Failed");
     }
   }
   async function exitActive(id: string) {
-    // Optimistic-id guard — same reasoning as `squareoff` above.
-    // Active trade rows can carry a synthetic `optimistic_<ts>` id
-    // while the backend insert is still in flight; hitting the close
-    // endpoint with that returns 404 "Position not found".
-    if (typeof id === "string" && id.startsWith("optimistic_")) {
-      toast.error("Order still settling — try again in a second");
-      return;
-    }
-    // Market-hours guard — same reasoning as `squareoff` above.
-    // active-trades rows carry segment_type + exchange just like
-    // positions rows.
-    const activeRows: any[] = qc.getQueryData(["active-trades"]) ?? [];
-    const trow = activeRows.find((t: any) => t.id === id || t.position_id === id);
-    if (trow && !isInstrumentMarketOpen(trow.segment_type, trow.exchange)) {
-      toast.error(
-        `${marketLabel(trow.segment_type, trow.exchange)} market is closed — try exiting ${trow.symbol} during trading hours`,
-        { duration: 4000 },
-      );
-      return;
-    }
-    setClosingActiveTradeIds((prev) =>
-      new Map(prev).set(id, { symbol: String(trow?.symbol ?? "") }),
+    // Mirror the Position-tab `squareoff` pattern so closing an active
+    // trade feels — and behaves — identically: optimistic remove +
+    // benign-error tolerance + NO immediate active/open invalidate.
+    //
+    // The old version `await`ed the POST then invalidated `["positions"]`
+    // straight away. That refetch raced Mongo Atlas's read replica, which
+    // briefly still returned the trade as OPEN, so the row reappeared
+    // ("reopen ho jata hai") and sat for ~10 s. With no optimistic remove
+    // and no benign-error path, a network blip surfaced a red toast → the
+    // user re-tapped → hit the 10 s idempotency lock → "ek baar me close
+    // nahi hota". This version drops the row in the same frame and lets
+    // the 3 s poll settle the truth.
+    const trades = qc.getQueryData<any[]>(["positions", "active-trades"]) ?? [];
+    const row = trades.find((t) => t.id === id);
+    const positionId = row?.position_id;
+    const tradeQty = Math.abs(Number(row?.quantity ?? 0)) || 0;
+
+    qc.cancelQueries({ queryKey: ["positions", "active-trades"] });
+    qc.cancelQueries({ queryKey: ["positions", "open"] });
+    const tradesSnapshot = qc.getQueryData<any[]>(["positions", "active-trades"]);
+    const posSnapshot = qc.getQueryData<any[]>(["positions", "open"]);
+
+    // Optimistic: drop the active-trade row immediately.
+    qc.setQueryData<any[]>(["positions", "active-trades"], (old) =>
+      Array.isArray(old) ? old.filter((t) => t.id !== id) : [],
     );
-    // Skip the immediate "Exit placed" toast for re-order users —
-    // the drain effect pops "<symbol> exited" once the close lands.
-    const pendingToastId = reorderDelayActive
-      ? null
-      : toast.success("Exit placed");
+    // Optimistic: reduce the parent position's qty (remove it when this
+    // was the last open fill) so the Position tab stays in lockstep.
+    if (positionId && tradeQty > 0) {
+      qc.setQueryData<any[]>(["positions", "open"], (old) => {
+        if (!Array.isArray(old)) return [];
+        return old
+          .map((p) => {
+            if (p.id !== positionId) return p;
+            const curQty = Number(p.quantity) || 0;
+            const sign = curQty >= 0 ? 1 : -1;
+            const nextAbs = Math.max(0, Math.abs(curQty) - tradeQty);
+            return nextAbs < 1e-9 ? null : { ...p, quantity: nextAbs * sign };
+          })
+          .filter(Boolean) as any[];
+      });
+    }
+
+    const pendingToastId = toast.success("Exit placed", { duration: 1500 });
     try {
       await PositionAPI.closeActiveTrade(id);
-      qc.invalidateQueries({ queryKey: ["positions"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+      // Fast reconcile of active + open (single-node Mongo = committed by
+      // the time the POST returns). cancelQueries above prevents any
+      // in-flight poll from re-adding the row.
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["positions", "active-trades"] });
+        qc.invalidateQueries({ queryKey: ["positions", "open"] });
+      }, 400);
+      qc.invalidateQueries({ queryKey: ["positions", "closed"] });
+      setTimeout(
+        () => qc.invalidateQueries({ queryKey: ["positions", "closed"] }),
+        1500,
+      );
     } catch (e: any) {
-      setClosingActiveTradeIds((prev) => {
-        const next = new Map(prev);
-        next.delete(id);
-        return next;
-      });
-      if (pendingToastId !== null) toast.dismiss(pendingToastId);
+      if (isBenignCloseError(e)) {
+        // Already gone / in flight / network — keep the optimistic removal
+        // and let the (now-paused) active/open poll reconcile. Do NOT
+        // invalidate active-trades / open here: an immediate refetch races
+        // the close's commit and RESURRECTS the just-closed row for ~1 s
+        // (the exact flicker the user reported). Only the side caches are
+        // safe to refresh now.
+        qc.invalidateQueries({ queryKey: ["positions", "closed"] });
+        qc.invalidateQueries({ queryKey: ["wallet"] });
+        return;
+      }
+      // Genuine rejection — restore the rows + surface the message.
+      if (tradesSnapshot) qc.setQueryData(["positions", "active-trades"], tradesSnapshot);
+      if (posSnapshot) qc.setQueryData(["positions", "open"], posSnapshot);
+      toast.dismiss(pendingToastId);
       toast.error(e?.message || "Failed");
     }
   }
 
-  // Cancel a parked LIMIT / SL-M order. Released-margin and tracker
-  // updates are handled server-side by `cancel_order` in matching_engine.
-  async function cancelPending(id: string, sym: string) {
-    if (!confirm(`Cancel pending order for ${sym}?`)) return;
+  async function cancelPendingOrder(id: string) {
+    // Optimistic-remove the row from the pending list so the user
+    // sees the card disappear in the same frame as the tap. Falls
+    // back to the snapshot if the backend rejects (rare — usually
+    // means the order already filled while the request was in
+    // flight).
+    qc.cancelQueries({ queryKey: ["orders", "PENDING-LIKE"] });
+    const snapshot = qc.getQueryData<any[]>(["orders", "PENDING-LIKE"]);
+    qc.setQueryData<any[]>(["orders", "PENDING-LIKE"], (old) =>
+      Array.isArray(old) ? old.filter((o) => o.id !== id) : [],
+    );
+    const tid = toast.success("Order cancelled", { duration: 1500 });
     try {
       await OrderAPI.cancel(id);
-      toast.success("Order cancelled");
       qc.invalidateQueries({ queryKey: ["orders"] });
     } catch (e: any) {
+      if (snapshot) qc.setQueryData(["orders", "PENDING-LIKE"], snapshot);
+      toast.dismiss(tid);
       toast.error(e?.message || "Cancel failed");
     }
   }
@@ -775,7 +832,7 @@ export default function PositionsPage() {
       align: "right",
       render: (r) => (
         <span className={r.quantity >= 0 ? "text-buy" : "text-sell"}>
-          {r.quantity}
+          {fmtQty(r.quantity)}
         </span>
       ),
     },
@@ -827,32 +884,6 @@ export default function PositionsPage() {
       header: "Margin",
       align: "right",
       render: (r) => formatINR(r.margin_used),
-    },
-    {
-      // Cumulative brokerage deducted on every fill that built this
-      // position. Sourced from `charges` on the positions response
-      // (sum of trade.brokerage across all open trades for the
-      // (token, product_type) key). Displayed alongside Swap so
-      // traders can see both deductions side-by-side without
-      // hovering the COMM tooltip on the terminal blotter.
-      key: "charges",
-      header: "Brokerage",
-      align: "right",
-      render: (r) => (
-        <span className="font-tabular text-muted-foreground">
-          {formatINR(r.charges ?? 0)}
-        </span>
-      ),
-    },
-    {
-      key: "swap_charges",
-      header: "Swap",
-      align: "right",
-      render: (r) => (
-        <span className="font-tabular text-muted-foreground">
-          {formatINR(r.swap_charges ?? 0)}
-        </span>
-      ),
     },
     // Inline TP / SL edit — click to set, click to edit existing.
     // Matches the Active tab UX so the trader doesn't have to switch
@@ -911,39 +942,12 @@ export default function PositionsPage() {
             </Button>
             <Button
               size="sm"
-              loading={closingPositionIds.has(String(r.id))}
-              onClick={() => {
-                // Open the close dialog (partial-close presets +
-                // Phase-5C rollover button) instead of firing the
-                // raw squareoff. `squareoff(id)` is kept around for
-                // squareoffAll's internal loop and any future flows
-                // that need the dialog-less fast path.
-                const heldLots =
-                  Number(r.lots ?? 0) ||
-                  (r.lot_size > 0 ? Math.abs(Number(r.quantity ?? 0)) / r.lot_size : 0);
-                setCloseTarget({
-                  id: r.id,
-                  symbol: r.symbol,
-                  side: String(r.side ?? (Number(r.quantity) >= 0 ? "BUY" : "SELL")),
-                  lots: heldLots,
-                  segment_type: r.segment_type,
-                  exchange: r.exchange,
-                  product_type: r.product_type,
-                  expiry: r.expiry ?? null,
-                });
-              }}
-              disabled={isOptimistic || closingPositionIds.has(String(r.id))}
-              title={
-                isOptimistic
-                  ? "Waiting for confirmation…"
-                  : closingPositionIds.has(String(r.id))
-                    ? "Closing…"
-                    : "Square off"
-              }
+              onClick={() => requestClose(r)}
+              disabled={isOptimistic}
+              title={isOptimistic ? "Waiting for confirmation…" : "Square off"}
               className="h-7 gap-1 rounded-md bg-destructive/15 px-2.5 text-xs font-semibold text-destructive ring-1 ring-inset ring-destructive/30 hover:bg-destructive hover:text-destructive-foreground hover:ring-destructive disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-destructive/15 disabled:hover:text-destructive disabled:hover:ring-destructive/30"
             >
-              {!closingPositionIds.has(String(r.id)) && <X className="size-3.5" />}
-              {isOptimistic ? "…" : "Close"}
+              <X className="size-3.5" /> {isOptimistic ? "…" : "Close"}
             </Button>
           </div>
         );
@@ -1006,72 +1010,6 @@ export default function PositionsPage() {
     },
   ];
 
-  // Pending-tab columns: same shape as orderCols but with two extras —
-  // a Trigger column (shows the parked trigger price for SL/SL-M) and
-  // a Cancel action. Lets the trader see why an order is parked and
-  // bin it without diving into the modify dialog.
-  const pendingCols: Column<any>[] = [
-    { key: "symbol", header: "Symbol" },
-    { key: "exchange", header: "Exch" },
-    {
-      key: "action",
-      header: "Side",
-      align: "center",
-      render: (r) => <StatusPill status={r.action} />,
-    },
-    {
-      key: "order_type",
-      header: "Type",
-      align: "center",
-      render: (r) => <StatusPill status={r.order_type} />,
-    },
-    { key: "lots", header: "Lots", align: "right" },
-    {
-      key: "price",
-      header: "Limit",
-      align: "right",
-      render: (r) => formatPrice(r.price, r.segment, r.exchange),
-    },
-    {
-      key: "trigger_price",
-      header: "Trigger",
-      align: "right",
-      render: (r) =>
-        r.trigger_price != null && Number(r.trigger_price) > 0
-          ? formatPrice(r.trigger_price, r.segment, r.exchange)
-          : "—",
-    },
-    {
-      key: "status",
-      header: "Status",
-      render: (r) => <StatusPill status={r.status} />,
-    },
-    {
-      key: "created_at",
-      header: "Placed",
-      render: (r) => (
-        <span className="whitespace-nowrap font-tabular text-xs tabular-nums text-foreground">
-          {formatIST(r.created_at, { withSeconds: true })}
-        </span>
-      ),
-    },
-    {
-      key: "actions",
-      header: "",
-      align: "right",
-      render: (r) => (
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => cancelPending(r.id, r.symbol)}
-          className="h-7 gap-1 px-2.5 text-xs"
-        >
-          <X className="size-3.5" /> Cancel
-        </Button>
-      ),
-    },
-  ];
-
   // Closed-tab columns: realized P&L is the headline number, no live LTP
   // because the position is fully exited. Stays in the same table shape
   // so the user's eye doesn't have to relearn the column layout when
@@ -1093,7 +1031,7 @@ export default function PositionsPage() {
         // when we can't infer.
         const isLong = Number(r.realized_pnl ?? 0) >= 0 ? true : false;
         return (
-          <span className={isLong ? "text-buy" : "text-sell"}>{size}</span>
+          <span className={isLong ? "text-buy" : "text-sell"}>{fmtQty(size)}</span>
         );
       },
     },
@@ -1135,14 +1073,56 @@ export default function PositionsPage() {
       ),
     },
     {
-      key: "swap_charges",
-      header: "Swap",
+      // Snapshot of SL set on the position at close-time. The live
+      // `stop_loss` / `target` fields are wiped on full close to keep
+      // future reopens clean, so the backend preserves the values in
+      // `close_stop_loss` / `close_target` for display here. The Active
+      // tab tints SL red — keep that same convention so users get a
+      // consistent SL=red, TP=green colour code across tabs.
+      key: "close_stop_loss",
+      header: "SL",
       align: "right",
-      render: (r) => (
-        <span className="font-tabular text-muted-foreground">
-          {formatINR(r.swap_charges ?? 0)}
-        </span>
-      ),
+      render: (r) => {
+        const sl = r.close_stop_loss ?? r.stop_loss;
+        if (!sl || Number(sl) === 0) {
+          return <span className="text-muted-foreground/60">—</span>;
+        }
+        const hit = String(r.close_reason ?? "").toUpperCase() === "SL_HIT";
+        return (
+          <span
+            className={cn(
+              "font-tabular text-sell tabular-nums",
+              hit && "rounded bg-sell/15 px-1.5 py-0.5 font-semibold",
+            )}
+            title={hit ? "Trade closed by SL hit" : "SL was set on this trade"}
+          >
+            {fmtFeedPrice(sl, r.currency_quote, r.segment_type, r.exchange)}
+          </span>
+        );
+      },
+    },
+    {
+      key: "close_target",
+      header: "TP",
+      align: "right",
+      render: (r) => {
+        const tp = r.close_target ?? r.target;
+        if (!tp || Number(tp) === 0) {
+          return <span className="text-muted-foreground/60">—</span>;
+        }
+        const hit = String(r.close_reason ?? "").toUpperCase() === "TP_HIT";
+        return (
+          <span
+            className={cn(
+              "font-tabular text-buy tabular-nums",
+              hit && "rounded bg-buy/15 px-1.5 py-0.5 font-semibold",
+            )}
+            title={hit ? "Trade closed by Target hit" : "Target was set on this trade"}
+          >
+            {fmtFeedPrice(tp, r.currency_quote, r.segment_type, r.exchange)}
+          </span>
+        );
+      },
     },
     {
       key: "opened_at",
@@ -1236,22 +1216,7 @@ export default function PositionsPage() {
       key: "holding_margin",
       header: "Holding",
       align: "right",
-      render: (r) => {
-        const used = Number(r.margin ?? r.used_margin ?? r.margin_used ?? 0);
-        const isMIS = String(r.product_type ?? "").toUpperCase() === "MIS";
-        const holding = isMIS ? +(used * 1.4).toFixed(2) : used;
-        return formatINR(holding);
-      },
-    },
-    {
-      key: "swap_charges",
-      header: "Swap",
-      align: "right",
-      render: (r) => (
-        <span className="font-tabular text-muted-foreground">
-          {formatINR(r.swap_charges ?? 0)}
-        </span>
-      ),
+      render: (r) => formatINR(holdingMarginFor(r)),
     },
     {
       key: "pnl",
@@ -1265,7 +1230,7 @@ export default function PositionsPage() {
         // approximated number.
         const side = resolveSide(r);
         const price = liveLtpFor(r, side) || Number(r.ltp ?? 0);
-        const entry = Number(r.price ?? 0);
+        const entry = Number(r.avg_price ?? r.price ?? 0);
         const qty = Number(r.quantity ?? 0);
         const dir = side === "SELL" ? -1 : 1;
         const pnl = (price > 0 && entry > 0 && qty !== 0) ? dir * (price - entry) * qty : 0;
@@ -1304,95 +1269,96 @@ export default function PositionsPage() {
       key: "actions",
       header: "",
       align: "right",
-      render: (r) => {
-        const isClosing = closingActiveTradeIds.has(String(r.id));
-        return (
-          <Button
-            size="sm"
-            loading={isClosing}
-            disabled={isClosing}
-            onClick={() => exitActive(r.id)}
-            title={isClosing ? "Closing…" : "Exit"}
-            className="h-7 gap-1 rounded-md bg-destructive/15 px-2.5 text-xs font-semibold text-destructive ring-1 ring-inset ring-destructive/30 hover:bg-destructive hover:text-destructive-foreground hover:ring-destructive"
-          >
-            {!isClosing && <LogOut className="size-3.5" />}
-            Exit
-          </Button>
-        );
-      },
+      render: (r) => (
+        <Button
+          size="sm"
+          onClick={() => exitActive(r.id)}
+          className="h-7 gap-1 rounded-md bg-destructive/15 px-2.5 text-xs font-semibold text-destructive ring-1 ring-inset ring-destructive/30 hover:bg-destructive hover:text-destructive-foreground hover:ring-destructive"
+        >
+          <LogOut className="size-3.5" /> Exit
+        </Button>
+      ),
     },
   ];
+
+  // Closed-tab pagination — client-side. The endpoint already returns
+  // only this user's trades and lifetime closed trades for an active
+  // trader can easily run into hundreds of rows; rendering them all at
+  // once jankifies scroll on phones.
+  // Server-side pagination — closed is already the current loaded page slice.
+  const pagedClosed = (closed ?? []) as any[];
 
   // Pick what to render based on the selected tab.
   const tableProps =
     tab === "closed"
-      ? { columns: closedCols, rows: closed, loading: closedLoading && !closed }
+      ? { columns: closedCols, rows: pagedClosed, loading: closedLoading && !closed }
       : tab === "active"
         ? {
             columns: activeCols,
             rows: activeTrades,
             loading: activeLoading && !activeTrades,
           }
-        : tab === "pending"
+        : tab === "cancelled"
           ? {
-              columns: pendingCols,
-              rows: pending,
-              loading: pendingLoading && !pending,
+              columns: orderCols,
+              rows: cancelled,
+              loading: cancelledLoading && !cancelled,
             }
-          : tab === "cancelled"
+          : tab === "rejected"
             ? {
                 columns: orderCols,
-                rows: cancelled,
-                loading: cancelledLoading && !cancelled,
+                rows: rejected,
+                loading: rejectedLoading && !rejected,
               }
-            : tab === "rejected"
+            : tab === "pending"
               ? {
                   columns: orderCols,
-                  rows: rejected,
-                  loading: rejectedLoading && !rejected,
+                  rows: pending,
+                  loading: pendingLoading && !pendingRaw,
                 }
               : { columns: positionCols, rows: open, loading: openLoading && !open };
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="Positions"
-        description={`${counts.position} open · M2M: ${formatINR(totalMtm)}`}
-        actions={
-          // Three close-all flavours, mirrors the terminal toolbar.
-          // Hidden when no open positions so they don't crowd an empty
-          // header. `flex-wrap` lets them stack on mobile so the
-          // destructive Close All never gets pushed off-screen.
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!open?.length}
-              onClick={() => squareoffAll("profit")}
-              className="border-buy/40 bg-buy/10 text-buy hover:bg-buy/20"
+      {/* Page header — title + live snapshot on the left, the destructive
+          "Square off all" action pinned top-right. Stays a single row on
+          EVERY breakpoint (including mobile) per the user's request, instead
+          of the old layout that stacked the button onto its own row below
+          the title on phones. Tapping it opens a themed confirmation dialog
+          rather than firing instantly. */}
+      <header className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
+            Positions
+          </h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            <span className="font-semibold text-foreground/80">
+              {counts.position}
+            </span>{" "}
+            open
+            <span className="mx-1.5 text-border">·</span>
+            M2M{" "}
+            <span
+              className={cn(
+                "font-tabular font-semibold tabular-nums",
+                pnlColor(totalMtm),
+              )}
             >
-              Close Profit
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!open?.length}
-              onClick={() => squareoffAll("loss")}
-              className="border-sell/40 bg-sell/10 text-sell hover:bg-sell/20"
-            >
-              Close Loss
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={!open?.length}
-              onClick={() => squareoffAll()}
-            >
-              Close All
-            </Button>
-          </div>
-        }
-      />
+              {totalMtm >= 0 ? "+" : ""}
+              {formatINR(totalMtm)}
+            </span>
+          </p>
+        </div>
+        <Button
+          variant="destructive"
+          disabled={!open?.length}
+          onClick={() => setConfirmAllOpen(true)}
+          className="h-9 shrink-0 gap-1.5 rounded-lg px-3 text-xs font-semibold shadow-sm ring-1 ring-inset ring-white/10 sm:h-10 sm:px-4 sm:text-sm"
+        >
+          <Layers className="size-4" />
+          <span className="whitespace-nowrap">Square off all</span>
+        </Button>
+      </header>
 
       {/* Wallet + margin status strip — Balance / Equity / M2M / Used.
           CF Required (carry-forward margin estimate) used to live here
@@ -1409,11 +1375,14 @@ export default function PositionsPage() {
         showCfRequired={tab === "active"}
       />
 
-      {/* Unified blotter tabs — Position / Active / Closed / Cancelled /
-          Rejected. Replaces the separate /orders page; every order
-          state is one tap away. Horizontal scroll on narrow screens
-          so the 5 tabs don't break the layout. */}
-      <div className="flex items-center gap-6 overflow-x-auto border-b border-border">
+      {/* Blotter tabs — Position / Active / Closed. Order-state tabs
+          (Pending / Cancelled / Rejected) now live on the dedicated
+          /orders page. With only 3 tabs they no longer need a scroll
+          track: on mobile they fill the row as 3 equal-width segments
+          (segmented-control look) so they're evenly spaced instead of
+          bunched on the left; md+ falls back to left-aligned underline
+          tabs. */}
+      <div className="grid grid-cols-3 gap-1 rounded-xl bg-muted/20 p-1 ring-1 ring-inset ring-border/40 md:flex md:items-center md:gap-6 md:rounded-none md:bg-transparent md:p-0 md:ring-0 md:border-b md:border-border">
         <TabBtn
           active={tab === "position"}
           count={counts.position}
@@ -1424,26 +1393,28 @@ export default function PositionsPage() {
         <TabBtn active={tab === "active"} count={counts.active} onClick={() => setTab("active")}>
           Active
         </TabBtn>
-        <TabBtn active={tab === "pending"} count={counts.pending} onClick={() => setTab("pending")}>
-          Pending
-        </TabBtn>
-        <TabBtn active={tab === "closed"} count={counts.closed} onClick={() => setTab("closed")}>
+        <TabBtn
+          active={tab === "closed"}
+          count={counts.closed}
+          onClick={() => {
+            setTab("closed");
+            // Force an immediate refetch when switching to this tab so a
+            // just-executed partial close appears without the user having to
+            // pull-to-refresh. A 1.5 s delayed retry covers the brief window
+            // where Mongo hasn't committed the closing Trade to the read path
+            // yet (same pattern used in squareoff() for full closes).
+            qc.invalidateQueries({ queryKey: ["positions", "closed"] });
+            setTimeout(
+              () => qc.invalidateQueries({ queryKey: ["positions", "closed"] }),
+              1500,
+            );
+          }}
+        >
           Closed
         </TabBtn>
-        <TabBtn
-          active={tab === "cancelled"}
-          count={counts.cancelled}
-          onClick={() => setTab("cancelled")}
-        >
-          Cancelled
-        </TabBtn>
-        <TabBtn
-          active={tab === "rejected"}
-          count={counts.rejected}
-          onClick={() => setTab("rejected")}
-        >
-          Rejected
-        </TabBtn>
+        {/* Pending / Cancelled / Rejected tabs moved to the dedicated
+            /orders page (Open / Executed / Rejected) per the operator —
+            this blotter now stays focused on Position / Active / Closed. */}
       </div>
 
       {/* Closed + Active tabs render a mobile-friendly card list at
@@ -1453,7 +1424,7 @@ export default function PositionsPage() {
       {tab === "closed" ? (
         <>
           <div className="md:hidden">
-            <ClosedMobileList rows={(closed ?? []) as any[]} loading={closedLoading && !closed} />
+            <ClosedMobileList rows={pagedClosed} loading={closedLoading && !closed} />
           </div>
           <div className="hidden md:block">
             <DataTable
@@ -1463,18 +1434,33 @@ export default function PositionsPage() {
               loading={tableProps.loading}
             />
           </div>
+          {hasMoreClosed && (
+            <div className="flex justify-center py-4">
+              <button
+                onClick={() => fetchMoreClosed()}
+                disabled={loadingMoreClosed}
+                className="rounded-md border border-border px-5 py-2 text-sm text-muted-foreground hover:bg-muted disabled:opacity-50"
+              >
+                {loadingMoreClosed
+                  ? "Loading…"
+                  : `Load more (${pagedClosed.length} of ${closedTotal})`}
+              </button>
+            </div>
+          )}
         </>
       ) : tab === "active" ? (
         <>
           <div className="md:hidden">
             <ActiveMobileList
+              variant="active"
               rows={(activeTrades ?? []) as any[]}
               loading={activeLoading && !activeTrades}
               liveLtpFor={liveLtpFor}
               onEdit={(row, kind) => setEditing({ row, kind, source: "active" })}
               onExit={exitActive}
               onTrade={(tok) => setSheetToken(tok)}
-              isClosing={(id) => closingActiveTradeIds.has(String(id))}
+              emptyLabel="No active trades"
+              emptyHint="Each open fill that makes up your positions appears here."
             />
           </div>
           <div className="hidden md:block">
@@ -1490,13 +1476,40 @@ export default function PositionsPage() {
         <>
           <div className="md:hidden">
             <ActiveMobileList
+              variant="position"
               rows={(open ?? []) as any[]}
               loading={openLoading && !open}
               liveLtpFor={liveLtpFor}
               onEdit={(row, kind) => setEditing({ row, kind, source: "position" })}
               onExit={squareoff}
               onTrade={(tok) => setSheetToken(tok)}
-              isClosing={(id) => closingPositionIds.has(String(id))}
+              emptyLabel="No open positions"
+              emptyHint="Your open positions show up here the moment you place a trade."
+            />
+          </div>
+          <div className="hidden md:block">
+            <DataTable
+              columns={tableProps.columns}
+              rows={tableProps.rows}
+              keyExtractor={(r) => r.id}
+              loading={tableProps.loading}
+            />
+          </div>
+        </>
+      ) : tab === "pending" ? (
+        <>
+          {/* Mobile cards for pending orders — same visual treatment as
+              the active-trade cards (BUY/SELL pill + symbol + qty +
+              entry → ltp + bottom action row) so the user sees one
+              consistent shape across both tabs. Edit pencil opens the
+              modify dialog; X cancels via OrderAPI.cancel with the
+              optimistic-remove pattern. */}
+          <div className="md:hidden">
+            <PendingMobileList
+              rows={pending}
+              loading={pendingLoading && !pendingRaw}
+              onEdit={(o) => setEditingPending(o)}
+              onCancel={cancelPendingOrder}
             />
           </div>
           <div className="hidden md:block">
@@ -1509,89 +1522,13 @@ export default function PositionsPage() {
           </div>
         </>
       ) : (
-        // Pending / Cancelled / Rejected — mobile gets the card list, desktop
-        // keeps the compact order table.
-        <>
-          <div className="md:hidden">
-            <OrderMobileList
-              rows={(tableProps.rows ?? []) as any[]}
-              loading={tableProps.loading}
-              emptyText={
-                tab === "pending"
-                  ? "No pending orders"
-                  : tab === "cancelled"
-                    ? "No cancelled orders"
-                    : "No rejected orders"
-              }
-              onCancel={tab === "pending" ? cancelPending : undefined}
-            />
-          </div>
-          <div className="hidden md:block">
-            <DataTable
-              columns={tableProps.columns}
-              rows={tableProps.rows}
-              keyExtractor={(r) => r.id}
-              loading={tableProps.loading}
-            />
-          </div>
-        </>
+        <DataTable
+          columns={tableProps.columns}
+          rows={tableProps.rows}
+          keyExtractor={(r) => r.id}
+          loading={tableProps.loading}
+        />
       )}
-
-      {/* Pagination controls — pending / cancelled / rejected tabs
-          paginate at 50 rows/page. The active server poll only fetches
-          the current page so polling cost stays constant regardless of
-          how many historical orders the user has. */}
-      {(() => {
-        const meta =
-          tab === "pending"
-            ? pendingMeta
-            : tab === "cancelled"
-              ? cancelledMeta
-              : tab === "rejected"
-                ? rejectedMeta
-                : null;
-        const curPage =
-          tab === "pending"
-            ? pendingPage
-            : tab === "cancelled"
-              ? cancelledPage
-              : tab === "rejected"
-                ? rejectedPage
-                : 1;
-        const setCurPage =
-          tab === "pending"
-            ? setPendingPage
-            : tab === "cancelled"
-              ? setCancelledPage
-              : tab === "rejected"
-                ? setRejectedPage
-                : null;
-        if (!meta || !setCurPage || Number(meta.total_pages) <= 1) return null;
-        return (
-          <div className="flex items-center justify-end gap-2 text-xs">
-            <span className="self-center text-muted-foreground">{meta.total} entries</span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={curPage <= 1}
-              onClick={() => setCurPage((p: number) => Math.max(1, p - 1))}
-            >
-              Prev
-            </Button>
-            <span className="self-center text-muted-foreground">
-              {meta.page} / {meta.total_pages}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={curPage >= Number(meta.total_pages)}
-              onClick={() => setCurPage((p: number) => p + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        );
-      })()}
 
       <EditSlTpDialog
         open={!!editing}
@@ -1617,15 +1554,102 @@ export default function PositionsPage() {
         onClose={() => setSheetToken(null)}
         onSwap={(tok) => setSheetToken(tok)}
       />
-      <ClosePositionDialog
-        target={closeTarget}
-        onClose={() => setCloseTarget(null)}
-        onSubmit={(positionId) => {
-          const row = (open ?? []).find((p: any) => String(p.id) === String(positionId));
-          setClosingPositionIds((prev) =>
-            new Map(prev).set(positionId, { symbol: String(row?.symbol ?? "") }),
-          );
+
+      {/* Pending-order modify dialog. Lets the user tweak lots, price
+          (for LIMIT) or trigger_price (for SL-M) on a still-pending
+          order without cancelling + re-placing. */}
+      <EditPendingOrderDialog
+        order={editingPending}
+        onClose={() => setEditingPending(null)}
+        onSaved={() => {
+          qc.invalidateQueries({ queryKey: ["orders"] });
+          setEditingPending(null);
         }}
+      />
+
+      {/* Themed confirmation for the header "Square off all" — replaces the
+          old browser confirm() (desktop) and the silent fire (mobile). */}
+      <ConfirmDialog
+        open={confirmAllOpen}
+        title="Square off all positions?"
+        description={
+          <>
+            This closes{" "}
+            <span className="font-semibold text-foreground">
+              all {counts.position} open position
+              {counts.position === 1 ? "" : "s"}
+            </span>{" "}
+            at the current market price. This can&apos;t be undone.
+          </>
+        }
+        confirmLabel="Square off all"
+        cancelLabel="Cancel"
+        onConfirm={async () => {
+          setConfirmAllOpen(false);
+          await squareoffAll();
+        }}
+        onCancel={() => setConfirmAllOpen(false)}
+      />
+
+      {/* Themed single-position close confirmation (desktop) — replaces the
+          ugly native confirm("Square off this position at market?"). Shows
+          the trade context so the user closes the RIGHT row. Mobile bypasses
+          this entirely (requestClose fires straight through). */}
+      <ConfirmDialog
+        open={!!closeRow}
+        title="Square off position?"
+        description={
+          closeRow
+            ? (() => {
+                // Live M2M — recompute the SAME way the table cell does
+                // (close-side bid/ask), never the stale backend unrealized_pnl.
+                const side = resolveSide(closeRow);
+                const sideLabel = String(side).toUpperCase() === "BUY" ? "BUY" : "SELL";
+                const px = liveLtpFor(closeRow, side) || Number(closeRow.ltp ?? 0);
+                const avg = Number(closeRow.avg_price ?? 0);
+                const qty = Number(closeRow.quantity ?? 0);
+                const hasM2m = px > 0 && avg > 0 && qty !== 0;
+                const m2m = hasM2m ? (px - avg) * qty : 0;
+                return (
+                  <div className="space-y-2">
+                    <div className="rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-sm">
+                      <div className="flex items-center justify-between py-0.5">
+                        <span className="text-muted-foreground">Symbol</span>
+                        <span className="font-semibold text-foreground">{closeRow.symbol}</span>
+                      </div>
+                      <div className="flex items-center justify-between py-0.5">
+                        <span className="text-muted-foreground">Side</span>
+                        <span className={cn("font-semibold", sideLabel === "BUY" ? "text-buy" : "text-sell")}>
+                          {sideLabel}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between py-0.5">
+                        <span className="text-muted-foreground">Quantity</span>
+                        <span className="font-medium text-foreground">{Math.abs(qty)}</span>
+                      </div>
+                      {hasM2m && (
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="text-muted-foreground">Live M2M</span>
+                          <span className={cn("font-semibold", pnlColor(m2m))}>{formatINR(m2m)}</span>
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      This closes the position at the current market price.
+                    </p>
+                  </div>
+                );
+              })()
+            : null
+        }
+        confirmLabel="Square off"
+        cancelLabel="Cancel"
+        onConfirm={async () => {
+          const row = closeRow;
+          setCloseRow(null);
+          if (row) await squareoff(row.id);
+        }}
+        onCancel={() => setCloseRow(null)}
       />
     </div>
   );
@@ -1652,20 +1676,34 @@ function WalletStatusStrip({
   wallet: any;
   m2m: number;
   cfRequired: number;
-  /** Drop the CF Required tile when false — used on the Position tab
-   *  so the trader sees a clean 4-tile wallet row. Active tab keeps it
-   *  on (5 tiles) because that's where carry-forward planning lives. */
+  /** Drop the CF Required + CF Extra tiles when false — used on the
+   *  Position tab so the wallet row stays at 4 tiles. Active tab keeps
+   *  both on (6 tiles) because that's where carry-forward planning
+   *  lives. */
   showCfRequired?: boolean;
 }) {
   const available = Number(wallet?.available_balance ?? 0);
   const used = Number(wallet?.used_margin ?? 0);
   const balance = available + used;
   const equity = balance + m2m;
+  // CF Extra Needed — the actual CASH SHORTFALL to carry the position(s)
+  // overnight. To roll into NRML the user needs `cfRequired` locked; the
+  // intraday `used` margin is released and re-locked, so the funds that can
+  // meet it are the FULL balance (available + used). If the balance already
+  // covers cfRequired the user needs to add nothing → ₹0 (green); otherwise
+  // it's the deposit they must top up → red.
+  //   balance = ₹12,687, cfRequired = ₹7,500 → extra needed ₹0 (affordable)
+  //   balance = ₹5,000,  cfRequired = ₹7,500 → extra needed ₹2,500
+  // (Earlier this showed `cfRequired - used` = the additional margin that
+  // would be blocked at rollover, but that read as a scary red number even
+  // when the wallet could easily afford the carry — operator flagged it as
+  // wrong. The shortfall against balance is the meaningful "needed" figure.)
+  const cfExtraNeeded = Math.max(0, cfRequired - balance);
   return (
     <div
       className={cn(
         "grid grid-cols-2 gap-2 sm:grid-cols-3",
-        showCfRequired ? "lg:grid-cols-5" : "lg:grid-cols-4",
+        showCfRequired ? "lg:grid-cols-6" : "lg:grid-cols-4",
       )}
     >
       <WalletTile label="Balance" value={formatINR(balance)} />
@@ -1677,11 +1715,18 @@ function WalletStatusStrip({
       />
       <WalletTile label="Used Margin" value={formatINR(used)} />
       {showCfRequired && (
-        <WalletTile
-          label="CF Required"
-          value={formatINR(cfRequired)}
-          valueClass={cfRequired > available ? "text-red-500" : undefined}
-        />
+        <>
+          <WalletTile
+            label="CF Required"
+            value={formatINR(cfRequired)}
+            valueClass={cfRequired > balance ? "text-red-500" : undefined}
+          />
+          <WalletTile
+            label="CF Extra Needed"
+            value={formatINR(cfExtraNeeded)}
+            valueClass={cfExtraNeeded > 0 ? "text-red-500" : "text-emerald-500"}
+          />
+        </>
       )}
     </div>
   );
@@ -1697,13 +1742,13 @@ function WalletTile({
   valueClass?: string;
 }) {
   return (
-    <div className="rounded-md border border-border bg-card px-2.5 py-2">
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+    <div className="rounded-lg border border-border/70 bg-gradient-to-b from-card to-card/60 px-3 py-2.5 shadow-sm ring-1 ring-inset ring-white/5">
+      <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </div>
       <div
         className={cn(
-          "mt-0.5 font-tabular text-sm font-semibold tabular-nums",
+          "mt-1 font-tabular text-sm font-bold tabular-nums",
           valueClass,
         )}
       >
@@ -1729,19 +1774,26 @@ function TabBtn({
       type="button"
       onClick={onClick}
       className={cn(
-        "relative -mb-px flex items-center gap-1.5 pb-2 pt-1 text-sm transition-colors",
+        // Mobile: rounded-pill segmented control inside a tinted track.
+        // `w-full + justify-center` makes each of the 3 tabs claim an equal
+        // third of the row (the parent is a grid-cols-3), so they're evenly
+        // spread instead of hugging the left edge. Active = solid background
+        // pill with primary text. Inactive = foreground text (not muted) so
+        // all tab labels stay readable.
+        // Desktop (md+): content-width, left-aligned, classic underline.
+        "relative -mb-px flex w-full items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium transition-all md:w-auto md:shrink-0 md:justify-start md:rounded-none md:px-0 md:pb-2 md:pt-1 md:font-normal",
         active
-          ? "font-semibold text-foreground"
-          : "text-muted-foreground hover:text-foreground",
+          ? "bg-primary/15 font-semibold text-primary shadow-sm md:bg-transparent md:text-foreground md:shadow-none"
+          : "text-foreground/70 hover:bg-muted/40 hover:text-foreground md:hover:bg-transparent md:text-muted-foreground",
       )}
     >
       {children}
       {count > 0 && (
         <span
           className={cn(
-            "rounded-full border px-1.5 text-[10px] font-semibold",
+            "rounded-full border px-1.5 text-[10px] font-semibold tabular-nums",
             active
-              ? "border-primary/40 bg-primary/10 text-primary"
+              ? "border-primary/40 bg-primary/15 text-primary"
               : "border-border text-muted-foreground",
           )}
         >
@@ -1749,7 +1801,7 @@ function TabBtn({
         </span>
       )}
       {active && (
-        <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-t bg-primary" />
+        <span className="absolute inset-x-0 -bottom-px hidden h-0.5 rounded-t bg-primary md:block" />
       )}
     </button>
   );
@@ -1787,106 +1839,6 @@ function EditSlTpDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [row?.id, kind]);
 
-  // ── Limit-away % from segment settings ─────────────────────────────
-  // Mirrors the trading-terminal Edit SL/TP dialog. Close side is the
-  // opposite of the position's direction (long closes by SELLing → use
-  // "SELL"; short → "BUY"). Re-uses the cached SegmentSettingsAPI query
-  // key the OrderPanel uses for the same instrument, so opening this
-  // dialog on a chart you were just looking at is an instant hit.
-  const isLongPos = (() => {
-    const sideRaw = String(row?.action ?? row?.side ?? row?.opened_side ?? "").toUpperCase();
-    if (sideRaw === "BUY") return true;
-    if (sideRaw === "SELL") return false;
-    return Number(row?.quantity ?? 0) >= 0;
-  })();
-  const closeSide: "BUY" | "SELL" = isLongPos ? "SELL" : "BUY";
-  const { data: effSettings } = useQuery<any>({
-    queryKey: ["segment-settings", row?.instrument_token, closeSide, row?.product_type],
-    queryFn: () =>
-      SegmentSettingsAPI.effective(row!.instrument_token, closeSide, row!.product_type),
-    enabled: open && !!row?.instrument_token && !!row?.product_type,
-    staleTime: 5_000,
-  });
-  const limitAwayPct = Number(effSettings?.limit_percentage ?? 0) || 0;
-  const ltpRef = Number(row?.ltp ?? row?.current_price ?? 0);
-  const _round = (n: number) => +n.toFixed(2);
-  // SL boundary — closes the position. Long → SL below LTP; Short → above.
-  // TP boundary — opposite direction.
-  const slBoundary =
-    ltpRef > 0 && limitAwayPct > 0
-      ? isLongPos
-        ? ltpRef * (1 - limitAwayPct / 100)
-        : ltpRef * (1 + limitAwayPct / 100)
-      : 0;
-  const tpBoundary =
-    ltpRef > 0 && limitAwayPct > 0
-      ? isLongPos
-        ? ltpRef * (1 + limitAwayPct / 100)
-        : ltpRef * (1 - limitAwayPct / 100)
-      : 0;
-  const placeholder =
-    (kind === "TP" ? tpBoundary : slBoundary) > 0
-      ? String(_round(kind === "TP" ? tpBoundary : slBoundary))
-      : "Leave blank to clear";
-
-  // ── Live SL/TP validation ────────────────────────────────────────────
-  // Same rule set as save() below but as a memo so the warning + Save
-  // disable update on every keystroke. Empty input = "clear" so it
-  // never trips the banner. Mirrors the OrderPanel / terminal Edit
-  // SL/TP pattern.
-  const validationReason = useMemo<string | null>(() => {
-    if (!row || !value) return null;
-    const n = Number(value);
-    if (!Number.isFinite(n) || n < 0) return "Enter a valid positive number";
-    if (n === 0) return null;
-
-    // Directional sanity vs entry.
-    const entrySrc = row.price ?? row.avg_price;
-    if (entrySrc != null) {
-      const entry = Number(entrySrc);
-      if (entry > 0) {
-        if (kind === "SL") {
-          if (isLongPos && n >= entry) {
-            return `Stop loss must be BELOW entry ${entry} for a BUY`;
-          }
-          if (!isLongPos && n <= entry) {
-            return `Stop loss must be ABOVE entry ${entry} for a SELL`;
-          }
-        } else {
-          if (isLongPos && n <= entry) {
-            return `Target must be ABOVE entry ${entry} for a BUY`;
-          }
-          if (!isLongPos && n >= entry) {
-            return `Target must be BELOW entry ${entry} for a SELL`;
-          }
-        }
-      }
-    }
-
-    // Limit-away band vs LTP.
-    if (limitAwayPct > 0 && ltpRef > 0) {
-      const upper = ltpRef * (1 + limitAwayPct / 100);
-      const lower = ltpRef * (1 - limitAwayPct / 100);
-      if (kind === "SL") {
-        if (isLongPos && n > lower) {
-          return `Stop loss ${n} too close to LTP ${ltpRef} — must be ≤ ${_round(lower)} (${limitAwayPct}% away)`;
-        }
-        if (!isLongPos && n < upper) {
-          return `Stop loss ${n} too close to LTP ${ltpRef} — must be ≥ ${_round(upper)} (${limitAwayPct}% away)`;
-        }
-      } else {
-        if (isLongPos && n < upper) {
-          return `Target ${n} too close to LTP ${ltpRef} — must be ≥ ${_round(upper)} (${limitAwayPct}% away)`;
-        }
-        if (!isLongPos && n > lower) {
-          return `Target ${n} too close to LTP ${ltpRef} — must be ≤ ${_round(lower)} (${limitAwayPct}% away)`;
-        }
-      }
-    }
-
-    return null;
-  }, [row, value, kind, isLongPos, limitAwayPct, ltpRef]);
-
   async function save() {
     if (!row) return;
     const n = value === "" ? null : Number(value);
@@ -1894,82 +1846,6 @@ function EditSlTpDialog({
       toast.error("Enter a valid number");
       return;
     }
-    // Directional sanity — mirrors backend SL_WRONG_SIDE / TP_WRONG_SIDE
-    // so the user catches a wrong-side bracket here instead of via a
-    // server-rejection toast after the dialog has already closed. The
-    // entry field is `price` on active-trade rows, `avg_price` on
-    // position rows; ditto for side (`action`/`side` vs `opened_side`).
-    const entrySrc = row.price ?? row.avg_price;
-    if (n !== null && n > 0 && entrySrc != null) {
-      const entry = Number(entrySrc);
-      const sideRaw = String(
-        row.action ?? row.side ?? row.opened_side ?? "",
-      ).toUpperCase();
-      const isLong = sideRaw
-        ? sideRaw === "BUY"
-        : Number(row.quantity ?? 0) >= 0;
-      if (kind === "SL") {
-        if (isLong && n >= entry) {
-          toast.error(`Stop loss must be BELOW entry ${entry} for a BUY`);
-          return;
-        }
-        if (!isLong && n <= entry) {
-          toast.error(`Stop loss must be ABOVE entry ${entry} for a SELL`);
-          return;
-        }
-      } else {
-        if (isLong && n <= entry) {
-          toast.error(`Target must be ABOVE entry ${entry} for a BUY`);
-          return;
-        }
-        if (!isLong && n >= entry) {
-          toast.error(`Target must be BELOW entry ${entry} for a SELL`);
-          return;
-        }
-      }
-    }
-
-    // ── Limit-away enforcement (same as terminal Edit SL/TP) ─────────
-    // Auto-squareoff fires at MARKET when LTP touches SL/TP, so the
-    // band immediately around LTP is rejected — the value must sit at
-    // least `limit_percentage` away. Backend re-runs the same check;
-    // doing it here avoids the round-trip + toast flicker.
-    if (n !== null && n > 0 && limitAwayPct > 0 && ltpRef > 0) {
-      const upper = ltpRef * (1 + limitAwayPct / 100);
-      const lower = ltpRef * (1 - limitAwayPct / 100);
-      if (kind === "SL") {
-        if (isLongPos && n > lower) {
-          toast.error(
-            `Stop loss ${n} too close to LTP ${ltpRef}. Must be at least ${limitAwayPct}% away — maximum ${_round(lower)}.`,
-            { duration: 6000 },
-          );
-          return;
-        }
-        if (!isLongPos && n < upper) {
-          toast.error(
-            `Stop loss ${n} too close to LTP ${ltpRef}. Must be at least ${limitAwayPct}% away — minimum ${_round(upper)}.`,
-            { duration: 6000 },
-          );
-          return;
-        }
-      } else {
-        if (isLongPos && n < upper) {
-          toast.error(
-            `Target ${n} too close to LTP ${ltpRef}. Must be at least ${limitAwayPct}% away — minimum ${_round(upper)}.`,
-            { duration: 6000 },
-          );
-          return;
-        }
-        if (!isLongPos && n > lower) {
-          toast.error(
-            `Target ${n} too close to LTP ${ltpRef}. Must be at least ${limitAwayPct}% away — maximum ${_round(lower)}.`,
-            { duration: 6000 },
-          );
-          return;
-        }
-      }
-    }
-
     setSaving(true);
     try {
       const body =
@@ -2006,37 +1882,18 @@ function EditSlTpDialog({
             step="0.01"
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder={placeholder}
+            placeholder="Leave blank to clear"
             autoFocus
           />
           <p className="text-[11px] text-muted-foreground">
             When the market crosses this level the position is auto-squared off at market.
-            {limitAwayPct > 0 && (
-              <>
-                {" "}Must sit at least <strong>{limitAwayPct}%</strong> from LTP — the placeholder shows the nearest allowed boundary.
-              </>
-            )}
           </p>
-          {/* Persistent eligibility banner — Save stays disabled while
-              this is non-null. Matches the OrderPanel / terminal Edit
-              SL/TP pattern so the trader sees the failing rule live
-              instead of via a toast after clicking Save. */}
-          {validationReason && (
-            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
-              {validationReason}
-            </div>
-          )}
         </div>
         <DialogFooter>
           <Button variant="outline" type="button" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            type="button"
-            onClick={save}
-            loading={saving}
-            disabled={validationReason !== null}
-          >
+          <Button type="button" onClick={save} loading={saving}>
             Save
           </Button>
         </DialogFooter>
@@ -2120,13 +1977,8 @@ function ClosedMobileCard({ row: r }: { row: any }) {
         : "SELL";
 
   const qty = Math.abs(Number(r.opening_quantity ?? r.quantity ?? 0));
-  // `realized_pnl` is already NET — backend subtracts brokerage + swap
-  // before sending. The denominator below shows the combined deduction
-  // so the user can see how much the gross was eaten by costs.
   const pnl = Number(r.realized_pnl ?? 0);
   const charges = Number(r.charges ?? 0);
-  const swap = Number(r.swap_charges ?? 0);
-  const totalDeducted = charges + swap;
 
   const avg = r.avg_price;
   const close = r.ltp;
@@ -2148,14 +2000,35 @@ function ClosedMobileCard({ row: r }: { row: any }) {
     return parts.length > 1 ? parts.slice(1).join(", ") : full;
   }
 
+  // Compact "DD Mon" date prefix for the timing row.  Closed cards
+  // span multiple trading days once the user has any history, so the
+  // earlier time-only render left ambiguity ("09:15 → 09:32" — but
+  // which day?).
+  function dateOnly(v: string | null | undefined): string {
+    if (!v) return "";
+    const full = formatIST(v, { withSeconds: false });
+    const parts = full.split(", ");
+    return parts.length > 1 ? parts[0] : "";
+  }
+
   return (
-    <li className="rounded-xl border border-border bg-card p-3 shadow-sm">
+    <li className="group relative overflow-hidden rounded-xl border border-border/70 bg-gradient-to-b from-card to-card/60 p-3.5 shadow-sm ring-1 ring-inset ring-white/5">
+      {/* Subtle accent stripe — BUY = green, SELL = red. Same visual
+          language as Active/Position cards for consistency. */}
+      <span
+        aria-hidden
+        className={cn(
+          "absolute inset-y-0 left-0 w-0.5",
+          side === "BUY" ? "bg-buy/60" : "bg-sell/60",
+        )}
+      />
+
       {/* Top row: BUY/SELL · qty · CLOSED · product */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span
             className={cn(
-              "rounded px-2 py-0.5 text-[10px] font-bold uppercase ring-1 ring-inset",
+              "rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ring-1 ring-inset",
               side === "BUY"
                 ? "bg-buy/10 text-buy ring-buy/30"
                 : "bg-sell/10 text-sell ring-sell/30",
@@ -2164,14 +2037,17 @@ function ClosedMobileCard({ row: r }: { row: any }) {
             {side}
           </span>
           <span className="font-tabular text-xs text-muted-foreground">
-            🛒 {qty}
+            <span className="opacity-70">Qty</span>{" "}
+            <span className="font-semibold tabular-nums text-foreground/80">
+              {fmtQty(qty)}
+            </span>
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded bg-muted/40 px-2 py-0.5 text-[10px] font-bold uppercase text-muted-foreground ring-1 ring-inset ring-border">
+        <div className="flex items-center gap-1.5">
+          <span className="rounded-md bg-muted/40 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground ring-1 ring-inset ring-border/70">
             CLOSED
           </span>
-          <span className="rounded border border-border px-1.5 py-0.5 text-[10px] font-semibold uppercase">
+          <span className="rounded-md border border-border/70 bg-muted/30 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             {r.product_type}
           </span>
         </div>
@@ -2179,11 +2055,11 @@ function ClosedMobileCard({ row: r }: { row: any }) {
 
       {/* Symbol + sub-line on the left, P&L / brokerage on the right */}
       <div className="mt-2 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-base font-bold leading-tight">
+        <div className="min-w-0 flex-1">
+          <div className="break-all text-[13px] font-bold leading-tight sm:text-sm">
             {r.symbol}
           </div>
-          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
             <span className="truncate">{subLine}</span>
             {expiry ? (
               <span className="rounded bg-primary/10 px-1.5 py-0.5 font-semibold text-primary">
@@ -2200,15 +2076,8 @@ function ClosedMobileCard({ row: r }: { row: any }) {
             )}
           >
             {formatINR(pnl, { withSymbol: false })}
-            <span
-              className="text-muted-foreground"
-              title={
-                swap > 0
-                  ? `Brokerage ${formatINR(charges)} + Swap ${formatINR(swap)} = ${formatINR(totalDeducted)}`
-                  : `Brokerage ${formatINR(charges)}`
-              }
-            >
-              /{formatINR(totalDeducted, { withSymbol: false })}
+            <span className="text-muted-foreground">
+              /{formatINR(charges, { withSymbol: false })}
             </span>
           </div>
           <div className="mt-0.5 font-tabular text-[11px] text-muted-foreground">
@@ -2218,13 +2087,70 @@ function ClosedMobileCard({ row: r }: { row: any }) {
         </div>
       </div>
 
-      {/* Order kind + timing */}
-      <div className="mt-1.5 flex items-baseline justify-between gap-2 text-[10px] text-muted-foreground">
+      {/* Order kind + timing.  Date prefix added so user can spot
+          'kab ye trade lagaya tha' on cards from earlier days — was
+          showing time-only which was confusing once the same symbol
+          had multiple closes across days. */}
+      <div className="mt-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
         <span className="uppercase tracking-wider">Market → Market</span>
         <span className="whitespace-nowrap font-tabular">
+          <span className="text-muted-foreground/80">{dateOnly(r.opened_at)}</span>{" "}
           {timeOnly(r.opened_at)} → {timeOnly(r.closed_at)}
         </span>
       </div>
+
+      {/* Snapshot of SL/TP the user had set on this position at close
+          time. Hidden when both are unset — most casual users don't
+          attach brackets and the row stays cleaner. When EITHER was
+          set the tile renders both values (the unset side reads "—")
+          so the user always sees both legs side by side for easy
+          comparison against the actual close price. The leg that
+          fired (matching close_reason) gets a colour-filled chip
+          treatment so it pops out as "the one that closed the trade". */}
+      {(() => {
+        const sl = r.close_stop_loss ?? r.stop_loss;
+        const tp = r.close_target ?? r.target;
+        const hasSL = sl && Number(sl) > 0;
+        const hasTP = tp && Number(tp) > 0;
+        if (!hasSL && !hasTP) return null;
+        const reason = String(r.close_reason ?? "").toUpperCase();
+        const slHit = reason === "SL_HIT";
+        const tpHit = reason === "TP_HIT";
+        return (
+          <div className="mt-2 grid grid-cols-2 gap-1.5">
+            <div
+              className={cn(
+                "rounded-md border border-border bg-muted/20 px-2.5 py-1.5",
+                slHit && "border-sell/40 bg-sell/10",
+              )}
+            >
+              <div className="text-[9px] uppercase tracking-wider text-muted-foreground">
+                {slHit ? "SL · HIT" : "SL"}
+              </div>
+              <div className={cn("font-tabular text-sm font-semibold tabular-nums", hasSL ? "text-sell" : "text-muted-foreground/60")}>
+                {hasSL
+                  ? fmtFeedPrice(sl, r.currency_quote, r.segment_type, r.exchange)
+                  : "—"}
+              </div>
+            </div>
+            <div
+              className={cn(
+                "rounded-md border border-border bg-muted/20 px-2.5 py-1.5",
+                tpHit && "border-buy/40 bg-buy/10",
+              )}
+            >
+              <div className="text-[9px] uppercase tracking-wider text-muted-foreground">
+                {tpHit ? "TP · HIT" : "TP"}
+              </div>
+              <div className={cn("font-tabular text-sm font-semibold tabular-nums", hasTP ? "text-buy" : "text-muted-foreground/60")}>
+                {hasTP
+                  ? fmtFeedPrice(tp, r.currency_quote, r.segment_type, r.exchange)
+                  : "—"}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Closed-reason chip when present (SL/TP/stop-out flag). Kept in a
           separate line so the main card stays clean for the common
@@ -2234,144 +2160,6 @@ function ClosedMobileCard({ row: r }: { row: any }) {
           <CloseReasonChip reason={r.close_reason} />
         </div>
       )}
-    </li>
-  );
-}
-
-/**
- * Mobile-only card list for the order tabs (Pending / Cancelled / Rejected).
- * The order DataTable (Symbol/Exch/Side/Type/Lots/Price/Trigger/Status…) is
- * cramped on a phone, so under `md:` those tabs swap to this card list while
- * desktop keeps the grid. `onCancel` is only passed for the Pending tab so
- * cancelled/rejected cards stay read-only.
- */
-function OrderMobileList({
-  rows,
-  loading,
-  emptyText,
-  onCancel,
-}: {
-  rows: any[];
-  loading: boolean;
-  emptyText: string;
-  onCancel?: (id: string, sym: string) => void;
-}) {
-  if (loading) {
-    return (
-      <div className="grid place-items-center py-10 text-sm text-muted-foreground">
-        Loading…
-      </div>
-    );
-  }
-  if (!rows || rows.length === 0) {
-    return (
-      <div className="grid place-items-center py-10 text-sm text-muted-foreground">
-        {emptyText}
-      </div>
-    );
-  }
-  return (
-    <ul className="space-y-3">
-      {rows.map((r) => (
-        <OrderMobileCard key={r.id} row={r} onCancel={onCancel} />
-      ))}
-    </ul>
-  );
-}
-
-function OrderMobileCard({
-  row: r,
-  onCancel,
-}: {
-  row: any;
-  onCancel?: (id: string, sym: string) => void;
-}) {
-  const side: "BUY" | "SELL" =
-    String(r.action ?? "").toUpperCase() === "SELL" ? "SELL" : "BUY";
-  const subLine =
-    r.trading_symbol && r.trading_symbol !== r.symbol
-      ? r.trading_symbol
-      : r.exchange;
-  const hasTrigger = r.trigger_price != null && Number(r.trigger_price) > 0;
-  return (
-    <li className="rounded-xl border border-border bg-card p-3 shadow-sm">
-      {/* Top row: BUY/SELL · lots · type · status */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              "rounded px-2 py-0.5 text-[10px] font-bold uppercase ring-1 ring-inset",
-              side === "BUY"
-                ? "bg-buy/10 text-buy ring-buy/30"
-                : "bg-sell/10 text-sell ring-sell/30",
-            )}
-          >
-            {side}
-          </span>
-          <span className="font-tabular text-xs text-muted-foreground">
-            🛒 {r.lots}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded border border-border px-1.5 py-0.5 text-[10px] font-semibold uppercase">
-            {r.order_type}
-          </span>
-          <span className="rounded bg-muted/40 px-2 py-0.5 text-[10px] font-bold uppercase text-muted-foreground ring-1 ring-inset ring-border">
-            {r.status}
-          </span>
-        </div>
-      </div>
-
-      {/* Symbol + sub-line on the left, price / trigger on the right */}
-      <div className="mt-2 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-base font-bold leading-tight">
-            {r.symbol}
-          </div>
-          <div className="mt-0.5 truncate text-[11px] uppercase tracking-wide text-muted-foreground">
-            {subLine}
-          </div>
-        </div>
-        <div className="shrink-0 text-right">
-          <div className="font-tabular text-sm font-bold tabular-nums">
-            {formatPrice(r.price, r.segment, r.exchange)}
-          </div>
-          {hasTrigger ? (
-            <div className="mt-0.5 font-tabular text-[11px] text-muted-foreground">
-              Trig {formatPrice(r.trigger_price, r.segment, r.exchange)}
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      {/* Product + placed time */}
-      <div className="mt-1.5 flex items-baseline justify-between gap-2 text-[10px] text-muted-foreground">
-        <span className="uppercase tracking-wider">{r.product_type ?? ""}</span>
-        <span className="whitespace-nowrap font-tabular">
-          {r.created_at ? formatIST(r.created_at, { withSeconds: true }) : "—"}
-        </span>
-      </div>
-
-      {/* Rejection reason (rejected tab) */}
-      {r.rejection_reason ? (
-        <div className="mt-1.5 text-[11px] leading-snug text-sell">
-          {r.rejection_reason}
-        </div>
-      ) : null}
-
-      {/* Cancel action — pending only */}
-      {onCancel ? (
-        <div className="mt-2 flex justify-end">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => onCancel(r.id, r.symbol)}
-            className="h-7 gap-1 px-2.5 text-xs"
-          >
-            <X className="size-3.5" /> Cancel
-          </Button>
-        </div>
-      ) : null}
     </li>
   );
 }
@@ -2390,7 +2178,9 @@ function ActiveMobileList({
   onEdit,
   onExit,
   onTrade,
-  isClosing,
+  emptyLabel = "Nothing here yet",
+  emptyHint,
+  variant = "active",
 }: {
   rows: any[];
   loading: boolean;
@@ -2399,14 +2189,18 @@ function ActiveMobileList({
   liveLtpFor: (row: any, side?: "BUY" | "SELL") => number;
   onEdit: (row: any, kind: "TP" | "SL") => void;
   onExit: (id: string) => void;
+  /** "position" → the redesigned Position-tab card (no margin tiles, bold
+   *  TP/SL/Exit). "active" → the original Active-trades card, unchanged. */
+  variant?: "position" | "active";
   /** Mobile: tap on the card body fires this with the row's
    *  instrument token so the parent can open the slide-up
    *  TradeDetailSheet. Inner TP/SL/Exit buttons stopPropagation
    *  so they don't fire trade open simultaneously. */
   onTrade?: (token: string) => void;
-  /** Whether each row's close action is currently in flight (drives
-   *  the Exit button spinner during the re-order delay window). */
-  isClosing?: (id: string) => boolean;
+  /** Tab-aware empty-state copy — the Position tab reads "No open
+   *  positions" while the Active tab reads "No active trades". */
+  emptyLabel?: string;
+  emptyHint?: string;
 }) {
   if (loading) {
     return (
@@ -2417,8 +2211,16 @@ function ActiveMobileList({
   }
   if (!rows || rows.length === 0) {
     return (
-      <div className="grid place-items-center py-10 text-sm text-muted-foreground">
-        No active trades.
+      <div className="flex flex-col items-center justify-center gap-2.5 rounded-xl border border-dashed border-border/70 bg-muted/10 px-6 py-12 text-center">
+        <div className="grid size-11 place-items-center rounded-full bg-muted/40 text-muted-foreground ring-1 ring-inset ring-border/60">
+          <Inbox className="size-5" />
+        </div>
+        <p className="text-sm font-semibold text-foreground/90">{emptyLabel}</p>
+        {emptyHint ? (
+          <p className="max-w-[16rem] text-xs leading-relaxed text-muted-foreground">
+            {emptyHint}
+          </p>
+        ) : null}
       </div>
     );
   }
@@ -2446,7 +2248,7 @@ function ActiveMobileList({
             onEdit={onEdit}
             onExit={onExit}
             onTrade={onTrade}
-            isClosing={!!isClosing?.(String(r.id))}
+            variant={variant}
           />
         );
       })}
@@ -2460,14 +2262,14 @@ function ActiveMobileCard({
   onEdit,
   onExit,
   onTrade,
-  isClosing,
+  variant = "active",
 }: {
   row: any;
   liveLtp: number;
   onEdit: (row: any, kind: "TP" | "SL") => void;
   onExit: (id: string) => void;
   onTrade?: (token: string) => void;
-  isClosing?: boolean;
+  variant?: "position" | "active";
 }) {
   // The same card now drives both Active-trades rows (per-fill) AND
   // Position rows (per-instrument net). Field-name shims keep the
@@ -2487,7 +2289,7 @@ function ActiveMobileCard({
         ? "BUY"
         : "SELL";
   const qty = Math.abs(signedQty);
-  const entry = Number(r.price ?? r.avg_price ?? 0);
+  const entry = Number(r.avg_price ?? r.price ?? 0);
   const ltp = liveLtp || Number(r.ltp ?? 0);
   const ts = r.executed_at ?? r.opened_at ?? null;
   const seg = r.segment ?? r.segment_type;
@@ -2497,8 +2299,14 @@ function ActiveMobileCard({
   const pnl =
     ltp > 0 && entry > 0 && qty !== 0 ? dir * (ltp - entry) * qty : 0;
 
+  // Margin figures — only rendered on the Active variant (the Position
+  // card drops them per the user's request for a cleaner layout).
   const used = Number(r.margin ?? r.used_margin ?? r.margin_used ?? 0);
   const holding = holdingMarginFor(r);
+
+  // Lock icon on the Position card = this instrument's market is closed
+  // right now, so a market exit can't fill until it reopens.
+  const marketClosed = !isInstrumentMarketOpen(seg, r.exchange);
 
   // Time-only renderer — strips the "DD Mon, " date prefix that
   // formatIST produces so the card matches the reference design's
@@ -2531,17 +2339,347 @@ function ActiveMobileCard({
   return (
     <li
       className={cn(
-        "rounded-xl border border-border bg-card p-3 shadow-sm",
-        cardOpensTrade && "cursor-pointer transition-colors hover:bg-muted/20",
+        "group relative overflow-hidden rounded-xl border border-border/70 bg-gradient-to-b from-card to-card/60 p-3.5 shadow-sm ring-1 ring-inset ring-white/5",
+        cardOpensTrade && "cursor-pointer transition-all hover:border-primary/40 hover:shadow-md active:scale-[0.997]",
       )}
       onClick={cardOpensTrade ? () => onTrade!(tradeToken) : undefined}
     >
-      {/* Top row: BUY/SELL · qty · NRML/MIS · time */}
+      {/* Subtle accent stripe on the left edge — BUY = green, SELL = red.
+          Reads at a glance without occupying horizontal space. */}
+      <span
+        aria-hidden
+        className={cn(
+          "absolute inset-y-0 left-0 w-0.5",
+          side === "BUY" ? "bg-buy/70" : "bg-sell/70",
+        )}
+      />
+
+      {variant === "position" ? (
+        /* ── POSITION card — premium broker-grade layout (Exness/Bybit-style
+            reference). Row 1: side badge + symbol · live P&L + lock. Row 2:
+            qty · product · time. Divider. Entry / LTP rows. Then ONE row of
+            three equal outline buttons: TP (green) · SL (amber) · EXIT (red),
+            each with a react (lucide) icon. */
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                className={cn(
+                  "rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ring-1 ring-inset",
+                  side === "BUY"
+                    ? "bg-buy/10 text-buy ring-buy/30"
+                    : "bg-sell/10 text-sell ring-sell/30",
+                )}
+              >
+                {side}
+              </span>
+              <span className="truncate text-[15px] font-bold leading-tight">
+                {r.symbol}
+              </span>
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <span
+                className={cn(
+                  "font-tabular text-[15px] font-bold tabular-nums",
+                  pnlColor(pnl),
+                )}
+              >
+                {pnl >= 0 ? "+" : ""}
+                {formatINR(pnl)}
+              </span>
+              {marketClosed ? (
+                <Lock className="size-3.5 text-muted-foreground/70" />
+              ) : null}
+            </div>
+          </div>
+
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span>
+              <span className="opacity-70">Qty</span>{" "}
+              <span className="font-semibold text-foreground/80">{fmtQty(qty)}</span>
+            </span>
+            <span className="opacity-40">•</span>
+            <span className="font-semibold uppercase tracking-wide">{r.product_type}</span>
+            <span className="opacity-40">•</span>
+            <span className="font-tabular">{timeOnly(ts)}</span>
+            {expiry ? (
+              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-primary">
+                Exp {expiry}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="my-2.5 border-t border-border/60" />
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Entry</span>
+              <span className="font-tabular text-sm font-bold tabular-nums text-foreground">
+                {fmtFeedPrice(entry, r.currency_quote, seg, r.exchange)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">LTP</span>
+              <span
+                className={cn(
+                  "font-tabular text-sm font-bold tabular-nums",
+                  pnlColor(pnl),
+                )}
+              >
+                {fmtFeedPrice(ltp, r.currency_quote, seg, r.exchange)}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            {/* TP — green outline. Shows the level when set, else "TP". */}
+            <button
+              type="button"
+              onClick={(e) => {
+                // stopPropagation so a single tap doesn't ALSO open the
+                // tap-anywhere trade sheet on the card wrapper.
+                e.stopPropagation();
+                onEdit(r, "TP");
+              }}
+              className="flex h-9 items-center justify-center gap-1.5 rounded-[10px] border border-buy/40 bg-buy/5 px-1 text-xs font-bold text-buy transition-colors hover:bg-buy/15 active:scale-[0.98]"
+            >
+              <Target className="size-3.5" />
+              <span className="font-tabular tabular-nums">
+                {r.target ? Number(r.target).toFixed(2) : "TP"}
+              </span>
+            </button>
+            {/* SL — amber/orange outline. */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit(r, "SL");
+              }}
+              className="flex h-9 items-center justify-center gap-1.5 rounded-[10px] border border-amber-500/45 bg-amber-500/5 px-1 text-xs font-bold text-amber-600 transition-colors hover:bg-amber-500/15 active:scale-[0.98] dark:text-amber-400"
+            >
+              <Shield className="size-3.5" />
+              <span className="font-tabular tabular-nums">
+                {r.stop_loss ? Number(r.stop_loss).toFixed(2) : "SL"}
+              </span>
+            </button>
+            {/* EXIT — red outline. */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onExit(r.id);
+              }}
+              className="flex h-9 items-center justify-center gap-1.5 rounded-[10px] border border-sell/45 bg-sell/5 px-1 text-xs font-bold text-sell transition-colors hover:bg-sell hover:text-white active:scale-[0.98]"
+            >
+              <LogOut className="size-3.5" />
+              EXIT
+            </button>
+          </div>
+        </>
+      ) : (
+        /* ── ACTIVE card — UNCHANGED. Original top + margins + TP/SL/Exit. */
+        <>
+        {/* Top row: BUY/SELL · qty · NRML/MIS · time */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                "rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ring-1 ring-inset",
+                side === "BUY"
+                  ? "bg-buy/10 text-buy ring-buy/30"
+                  : "bg-sell/10 text-sell ring-sell/30",
+              )}
+            >
+              {side}
+            </span>
+            <span className="font-tabular text-xs text-muted-foreground">
+              <span className="opacity-70">Qty</span>{" "}
+              <span className="font-semibold tabular-nums text-foreground/80">
+                {fmtQty(qty)}
+              </span>
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="rounded-md border border-border/70 bg-muted/30 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {r.product_type}
+            </span>
+            <span className="rounded-md border border-border/70 bg-muted/20 px-1.5 py-0.5 font-tabular text-[10px] text-muted-foreground">
+              {timeOnly(ts)}
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-2 flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="break-all text-[13px] font-bold leading-tight sm:text-sm">
+              {r.symbol}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+              <span className="truncate">{subLine}</span>
+              {expiry ? (
+                <span className="rounded bg-primary/10 px-1.5 py-0.5 font-semibold text-primary">
+                  Exp {expiry}
+                </span>
+              ) : null}
+            </div>
+          </div>
+          <div className="shrink-0 text-right">
+            <div
+              className={cn(
+                "font-tabular text-base font-bold tabular-nums",
+                pnlColor(pnl),
+              )}
+            >
+              {formatINR(pnl, { withSymbol: false })}
+            </div>
+            <div className="mt-0.5 font-tabular text-[11px] text-muted-foreground">
+              {fmtFeedPrice(entry, r.currency_quote, seg, r.exchange)}{" "}
+              → {fmtFeedPrice(ltp, r.currency_quote, seg, r.exchange)}{" "}
+              <span className="uppercase">{side === "BUY" ? "BID" : "ASK"}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="space-y-1.5">
+            <div className="rounded-md border border-border bg-muted/20 px-2.5 py-1.5">
+              <div className="text-[9px] uppercase tracking-wider text-muted-foreground">
+                Used Margin
+              </div>
+              <div className="font-tabular text-sm font-semibold tabular-nums">
+                {formatINR(used)}
+              </div>
+            </div>
+            <div className="rounded-md border border-border bg-muted/20 px-2.5 py-1.5">
+              <div className="text-[9px] uppercase tracking-wider text-muted-foreground">
+                Holding Margin
+              </div>
+              <div className="font-tabular text-sm font-semibold tabular-nums">
+                {formatINR(holding)}
+              </div>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit(r, "TP");
+                }}
+                className="rounded-md border border-dashed border-border px-2 py-1.5 text-[11px] font-semibold hover:bg-muted/40"
+              >
+                TP{" "}
+                <span className="font-tabular tabular-nums">
+                  {r.target ? Number(r.target).toFixed(2) : "Add +"}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit(r, "SL");
+                }}
+                className="rounded-md border border-dashed border-border px-2 py-1.5 text-[11px] font-semibold hover:bg-muted/40"
+              >
+                SL{" "}
+                <span className="font-tabular tabular-nums">
+                  {r.stop_loss ? Number(r.stop_loss).toFixed(2) : "Add +"}
+                </span>
+              </button>
+            </div>
+            <Button
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onExit(r.id);
+              }}
+              className="h-9 w-full gap-1 rounded-md bg-destructive/15 px-2.5 text-xs font-semibold text-destructive ring-1 ring-inset ring-destructive/30 hover:bg-destructive hover:text-destructive-foreground hover:ring-destructive"
+            >
+              <LogOut className="size-3.5" /> Exit
+            </Button>
+          </div>
+        </div>
+        </>
+      )}
+    </li>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Pending-order mobile list + card + edit dialog
+// ─────────────────────────────────────────────────────────────────
+function PendingMobileList({
+  rows,
+  loading,
+  onEdit,
+  onCancel,
+}: {
+  rows: any[];
+  loading: boolean;
+  onEdit: (order: any) => void;
+  onCancel: (id: string) => void;
+}) {
+  if (loading) {
+    return (
+      <div className="grid place-items-center py-10 text-sm text-muted-foreground">
+        Loading…
+      </div>
+    );
+  }
+  if (!rows || rows.length === 0) {
+    return (
+      <div className="grid place-items-center py-10 text-sm text-muted-foreground">
+        No pending orders.
+      </div>
+    );
+  }
+  return (
+    <ul className="space-y-3">
+      {rows.map((o) => (
+        <PendingOrderCard
+          key={o.id}
+          o={o}
+          onEdit={() => onEdit(o)}
+          onCancel={() => onCancel(o.id)}
+        />
+      ))}
+    </ul>
+  );
+}
+
+function PendingOrderCard({
+  o,
+  onEdit,
+  onCancel,
+}: {
+  o: any;
+  onEdit: () => void;
+  onCancel: () => void;
+}) {
+  const side: "BUY" | "SELL" =
+    String(o?.action ?? "").toUpperCase() === "SELL" ? "SELL" : "BUY";
+  const lots = Number(o?.lots ?? 0);
+  const qty = Number(o?.quantity ?? lots * Number(o?.lot_size ?? 1));
+  const orderType = String(o?.order_type ?? "").toUpperCase();
+  const price = Number(o?.price ?? 0);
+  const trigger = Number(o?.trigger_price ?? 0);
+  const ts = o?.created_at ?? o?.placed_at ?? null;
+  const status = String(o?.status ?? "").toUpperCase();
+  return (
+    <li className="group relative overflow-hidden rounded-xl border border-border/70 bg-gradient-to-b from-card to-card/60 p-3.5 shadow-sm ring-1 ring-inset ring-white/5">
+      <span
+        aria-hidden
+        className={cn(
+          "absolute inset-y-0 left-0 w-0.5",
+          side === "BUY" ? "bg-buy/60" : "bg-sell/60",
+        )}
+      />
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span
             className={cn(
-              "rounded px-2 py-0.5 text-[10px] font-bold uppercase ring-1 ring-inset",
+              "rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ring-1 ring-inset",
               side === "BUY"
                 ? "bg-buy/10 text-buy ring-buy/30"
                 : "bg-sell/10 text-sell ring-sell/30",
@@ -2550,120 +2688,215 @@ function ActiveMobileCard({
             {side}
           </span>
           <span className="font-tabular text-xs text-muted-foreground">
-            🛒 {qty}
+            <span className="opacity-70">Qty</span>{" "}
+            <span className="font-semibold tabular-nums text-foreground/80">
+              {fmtQty(qty || lots)}
+            </span>
+          </span>
+          <span className="rounded-md border border-border/70 bg-muted/30 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {orderType || "—"}
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded border border-border px-1.5 py-0.5 text-[10px] font-semibold uppercase">
-            {r.product_type}
-          </span>
-          <span className="rounded border border-border px-1.5 py-0.5 font-tabular text-[10px] text-muted-foreground">
-            {timeOnly(ts)}
-          </span>
-        </div>
+        <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-500 ring-1 ring-inset ring-amber-500/30">
+          {status || "PENDING"}
+        </span>
       </div>
 
-      {/* Symbol + sub-line on left, live P&L + price transition on right */}
       <div className="mt-2 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="truncate text-base font-bold leading-tight">
-            {r.symbol}
+            {o?.symbol ?? o?.instrument?.symbol ?? "—"}
           </div>
-          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
-            <span className="truncate">{subLine}</span>
-            {expiry ? (
-              <span className="rounded bg-primary/10 px-1.5 py-0.5 font-semibold text-primary">
-                Exp {expiry}
+          <div className="mt-0.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+            {o?.exchange ?? o?.segment ?? "—"}
+            {ts && (
+              <span className="ml-2 font-tabular normal-case text-muted-foreground/80">
+                {formatIST(ts, { withSeconds: false })}
               </span>
-            ) : null}
+            )}
           </div>
         </div>
         <div className="shrink-0 text-right">
-          <div
-            className={cn(
-              "font-tabular text-base font-bold tabular-nums",
-              pnlColor(pnl),
-            )}
-          >
-            {formatINR(pnl, { withSymbol: false })}
-          </div>
-          <div className="mt-0.5 font-tabular text-[11px] text-muted-foreground">
-            {fmtFeedPrice(entry, r.currency_quote, seg, r.exchange)}{" "}
-            → {fmtFeedPrice(ltp, r.currency_quote, seg, r.exchange)}{" "}
-            <span className="uppercase">{side === "BUY" ? "BID" : "ASK"}</span>
-          </div>
+          {orderType === "LIMIT" && (
+            <div className="font-tabular text-sm font-semibold tabular-nums">
+              ₹{price.toFixed(2)}
+              <span className="ml-1 text-[10px] font-normal uppercase text-muted-foreground">
+                limit
+              </span>
+            </div>
+          )}
+          {(orderType === "SL_M" || orderType === "SL") && (
+            <div className="font-tabular text-sm font-semibold tabular-nums">
+              ₹{trigger.toFixed(2)}
+              <span className="ml-1 text-[10px] font-normal uppercase text-muted-foreground">
+                trigger
+              </span>
+            </div>
+          )}
+          {orderType === "MARKET" && (
+            <div className="text-xs text-muted-foreground">market</div>
+          )}
         </div>
       </div>
 
-      {/* Bottom: margin tiles on the left, TP/SL/Exit controls on the right */}
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <div className="space-y-1.5">
-          <div className="rounded-md border border-border bg-muted/20 px-2.5 py-1.5">
-            <div className="text-[9px] uppercase tracking-wider text-muted-foreground">
-              Used Margin
-            </div>
-            <div className="font-tabular text-sm font-semibold tabular-nums">
-              {formatINR(used)}
-            </div>
-          </div>
-          <div className="rounded-md border border-border bg-muted/20 px-2.5 py-1.5">
-            <div className="text-[9px] uppercase tracking-wider text-muted-foreground">
-              Holding Margin
-            </div>
-            <div className="font-tabular text-sm font-semibold tabular-nums">
-              {formatINR(holding)}
-            </div>
-          </div>
-        </div>
-        <div className="space-y-1.5">
-          <div className="grid grid-cols-2 gap-1.5">
-            <button
-              type="button"
-              onClick={(e) => {
-                // Card wrapper's onClick opens the trade sheet; the
-                // inline TP/SL/Exit actions must stop propagation so a
-                // single tap doesn't fire BOTH "edit SL/TP" AND
-                // "open trade sheet" at once.
-                e.stopPropagation();
-                onEdit(r, "TP");
-              }}
-              className="rounded-md border border-dashed border-border px-2 py-1.5 text-[11px] font-semibold hover:bg-muted/40"
-            >
-              TP{" "}
-              <span className="font-tabular tabular-nums">
-                {r.target ? Number(r.target).toFixed(2) : "Add +"}
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onEdit(r, "SL");
-              }}
-              className="rounded-md border border-dashed border-border px-2 py-1.5 text-[11px] font-semibold hover:bg-muted/40"
-            >
-              SL{" "}
-              <span className="font-tabular tabular-nums">
-                {r.stop_loss ? Number(r.stop_loss).toFixed(2) : "Add +"}
-              </span>
-            </button>
-          </div>
-          <Button
-            size="sm"
-            loading={!!isClosing}
-            disabled={!!isClosing}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (isClosing) return;
-              onExit(r.id);
-            }}
-            className="h-9 w-full gap-1 rounded-md bg-destructive/15 px-2.5 text-xs font-semibold text-destructive ring-1 ring-inset ring-destructive/30 hover:bg-destructive hover:text-destructive-foreground hover:ring-destructive"
-          >
-            {!isClosing && <LogOut className="size-3.5" />}
-            Exit
-          </Button>
-        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onEdit}
+          className="h-9 gap-1 rounded-md text-xs font-semibold"
+        >
+          <Pencil className="size-3.5" /> Edit
+        </Button>
+        <Button
+          size="sm"
+          onClick={onCancel}
+          className="h-9 gap-1 rounded-md bg-destructive/15 text-xs font-semibold text-destructive ring-1 ring-inset ring-destructive/30 hover:bg-destructive hover:text-destructive-foreground hover:ring-destructive"
+        >
+          <X className="size-3.5" /> Cancel
+        </Button>
       </div>
     </li>
+  );
+}
+
+function EditPendingOrderDialog({
+  order,
+  onClose,
+  onSaved,
+}: {
+  order: any | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [lots, setLots] = useState<string>("");
+  const [price, setPrice] = useState<string>("");
+  const [trigger, setTrigger] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+
+  // Re-seed the form whenever a new order opens the dialog.
+  useMemo(() => {
+    if (!order) return;
+    setLots(String(order.lots ?? ""));
+    setPrice(String(order.price ?? ""));
+    setTrigger(String(order.trigger_price ?? ""));
+  }, [order?.id]);
+
+  if (!order) return null;
+  const orderType = String(order.order_type ?? "").toUpperCase();
+  const showPrice = orderType === "LIMIT";
+  const showTrigger = orderType === "SL_M" || orderType === "SL";
+
+  async function submit() {
+    const lotsN = Number(lots);
+    if (!Number.isFinite(lotsN) || lotsN <= 0) {
+      toast.error("Lots must be > 0");
+      return;
+    }
+    const body: any = { lots: lotsN };
+    if (showPrice) {
+      const pN = Number(price);
+      if (!Number.isFinite(pN) || pN <= 0) {
+        toast.error("Limit price must be > 0");
+        return;
+      }
+      body.price = pN;
+    }
+    if (showTrigger) {
+      const tN = Number(trigger);
+      if (!Number.isFinite(tN) || tN <= 0) {
+        toast.error("Trigger price must be > 0");
+        return;
+      }
+      body.trigger_price = tN;
+    }
+    setBusy(true);
+    try {
+      await OrderAPI.modify(order.id, body);
+      toast.success("Order updated");
+      onSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Modify failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={!!order} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-sm gap-3 p-5">
+        <DialogTitle className="text-base font-semibold">
+          Edit {order.symbol ?? "order"}
+        </DialogTitle>
+
+        <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">Side</span>
+            <span
+              className={cn(
+                "font-semibold",
+                String(order.action).toUpperCase() === "BUY" ? "text-buy" : "text-sell",
+              )}
+            >
+              {String(order.action).toUpperCase()}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">Type</span>
+            <span className="font-semibold">{orderType || "—"}</span>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label className="text-xs">Lots</Label>
+            <Input
+              inputMode="decimal"
+              value={lots}
+              onChange={(e) =>
+                setLots(e.target.value.replace(/[^0-9.]/g, "").replace(/(\..*)\./g, "$1"))
+              }
+              className="h-10"
+              autoFocus
+            />
+          </div>
+          {showPrice && (
+            <div className="space-y-1">
+              <Label className="text-xs">Limit price</Label>
+              <Input
+                inputMode="decimal"
+                value={price}
+                onChange={(e) =>
+                  setPrice(e.target.value.replace(/[^0-9.]/g, "").replace(/(\..*)\./g, "$1"))
+                }
+                className="h-10"
+              />
+            </div>
+          )}
+          {showTrigger && (
+            <div className="space-y-1">
+              <Label className="text-xs">Trigger price</Label>
+              <Input
+                inputMode="decimal"
+                value={trigger}
+                onChange={(e) =>
+                  setTrigger(e.target.value.replace(/[^0-9.]/g, "").replace(/(\..*)\./g, "$1"))
+                }
+                className="h-10"
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={submit} loading={busy} disabled={busy}>
+            Save changes
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -4,9 +4,8 @@ import { useState } from "react";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { API_URL, STORAGE_KEYS } from "@/lib/constants";
-import { useBranding } from "@/lib/branding-context";
 
-export type ReportKind = "pnl" | "tradebook" | "brokerage" | "tax" | "margin";
+export type ReportKind = "pnl" | "tradebook" | "brokerage" | "tax" | "margin" | "tradebook/full";
 
 interface Props {
   kind: ReportKind;
@@ -26,12 +25,6 @@ interface Props {
  */
 export function ReportPdfButton({ kind, params, label = "Download PDF" }: Props) {
   const [downloading, setDownloading] = useState(false);
-  const { branding } = useBranding();
-  // Fallback filename slug from the tenant brand, so even if the server
-  // filename header can't be read we don't hardcode "stock4x" on a
-  // white-label domain.
-  const brandSlug =
-    (branding?.brand_name || "").toLowerCase().replace(/[^a-z0-9]+/g, "") || "hindenburg";
 
   async function onDownload() {
     setDownloading(true);
@@ -49,7 +42,8 @@ export function ReportPdfButton({ kind, params, label = "Download PDF" }: Props)
         typeof window !== "undefined"
           ? window.localStorage.getItem(STORAGE_KEYS.accessToken)
           : null;
-      const res = await fetch(`${API_URL}/api/v1/user/reports/${kind}/pdf${qs}`, {
+      const pdfPath = kind === "tradebook/full" ? "tradebook/full-pdf" : `${kind}/pdf`;
+      const res = await fetch(`${API_URL}/api/v1/user/reports/${pdfPath}${qs}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
       if (!res.ok) {
@@ -64,7 +58,7 @@ export function ReportPdfButton({ kind, params, label = "Download PDF" }: Props)
       const disp = res.headers.get("Content-Disposition") || "";
       const match = /filename="?([^"]+)"?/i.exec(disp);
       const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-      const filename = match?.[1] ?? `${brandSlug}_${kind}_${stamp}.pdf`;
+      const filename = match?.[1] ?? `hindenburg_${kind}_${stamp}.pdf`;
 
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

@@ -1,23 +1,29 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import { InstrumentAPI, MarketwatchAPI, OrderAPI, PositionAPI } from "@/lib/api";
 import { useMarketStream } from "@/lib/useMarketStream";
 import { OrderPanel } from "@/components/trading/OrderPanel";
 import { PositionsTabs } from "@/components/trading/PositionsTabs";
 import { TradingViewChart } from "@/components/trading/TradingViewChart";
+import { FreeTradingViewChart } from "@/components/trading/FreeTradingViewChart";
+import { toPublicTvSymbol } from "@/lib/publicTvSymbol";
 import { ChartTabs, type ChartTab } from "@/components/trading/ChartTabs";
 import { TIMEFRAMES, type Timeframe } from "@/components/trading/ChartToolbar";
 import { MobileQuickTradeBar } from "@/components/trading/MobileQuickTradeBar";
+import { MobileOptionChain } from "@/components/trading/MobileOptionChain";
+import { MobileNews } from "@/components/trading/MobileNews";
+import { TradeDetailSheet } from "@/components/trading/TradeDetailSheet";
 import { WalletStrip } from "@/components/trading/WalletStrip";
 import { cn, formatPercent, pnlColor } from "@/lib/utils";
 
-const ORDER_PANEL_COLLAPSED_KEY = "stock4x.terminal.orderPanelCollapsed";
+const ORDER_PANEL_COLLAPSED_KEY = "setupfx.terminal.orderPanelCollapsed";
 
 export default function TradingTerminalPage() {
   const qc = useQueryClient();
@@ -45,6 +51,19 @@ export default function TradingTerminalPage() {
   const searchParams = useSearchParams();
   const urlToken = searchParams?.get("token") || null;
   const [selectedToken, setSelectedToken] = useState<string | null>(urlToken);
+
+  // Mobile-only top-section view: Charts / Option chain / News. Always resets
+  // to "chart" when the instrument changes so a new symbol opens on its chart.
+  const [mobileChartView, setMobileChartView] = useState<
+    "chart" | "options" | "news"
+  >("chart");
+  // Token for the TradeDetailSheet card that opens when a strike is tapped
+  // in the mobile option chain tab. Separate from selectedToken so tapping
+  // a strike doesn't also swap the chart underneath.
+  const [ocSheetToken, setOcSheetToken] = useState<string | null>(null);
+  useEffect(() => {
+    setMobileChartView("chart");
+  }, [selectedToken]);
 
   useEffect(() => {
     if (urlToken && urlToken !== selectedToken) {
@@ -129,13 +148,10 @@ export default function TradingTerminalPage() {
   // chart, not their favorites/watchlist.
   //
   // Persisted to localStorage so the strip survives page reloads + browser
-  // tab restores. Cap of 6 fits comfortably on desktop and still scrolls
-  // horizontally on mobile — earlier 2-cap silently FIFO-evicted the
-  // oldest tab when adding a third, making it look like the new
-  // instrument hadn't been added (the user-reported "+ se add karta hu
-  // toh chart header me nahi aata" symptom).
-  const TABS_LOCAL_KEY = "stock4x.terminal.openTabs";
-  const MAX_OPEN_TABS = 6;
+  // tab restores. Capped at 2 tabs (FIFO eviction) to keep the strip from
+  // sprawling on mobile.
+  const TABS_LOCAL_KEY = "setupfx.terminal.openTabs";
+  const MAX_OPEN_TABS = 2;
   const [openTabs, setOpenTabs] = useState<ChartTab[]>([]);
 
   // Hydrate from localStorage on mount.
@@ -242,9 +258,20 @@ export default function TradingTerminalPage() {
   );
   const history = useMemo(
     () =>
-      (orders ?? []).filter((o: any) =>
-        ["COMPLETE", "EXECUTED", "FILLED", "REJECTED"].includes(String(o.status).toUpperCase())
-      ),
+      (orders ?? []).filter((o: any) => {
+        const st = String(o.status).toUpperCase();
+        if (!["COMPLETE", "EXECUTED", "FILLED", "REJECTED"].includes(st)) return false;
+        // Only show closing fills (have realized P&L). Opening orders are
+        // visible in Positions/Active tabs — showing them here too causes
+        // confusion when admin reopens a position (the new BUY shows as
+        // "executed" in history while the position is still open).
+        if (o.pnl_inr === null || o.pnl_inr === undefined || o.pnl_inr === "") return false;
+        // Stop-outs are system-generated forced closes shown in the
+        // Positions → Closed tab. Exclude them here so the user's order
+        // History only shows trades they initiated themselves.
+        if (String(o.reason ?? "").toUpperCase() === "STOP_OUT") return false;
+        return true;
+      }),
     [orders]
   );
   const cancelled = useMemo(
@@ -274,17 +301,17 @@ export default function TradingTerminalPage() {
       ),
     [positions]
   );
-  // Include the currently selected (chart-focused) instrument in the WS
-  // subscription too, even when no position is open on it. Without this,
-  // OrderPanel falls back to the 2.5 s REST `quote` poll and the SELL /
-  // BUY price strip lags the watchlist by 1-2 ticks. Set-dedupe via the
-  // useMemo collapses duplicates if the selected token also holds a
-  // position.
+  // Combine position tokens with the currently-selected chart token so the
+  // chart's datafeed gets the same WebSocket tick stream the order panel uses.
   const streamTokens = useMemo(
-    () => Array.from(new Set([...(positionTokens || []), selectedToken].filter(Boolean) as string[])),
-    [positionTokens, selectedToken],
+    () =>
+      selectedToken
+        ? [...new Set([...positionTokens, selectedToken])]
+        : positionTokens,
+    [positionTokens, selectedToken]
   );
   const liveQuotesByToken = useMarketStream(streamTokens);
+  const chartLiveQuote = selectedToken ? (liveQuotesByToken.get(selectedToken) ?? null) : null;
   const positionsLive = useMemo(() => {
     if (!Array.isArray(positions) || liveQuotesByToken.size === 0) return positions ?? [];
 
@@ -326,22 +353,40 @@ export default function TradingTerminalPage() {
     [positionsLive]
   );
 
-  // Live (WebSocket) quote for the selected instrument — same source as
-  // the watchlist on the left. Prefer this over the 2.5 s REST `quote`
-  // so the BUY / SELL price strip on the OrderPanel ticks in lock-step
-  // with the watchlist. REST `quote` stays as the fallback for the
-  // first ~1 s before the WS subscription delivers its first tick.
-  const liveSel = selectedToken ? liveQuotesByToken.get(String(selectedToken)) : undefined;
-  const bestBid =
-    (liveSel?.bid ?? null) ??
-    quote?.bid ??
-    quote?.depth?.bids?.[0]?.price ??
-    null;
-  const bestAsk =
-    (liveSel?.ask ?? null) ??
-    quote?.ask ??
-    quote?.depth?.asks?.[0]?.price ??
-    null;
+  // Prefer the LIVE WS quote (`chartLiveQuote` — the SAME /ws/marketdata
+  // stream the chart + positions already use) over the 2.5 s REST `quote`
+  // poll. When a user taps an instrument in the option chain / watchlist the
+  // token is added to `streamTokens` and the backend answers the `subscribe`
+  // with an immediate snapshot, so the WS price lands in ~one tick (~250 ms)
+  // — instead of the OrderPanel waiting up to 2.5 s for the REST quote to
+  // refetch on the new token (the "price 2 second baad aata hai" lag). REST
+  // stays the fallback for the first paint before the tick and for OHLC /
+  // change fields the WS omits.
+  const liveLtp = Number(chartLiveQuote?.ltp ?? 0);
+  const liveBid = Number(chartLiveQuote?.bid ?? 0);
+  const liveAsk = Number(chartLiveQuote?.ask ?? 0);
+  const bestBid = (liveBid > 0 ? liveBid : (quote?.bid ?? quote?.depth?.bids?.[0]?.price)) ?? null;
+  const bestAsk = (liveAsk > 0 ? liveAsk : (quote?.ask ?? quote?.depth?.asks?.[0]?.price)) ?? null;
+
+  // Option-chain eligibility — same heuristic as TradeDetailSheet: Indian
+  // equity / index / future underlyings can have an option chain; Infoway
+  // feeds (forex / crypto / metals / intl) and option rows themselves
+  // cannot, so the "Option chain" tab is hidden for them entirely.
+  const seg = (instrument?.segment ?? "").toUpperCase();
+  const exch = (instrument?.exchange ?? "").toUpperCase();
+  const showOptionChain =
+    ["NSE", "BSE", "NFO", "BFO", "MCX"].includes(exch) && !seg.includes("OPTION");
+  const ocUnderlying = (instrument?.symbol ?? "").toUpperCase();
+
+  // Mobile top-section tabs: Charts always, Option chain only for F&O-eligible
+  // underlyings, News always.
+  const viewTabs: { key: "chart" | "options" | "news"; label: string }[] = [
+    { key: "chart", label: "Charts" },
+    ...(showOptionChain
+      ? [{ key: "options" as const, label: "Option chain" }]
+      : []),
+    { key: "news", label: "News" },
+  ];
 
   return (
     // Layout strategy:
@@ -362,7 +407,7 @@ export default function TradingTerminalPage() {
     // lg+ uses flex so the order-panel column can animate its width when
     // the user collapses it. CSS grid template columns aren't transitionable
     // — flex + Tailwind's `transition-[width]` is.
-    <div className="mx-auto flex min-h-0 w-full max-w-[1800px] flex-col gap-2 lg:h-full lg:flex-row">
+    <div className="mx-auto flex min-h-0 w-full max-w-[1800px] flex-col lg:h-full lg:flex-row lg:gap-2">
       {/* ── CENTER: chart card + positions strip ──────────
           `min-w-0` is critical with `flex-row`: without it the TradingView
           chart's intrinsic content width keeps the section from shrinking,
@@ -370,7 +415,7 @@ export default function TradingTerminalPage() {
           edge (BUY/SELL prices get clipped). With `min-w-0` the section
           can compress as needed and the fixed-width order panel stays
           visible. Matches the `minmax(0,1fr)` behaviour of the old grid. */}
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col lg:gap-2">
         {/* Chart card. mobile / md keeps `min-h-[60vh]` so the chart
             can't collapse below ~60 % of the viewport on narrow screens.
             lg+: uses `flex-1 min-h-0` so the chart takes whatever space
@@ -381,7 +426,7 @@ export default function TradingTerminalPage() {
             on a standard laptop, which is why the user saw the chart
             and the positions table overlapping with a stray horizontal
             scrollbar inside the chart card. */}
-        <div className="relative flex flex-col overflow-hidden rounded-lg border border-border bg-card lg:min-h-0 lg:flex-1">
+        <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-card lg:h-auto lg:min-h-0 lg:flex-1 lg:rounded-lg lg:border lg:border-border">
           {/* Floating "expand order panel" button — only rendered when the
               OrderPanel column is fully hidden. Sits at the chart card's
               top-right edge so the user can recover the panel without a
@@ -399,14 +444,64 @@ export default function TradingTerminalPage() {
             </button>
           )}
 
-          {/* Tabs */}
-          <ChartTabs
-            tabs={tabsWithSelected}
-            active={selectedToken}
-            onSelect={setSelectedToken}
-            onClose={closeTab}
-            onAdded={(token) => setSelectedToken(token)}
-          />
+          {/* Mobile header — back · symbol · exchange · live price/change.
+              Mirrors the reference broker chart screen. lg+ keeps the
+              chart-tabs strip + OHLC header below instead. */}
+          <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2 lg:hidden">
+            <Link
+              href="/marketwatch"
+              aria-label="Back"
+              className="-ml-1 grid size-8 place-items-center rounded text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+            >
+              <ArrowLeft className="size-5" />
+            </Link>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="truncate text-sm font-bold">
+                  {instrument?.symbol ?? "—"}
+                </span>
+                {instrument?.exchange && (
+                  <span className="rounded bg-muted px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {String(instrument.exchange).toUpperCase()}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="ml-auto text-right leading-tight">
+              <div
+                className={cn(
+                  "font-tabular tabular-nums text-sm font-bold",
+                  pnlColor(quote?.change_pct ?? 0),
+                )}
+              >
+                {(quote?.ltp || (quote as any)?.last_ltp)
+                  ? Number(quote?.ltp || (quote as any)?.last_ltp).toFixed(2)
+                  : "—"}
+              </div>
+              <div
+                className={cn(
+                  "font-tabular tabular-nums text-[11px]",
+                  pnlColor(quote?.change_pct ?? 0),
+                )}
+              >
+                {(quote?.change ?? 0) >= 0 ? "+" : ""}
+                {quote?.change?.toFixed?.(2) ?? "0.00"} ({formatPercent(quote?.change_pct ?? 0)})
+              </div>
+            </div>
+          </div>
+
+          {/* Chart-tabs strip — desktop only. The mobile header above
+              replaces it on phones (single-symbol context, matches the
+              reference design). */}
+          <div className="hidden lg:block">
+            <ChartTabs
+              tabs={tabsWithSelected}
+              active={selectedToken}
+              onSelect={setSelectedToken}
+              onClose={closeTab}
+              onAdded={(token) => setSelectedToken(token)}
+            />
+          </div>
 
           {/* Symbol header strip — OHLC / change.
               The custom ChartToolbar that previously sat here was duplicating
@@ -432,13 +527,22 @@ export default function TradingTerminalPage() {
             </div>
             <div className="flex items-baseline gap-2 font-tabular text-muted-foreground">
               <span>O</span>
-              <span className="text-foreground">{quote?.open?.toFixed?.(2) ?? "—"}</span>
+              <span className="text-foreground">{quote?.open ? quote.open.toFixed(2) : "—"}</span>
               <span>H</span>
-              <span className="text-foreground">{quote?.high?.toFixed?.(2) ?? "—"}</span>
+              <span className="text-foreground">{quote?.high ? quote.high.toFixed(2) : "—"}</span>
               <span>L</span>
-              <span className="text-foreground">{quote?.low?.toFixed?.(2) ?? "—"}</span>
+              <span className="text-foreground">{quote?.low ? quote.low.toFixed(2) : "—"}</span>
               <span>C</span>
-              <span className="text-foreground">{quote?.ltp?.toFixed?.(2) ?? "—"}</span>
+              <span className="text-foreground">
+                {(quote?.ltp || (quote as any)?.last_ltp)
+                  ? Number(quote?.ltp || (quote as any)?.last_ltp).toFixed(2)
+                  : "—"}
+              </span>
+              {!quote?.ltp && (quote as any)?.last_ltp ? (
+                <span className="ml-1 rounded bg-muted px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  last · market closed
+                </span>
+              ) : null}
               <span className={cn("ml-1", pnlColor(quote?.change_pct ?? 0))}>
                 {quote?.change?.toFixed?.(2) ?? "0.00"} ({formatPercent(quote?.change_pct ?? 0)})
               </span>
@@ -487,41 +591,114 @@ export default function TradingTerminalPage() {
               lg+ switches back to flex sizing so the desktop layout's
               chart card can share height with the positions strip
               below. */}
-          <div className="relative h-[calc(100vh-13.5rem)] lg:h-auto lg:min-h-0 lg:flex-1">
-            {/* Floating vertical "Option Chain" tab removed per user
-                request — it overlapped the TradingView right-side price
-                scale on phones, making the live price labels unreadable.
-                Option chain is still reachable via the dedicated button
-                in the terminal header. */}
-            {selectedToken ? (
-              <TradingViewChart
-                token={selectedToken}
-                symbol={instrument?.symbol}
-                segment={instrument?.segment}
-                exchange={instrument?.exchange}
-                interval={tf.interval === "minute" ? "1" : tf.interval === "3minute" ? "3" : tf.interval === "5minute" ? "5" : tf.interval === "15minute" ? "15" : tf.interval === "30minute" ? "30" : tf.interval === "60minute" ? "60" : "1D"}
-                theme={chartTheme}
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center text-muted-foreground">
-                Select an instrument to view chart
-              </div>
-            )}
+          {/* Mobile-only Chart | Option chain toggle. Shown only for
+              F&O-eligible Indian underlyings; forex / crypto / option rows
+              just get the chart. Its own strip above the chart so it never
+              overlaps the TradingView price scale (the old floating vertical
+              tab did — that's why it was removed). */}
+          <div className="flex shrink-0 items-center gap-6 border-b border-border bg-card px-4 lg:hidden">
+            {viewTabs.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setMobileChartView(t.key)}
+                className="relative py-2.5"
+              >
+                <span
+                  className={cn(
+                    "text-sm font-semibold transition-colors",
+                    mobileChartView === t.key
+                      ? "text-foreground"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  {t.label}
+                </span>
+                {mobileChartView === t.key && (
+                  <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-primary" />
+                )}
+              </button>
+            ))}
           </div>
 
-          {/* Mobile-only sticky action bar at the BOTTOM of the chart card:
-              SELL price · ± lot stepper · BUY price. Anchored where the
-              thumb already rests on a phone — replaces the bottom
-              positions drawer experiment (reverted per user request:
-              "chart ko phle jaisa hi kar do ve postion ka seeen remoev
-              kar do bay sell bbhi niche kar do"). Hidden on lg+ where
-              the full OrderPanel column handles entry. */}
-          <MobileQuickTradeBar
-            instrument={instrument}
-            ltp={Number(quote?.ltp ?? 0)}
-            bid={bestBid}
-            ask={bestAsk}
-          />
+          {/* Chart view — shown only when Charts tab is active on mobile.
+              On desktop (lg+) always visible. flex-1 min-h-0 fills remaining
+              height after header + tabs. */}
+          {(mobileChartView === "chart" || typeof window === "undefined") && (
+            <div className="relative min-h-0 flex-1 lg:!flex lg:!flex-col">
+              {selectedToken ? (
+                (() => {
+                  const tvInterval =
+                    tf.interval === "minute" ? "1" : tf.interval === "3minute" ? "3" : tf.interval === "5minute" ? "5" : tf.interval === "15minute" ? "15" : tf.interval === "30minute" ? "30" : tf.interval === "60minute" ? "60" : "1D";
+                  // International (forex / metals / energy / crypto) → free
+                  // TradingView Advanced widget with real OANDA/Binance data.
+                  // Indian (NSE/BSE/NFO/BFO/MCX) → licensed chart on our feed.
+                  const publicTv = toPublicTvSymbol(
+                    instrument?.symbol,
+                    instrument?.exchange,
+                    (instrument as any)?.segment,
+                  );
+                  return publicTv ? (
+                    <FreeTradingViewChart
+                      tvSymbol={publicTv}
+                      interval={tvInterval}
+                      theme={chartTheme}
+                    />
+                  ) : (
+                    <TradingViewChart
+                      token={selectedToken}
+                      symbol={instrument?.symbol}
+                      interval={tvInterval}
+                      theme={chartTheme}
+                      quote={chartLiveQuote}
+                    />
+                  );
+                })()
+              ) : (
+                <div className="flex h-full items-center justify-center text-muted-foreground">
+                  Select an instrument to view chart
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Option chain view — replaces chart on mobile when tab active.
+              Rendered as a flex sibling (not absolute overlay) so the header
+              and tabs above always stay visible. */}
+          {showOptionChain && mobileChartView === "options" && (
+            <div className="flex min-h-0 flex-1 flex-col bg-background lg:hidden">
+              <MobileOptionChain
+                fixedUnderlying={ocUnderlying}
+                onSelect={(tok) => setOcSheetToken(tok)}
+              />
+              <TradeDetailSheet
+                token={ocSheetToken}
+                open={!!ocSheetToken}
+                onClose={() => setOcSheetToken(null)}
+                onSwap={(tok) => setOcSheetToken(tok)}
+              />
+            </div>
+          )}
+
+          {/* News view — replaces chart on mobile when tab active. */}
+          {mobileChartView === "news" && (
+            <div className="min-h-0 flex-1 bg-background lg:hidden">
+              <MobileNews
+                symbol={instrument?.symbol}
+                exchange={instrument?.exchange}
+              />
+            </div>
+          )}
+
+          {/* BUY/SELL bar — only on chart view, mobile only. */}
+          {mobileChartView === "chart" && (
+            <MobileQuickTradeBar
+              instrument={instrument}
+              ltp={Number(quote?.ltp ?? 0)}
+              bid={bestBid}
+              ask={bestAsk}
+            />
+          )}
         </div>
 
         {/* Bottom positions strip — restored from the earlier side-drawer
@@ -538,7 +715,6 @@ export default function TradingTerminalPage() {
             history={history}
             cancelled={cancelled}
             totalPnL={totalPnL}
-            liveQuotesByToken={liveQuotesByToken}
           />
           {/* Slim wallet stats strip — Total Balance / Equity / Used Margin /
               Available / Open P&L. Sits at the bottom of the desktop terminal
@@ -594,14 +770,16 @@ export default function TradingTerminalPage() {
         <div className="h-full">
           <OrderPanel
             instrument={instrument}
-            ltp={Number(quote?.ltp ?? 0)}
+            ltp={liveLtp > 0 ? liveLtp : Number(quote?.ltp ?? 0)}
             bid={bestBid}
             ask={bestAsk}
+            open={Number(quote?.open ?? 0)}
+            high={Number(quote?.high ?? 0)}
+            low={Number(quote?.low ?? 0)}
+            close={Number(quote?.prev_close ?? 0)}
             fxRate={Number(quote?.fx_rate ?? 1)}
-            open={Number((liveSel as any)?.open ?? (quote as any)?.open ?? 0)}
-            high={Number((liveSel as any)?.high ?? (quote as any)?.high ?? 0)}
-            low={Number((liveSel as any)?.low ?? (quote as any)?.low ?? 0)}
-            close={Number((liveSel as any)?.close ?? (quote as any)?.close ?? 0)}
+            lastLtp={Number((quote as any)?.last_ltp ?? 0)}
+            stale={Boolean((quote as any)?.stale)}
           />
         </div>
       </div>

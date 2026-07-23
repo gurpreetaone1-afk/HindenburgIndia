@@ -12,32 +12,33 @@
 
 @layer base {
   /* ── Light (default) ──────────────────────────────────────────────
-     Brand palette: marketing-aligned blue #2563eb as primary on a
-     near-white surface, with Zerodha-toned buy-green / sell-red so
-     charts feel familiar to Indian traders. */
+     Clean fintech palette: indigo-blue primary matching the PlutoPay
+     reference. White surfaces, strong contrast, professional look.
+     Buy/sell semantics stay Zerodha-tuned for Indian-trader muscle
+     memory. */
   :root {
     --background: 0 0% 100%;              /* pure white */
-    --foreground: 222 47% 11%;            /* slate-900 ink */
-    --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
+    --foreground: 224 71% 10%;            /* near-black #0f172a */
+    --card: 0 0% 100%;                    /* white cards */
+    --card-foreground: 224 71% 10%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222 47% 11%;
-    --muted: 210 40% 96%;                 /* slate-50 */
-    --muted-foreground: 215 16% 47%;      /* slate-500 */
-    --border: 214 32% 91%;                /* slate-200 */
-    --input: 214 32% 91%;
+    --popover-foreground: 224 71% 10%;
+    --muted: 220 14% 96%;                 /* #f1f5f9 light gray */
+    --muted-foreground: 220 9% 46%;       /* #64748b slate */
+    --border: 220 13% 91%;               /* #e2e8f0 soft edge */
+    --input: 220 13% 91%;
 
-    /* Brand blue — #2563eb (matches landing) */
-    --ring: 217 91% 53%;
-    --primary: 217 91% 53%;
-    --primary-foreground: 0 0% 100%;
+    /* Brand indigo — #4338CA (indigo-700) */
+    --ring: 243 75% 50%;
+    --primary: 243 75% 50%;               /* #4338CA — deep indigo */
+    --primary-foreground: 0 0% 100%;      /* white on blue */
 
-    --secondary: 214 95% 96%;             /* blue-50 chip bg */
-    --secondary-foreground: 217 91% 45%;
-    --destructive: 354 70% 54%;
+    --secondary: 243 30% 96%;             /* faint indigo chip bg */
+    --secondary-foreground: 243 75% 50%;
+    --destructive: 0 72% 51%;             /* red-600 */
     --destructive-foreground: 0 0% 100%;
-    --accent: 214 95% 96%;
-    --accent-foreground: 217 91% 45%;
+    --accent: 243 30% 96%;
+    --accent-foreground: 243 75% 50%;
 
     /* Trading-domain semantic colors — Zerodha-tuned */
     --buy: 142 65% 38%;                   /* #25a25a */
@@ -47,60 +48,56 @@
     --buy-foreground: 0 0% 100%;
     --sell-foreground: 0 0% 100%;
 
-    /* "Trade" CTA — blue by default, matches brand */
-    --info: 217 91% 53%;
+    --info: 243 75% 50%;
     --info-foreground: 0 0% 100%;
 
-    /* ATM / warning highlight (option chain) */
     --atm: 38 92% 50%;
     --atm-foreground: 0 0% 9%;
 
-    /* Surface-on-surface tint */
-    --surface-hover: 210 40% 96%;
+    --surface-hover: 220 14% 97%;
 
-    --radius: 0.75rem;                    /* softer rounding throughout */
+    --radius: 0.75rem;
     color-scheme: light;
   }
 
-  /* ── Dark — neutral near-black surfaces, blue primary for accents ── */
+  /* ── Dark ──────────────────────────────────────────────────────── */
   .dark {
-    --background: 0 0% 6%;                /* #0f0f0f — neutral near-black */
-    --foreground: 0 0% 98%;
-    --card: 0 0% 10%;                     /* #1a1a1a */
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 8%;
-    --popover-foreground: 0 0% 98%;
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 65%;
-    --border: 0 0% 18%;
-    --input: 0 0% 18%;
+    --background: 224 71% 4%;             /* #020617 — slate-950 */
+    --foreground: 210 40% 98%;
+    --card: 224 50% 8%;                   /* #0f172a */
+    --card-foreground: 210 40% 98%;
+    --popover: 224 50% 8%;
+    --popover-foreground: 210 40% 98%;
+    --muted: 224 30% 15%;
+    --muted-foreground: 215 20% 65%;
+    --border: 224 20% 18%;
+    --input: 224 20% 18%;
 
-    /* Brighter blue on dark for AA contrast */
-    --ring: 213 94% 68%;
-    --primary: 213 94% 68%;               /* #60a5fa-ish */
-    --primary-foreground: 0 0% 6%;
+    --ring: 243 75% 65%;
+    --primary: 243 75% 65%;               /* lighter indigo for dark */
+    --primary-foreground: 224 71% 4%;
 
-    --secondary: 0 0% 18%;
-    --secondary-foreground: 213 94% 80%;
-    --destructive: 354 78% 62%;
+    --secondary: 224 30% 18%;
+    --secondary-foreground: 243 75% 80%;
+    --destructive: 0 72% 58%;
     --destructive-foreground: 0 0% 100%;
-    --accent: 0 0% 18%;
-    --accent-foreground: 213 94% 80%;
+    --accent: 224 30% 18%;
+    --accent-foreground: 243 75% 80%;
 
-    --buy: 142 60% 50%;                   /* #2bca6a */
-    --sell: 354 78% 62%;                  /* #ec5d6f */
+    --buy: 142 60% 50%;
+    --sell: 354 78% 62%;
     --profit: 142 60% 50%;
     --loss: 354 78% 62%;
-    --buy-foreground: 0 0% 6%;
+    --buy-foreground: 224 71% 4%;
     --sell-foreground: 0 0% 100%;
 
-    --info: 213 94% 68%;
-    --info-foreground: 0 0% 6%;
+    --info: 243 75% 65%;
+    --info-foreground: 224 71% 4%;
 
     --atm: 38 92% 60%;
-    --atm-foreground: 0 0% 6%;
+    --atm-foreground: 224 71% 4%;
 
-    --surface-hover: 0 0% 14%;
+    --surface-hover: 224 30% 12%;
 
     color-scheme: dark;
   }
@@ -260,8 +257,8 @@
     background: linear-gradient(
       120deg,
       hsl(var(--primary)) 0%,
-      #ff9933 45%,
-      #138808 100%
+      #6366f1 50%,
+      #818cf8 100%
     );
     -webkit-background-clip: text;
             background-clip: text;
@@ -327,4 +324,139 @@
     animation: none !important;
   }
   .mp-fade-up { opacity: 1; transform: none; animation: none; }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Hindenburg India marketing design system — LOCKED tokens
+   --------------------------------------------------------------------
+   Scoped under `.mp-scope` (set on the marketing layout root) so none of
+   this leaks into the trading dashboard / terminal, which keep the HSL
+   token system above. Tokens are stored as space-separated RGB channels
+   to feed Tailwind's `rgb(var(--x) / <alpha-value>)` colour registration.
+
+   Two surfaces of the SAME locked palette:
+   • `.mp-scope`  → LIGHT default (white / faint-green surfaces, dark text)
+   • `.mp-dark`   → DARK sections (the brief's #0B0F0D family) — applied to
+                    hero, proof strip, payouts, and CTA bands.
+   Brand hues (primary / accent / gold / danger / success) are identical in
+   both so the green never drifts.
+   ════════════════════════════════════════════════════════════════════ */
+@layer base {
+  .mp-scope {
+    /* Light surfaces */
+    --mp-bg: 247 250 248;          /* #F7FAF8 faint green-white page */
+    --mp-surface: 255 255 255;     /* #FFFFFF cards / panels */
+    --mp-surface-2: 238 244 240;   /* #EEF4F0 raised panels, table rows */
+    --mp-border: 220 230 223;      /* #DCE6DF hairline borders */
+    --mp-text: 11 15 13;           /* #0B0F0D primary text */
+    --mp-text-mut: 90 107 96;      /* #5A6B60 muted text (AA on light) */
+
+    /* Brand hues — LOCKED, identical light & dark */
+    --mp-primary: 22 163 74;       /* #16A34A */
+    --mp-primary-2: 34 197 94;     /* #22C55E */
+    --mp-accent: 197 240 74;       /* #C5F04A */
+    --mp-gold: 230 180 80;         /* #E6B450 */
+    --mp-danger: 239 68 68;        /* #EF4444 */
+    --mp-success: 34 197 94;       /* #22C55E */
+
+    color: rgb(var(--mp-text));
+    font-family: var(--font-inter), "Inter", system-ui, sans-serif;
+  }
+
+  /* Dark sections — re-declare only the neutral surfaces/text. The brief's
+     near-black green-black family. Brand hues inherit unchanged. */
+  .mp-scope .mp-dark,
+  .mp-dark.mp-scope {
+    --mp-bg: 11 15 13;             /* #0B0F0D */
+    --mp-surface: 18 24 20;        /* #121814 */
+    --mp-surface-2: 26 34 28;      /* #1A221C */
+    --mp-border: 36 48 41;         /* #243029 */
+    --mp-text: 232 239 233;        /* #E8EFE9 */
+    --mp-text-mut: 156 176 162;    /* #9CB0A2 */
+    color: rgb(var(--mp-text));
+  }
+
+  /* Display face on marketing headings; tight, geometric, confident. */
+  .mp-scope h1, .mp-scope h2, .mp-scope h3, .mp-scope h4 {
+    font-family: var(--font-space-grotesk), var(--font-inter), system-ui, sans-serif;
+    letter-spacing: -0.02em;
+  }
+
+  /* AA-visible focus ring on every interactive element inside marketing. */
+  .mp-scope a:focus-visible,
+  .mp-scope button:focus-visible,
+  .mp-scope input:focus-visible,
+  .mp-scope select:focus-visible,
+  .mp-scope textarea:focus-visible,
+  .mp-scope [tabindex]:focus-visible {
+    outline: 2px solid rgb(var(--mp-primary));
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}
+
+@layer utilities {
+  /* Tabular numerics in the Plex Mono face for prices/stats/payouts. */
+  .mp-num {
+    font-family: var(--font-plex-mono), ui-monospace, monospace;
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+
+  /* Faint dotted "trading chart" grid texture — sparing, never busy.
+     Adapts to the current surface via the --mp-border channel. */
+  .mp-grid-texture {
+    background-image:
+      radial-gradient(rgb(var(--mp-border) / 0.6) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  .mp-grid-lines {
+    background-image:
+      linear-gradient(to right, rgb(var(--mp-border) / 0.35) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(var(--mp-border) / 0.35) 1px, transparent 1px);
+    background-size: 64px 64px;
+  }
+
+  /* Subtle inner glow on card hover (design system: NO heavy drop shadows). */
+  .mp-card-glow {
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  }
+  .mp-card-glow:hover {
+    transform: translateY(-4px);
+    border-color: rgb(var(--mp-primary) / 0.55);
+    box-shadow: inset 0 0 0 1px rgb(var(--mp-primary) / 0.18),
+                0 12px 32px -12px rgb(var(--mp-primary) / 0.35);
+  }
+}
+
+/* Animated green "aurora" gradient — flowing multi-stop greens + lime,
+   used on the auth split-card panel. */
+@keyframes mp-aurora {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+.mp-aurora {
+  background-image: linear-gradient(
+    125deg,
+    #064e3b,
+    #15803d,
+    #22c55e,
+    #4ade80,
+    #a3e635,
+    #22c55e,
+    #065f46
+  );
+  background-size: 300% 300%;
+  animation: mp-aurora 16s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mp-aurora {
+    animation: none;
+  }
 }

@@ -1,33 +1,36 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, Minus, Plus } from "lucide-react";
+import { AlertTriangle, ChevronDown, Minus, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { OrderAPI, PositionAPI, ProfileAPI, SegmentSettingsAPI, WalletAPI } from "@/lib/api";
+import { OrderAPI, SegmentSettingsAPI, WalletAPI } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { cn, formatINR } from "@/lib/utils";
 import { playBuyTone, playSellTone } from "@/lib/trade-audio";
 import { isInstrumentMarketOpen, marketLabel } from "@/lib/marketHours";
-import { ExpiryBanner } from "./ExpiryBanner";
 
 interface Props {
   instrument: any;
   ltp: number;
   bid?: number | null;
   ask?: number | null;
-  /** Day OHLC for the header strip (shown under the "<symbol> order" title,
-   *  matching the chart header). Optional — hidden when unavailable. */
-  open?: number | null;
-  high?: number | null;
-  low?: number | null;
-  close?: number | null;
+  open?: number;
+  high?: number;
+  low?: number;
+  close?: number;
   /** Live USD/INR rate from the quote feed. Used to convert USD-quoted
    *  margin into INR for display — without this the panel shows the USD
    *  number with a ₹ symbol, which makes a $4737 gold lot look like it
    *  needs ₹4,737 when it actually needs ~₹3,93,000. Defaults to 1 so
    *  INR-quoted instruments work as-is. */
   fxRate?: number;
+  /** Last-known price for DISPLAY when the live feed is down / market
+   *  closed (e.g. spot gold over the weekend). Shown as a reference so
+   *  the panel isn't a dead "0.00". NEVER used for order pricing — the
+   *  BUY/SELL side stays disabled while there's no live bid/ask. */
+  lastLtp?: number | null;
+  stale?: boolean | null;
 }
 
 const ORDER_TABS = [
@@ -53,8 +56,21 @@ function formatOrderPanelExpiry(raw: string | null | undefined): string {
   return `${d}-${_OP_EXPIRY_MONTHS[mi]}-${y}`;
 }
 
-export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low, close }: Props) {
+export function OrderPanel({ instrument, ltp, bid, ask, open, high, low, close, fxRate, lastLtp, stale }: Props) {
   const qc = useQueryClient();
+
+  // Grace window after switching instruments: a freshly-selected contract's
+  // live bid/ask take a beat to arrive over the WS, so don't immediately
+  // flash the alarming "illiquid / feed unavailable" warning. During the
+  // grace we show a calm "Fetching live price…" and only escalate to the
+  // real warning if the price still hasn't landed after it.
+  const instrToken = String(instrument?.token ?? instrument?.instrument_token ?? "");
+  const [priceGrace, setPriceGrace] = useState(true);
+  useEffect(() => {
+    setPriceGrace(true);
+    const t = setTimeout(() => setPriceGrace(false), 2500);
+    return () => clearTimeout(t);
+  }, [instrToken]);
 
   // ── Segment-aware defaults ───────────────────────────────────────
   const seg = (instrument?.segment ?? "").toUpperCase();
@@ -80,9 +96,6 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
   const [stopLoss, setStopLoss] = useState<string>("");
   const [target, setTarget] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
-  // Per-order leverage scaling — 4 fixed chips (20/45/75/100). Default 100 =
-  // full admin leverage. Only shown + applied when marginCalcMode === "times".
-  const [leveragePct, setLeveragePct] = useState<number>(100);
 
   // One-Click trading flag (managed by PositionsTabs toolbar). When ON we
   // skip the order-confirm prompt; the user wants immediate execution. Sync
@@ -90,7 +103,7 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
   const [oneClick, setOneClick] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
-    setOneClick(window.localStorage.getItem("stock4x.terminal.oneClick") === "1");
+    setOneClick(window.localStorage.getItem("setupfx.terminal.oneClick") === "1");
     const onChange = (e: Event) => setOneClick(!!(e as CustomEvent).detail);
     window.addEventListener("oneclick:change", onChange);
     return () => window.removeEventListener("oneclick:change", onChange);
@@ -105,96 +118,6 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
     queryFn: () => WalletAPI.summary(),
     staleTime: 2_000,
   });
-
-  // Subscribe (not snapshot) to the open-positions cache. The terminal
-  // page polls this query every ~2 s and the close-position dialogs
-  // optimistically mutate it; subscribing here means the validation
-  // memo below recomputes the moment a close lands, instead of getting
-  // stuck on the held-lots value at first render. Using the same
-  // queryKey React Query already populates avoids a duplicate fetch.
-  const { data: openPositionsLive } = useQuery<any[]>({
-    queryKey: ["positions", "open"],
-    queryFn: () => PositionAPI.open(),
-    staleTime: 2_000,
-    refetchInterval: 2_000,
-  });
-
-  // Re-broker hold check — when the user already has a MARKET order
-  // sleeping in the asymmetric-slippage queue, the BUY/SELL button
-  // stays disabled until it executes. Server-side gate exists too,
-  // but disabling the UI here avoids the user firing back-to-back
-  // clicks during the visible delay window.
-  const { data: pendingReorderOrders } = useQuery<any[]>({
-    queryKey: ["orders", "pending-reorder"],
-    queryFn: () => OrderAPI.list("PENDING_REORDER"),
-    staleTime: 1_000,
-    refetchInterval: 2_000,
-  });
-  const hasPendingReorder = (pendingReorderOrders?.length ?? 0) > 0;
-
-  // When this user is on the re-order pipeline, the placement toast is
-  // DEFERRED until the matching engine actually fires the parked order
-  // ~N seconds later. We capture the order_id from the place_order
-  // response so we can poll its status and pop the right toast (success
-  // OR rejection) on transition out of PENDING_REORDER.
-  const [pendingPlacement, setPendingPlacement] = useState<
-    { id: string; side: "BUY" | "SELL"; lots: number; symbol: string } | null
-  >(null);
-
-  // 100-ms poll the specific parked order's status. Only enabled
-  // while we're waiting on one. Backend now supports sub-second
-  // delays (0.5 s, 0.3 s, etc.) so the toast latency budget has to
-  // be small relative to the delay; 250 ms was 50 % of a 500 ms
-  // delay, which felt sluggish. 100 ms keeps the toast within
-  // ~100 ms of the actual fill. Per-tab REST traffic is bounded
-  // to the re-order window so the higher cadence is fine.
-  const { data: pendingOrderDetail } = useQuery<any>({
-    queryKey: ["order-detail", pendingPlacement?.id],
-    queryFn: () => OrderAPI.detail(pendingPlacement!.id),
-    enabled: !!pendingPlacement?.id,
-    refetchInterval: 100,
-    staleTime: 0,
-  });
-
-  useEffect(() => {
-    if (!pendingPlacement || !pendingOrderDetail) return;
-    const status = String(pendingOrderDetail?.status ?? "").toUpperCase();
-    if (status === "PENDING_REORDER") return; // still parked
-    // Order has transitioned. REJECTED / CANCELLED → error toast with
-    // the backend's rejection_reason so the user knows why their fill
-    // didn't go through. Anything else (FILLED, OPEN, COMPLETE …) →
-    // success toast.
-    if (status === "REJECTED" || status === "CANCELLED") {
-      const reason = pendingOrderDetail?.rejection_reason || "no live price";
-      toast.error(
-        `${pendingPlacement.side} ${pendingPlacement.lots} ${pendingPlacement.symbol} rejected — ${reason}`,
-        { duration: 4000 },
-      );
-    } else {
-      toast.success(
-        `${pendingPlacement.side} ${pendingPlacement.lots} ${pendingPlacement.symbol} placed`,
-        { duration: 1500 },
-      );
-    }
-    setPendingPlacement(null);
-    setSubmitting(false);
-  }, [pendingOrderDetail, pendingPlacement]);
-
-  // User profile — we only read `reorder_effective_delay_sec` here. When
-  // that's > 0 the OrderPanel KNOWS this user is on the re-order pipeline,
-  // so we skip the optimistic position insert altogether (the row would
-  // otherwise flash in on click, vanish on the next 2-s positions poll
-  // because the matching engine hasn't fired yet, and reappear after the
-  // delay — exactly the bug the user reported). Long staleTime + slow
-  // refetch because the value almost never changes during a session.
-  const { data: me } = useQuery<any>({
-    queryKey: ["users", "me"],
-    queryFn: () => ProfileAPI.me(),
-    staleTime: 60_000,
-    refetchInterval: 60_000,
-  });
-  const reorderDelayActive =
-    Number(me?.reorder_effective_delay_sec ?? 0) > 0;
 
   // Price field stays empty on LIMIT / SL-M switch — the placeholder shows
   // the limit-away boundary (see entryPlaceholder below) so the trader sees
@@ -221,43 +144,43 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
     refetchInterval: 8_000,
   });
 
-  // Risk gate: admin can disable all non-MARKET orders globally.
-  const pendingOrdersDisabled = Boolean(effSettings?.disable_pending_orders);
-
-  // When the kill-switch turns ON mid-session, snap the selected tab back to
-  // MARKET so the user isn't left staring at a LIMIT form they can't submit.
-  useEffect(() => {
-    if (pendingOrdersDisabled && orderType !== "MARKET") {
-      setOrderType("MARKET");
-      setPrice("");
-      setTrigger("");
-      setStopLoss("");
-      setTarget("");
+  // ── Broker spread (per-user, pool-aware) ─────────────────────────
+  // The live market feed (`/ws/marketdata`) is ONE public broadcast, so it
+  // can't carry a per-admin spread — the panel re-derives the spread-adjusted
+  // BUY/SELL from the mid (ltp) using THIS user's resolved spread
+  // (`spread_pips`/`spread_type` from the effective settings, which already
+  // walk the sub-admin → broker → super-admin cascade). Mirrors the
+  // server-side execution markup in matching_engine.execute_market_order, so
+  // the price the trader sees is exactly what the order books at.
+  //   Fixed    → bid = ltp − pips/2, ask = ltp + pips/2 (ignore exchange book)
+  //   Floating → keep the live book, but widen to the minimum when tighter
+  // spread_pips ≤ 0 (or no mid) → fall back to the raw feed bid/ask as before.
+  const spreadPips = Number(effSettings?.spread_pips ?? 0) || 0;
+  const spreadType = String(effSettings?.spread_type ?? "fixed").toLowerCase();
+  const _rawBid = bid ?? 0;
+  const _rawAsk = ask ?? 0;
+  let dispBid = _rawBid;
+  let dispAsk = _rawAsk;
+  if (spreadPips > 0 && ltp > 0) {
+    const half = spreadPips / 2;
+    const liveSpread = _rawBid > 0 && _rawAsk > 0 ? _rawAsk - _rawBid : 0;
+    if (spreadType !== "floating" || liveSpread < spreadPips) {
+      dispAsk = ltp + half;
+      dispBid = ltp - half;
     }
-  }, [pendingOrdersDisabled, orderType]);
+    // floating + wide-enough live book → keep the raw bid/ask
+  }
 
   // Server-resolved lot defaults — drive the stepper min, max and default.
   // `minLots` = min lots per order, `orderLots` = max lots per order.
   const minLot = Number(effSettings?.min_lot ?? 1) || 1;
   const maxLotPerOrder = Number(effSettings?.order_lot ?? 0) || 0; // 0 = no cap
-  // Admin's per-order MARGIN cap from the segment Value tile — checks
-  // the order's required margin (NOT notional/total value) against this
-  // ceiling. 0 = no cap. The backend mirrors this comparison in
-  // order_validator.py:6c-enforce so what the panel shows here is what
-  // the validator will reject on.
-  const maxMarginPerOrder = Number(effSettings?.max_value ?? 0) || 0;
   // Per-instrument cap on the running net position (= maxLots/script in
   // the admin matrix). Mirrors the validator's MAX_EACH_EXCEEDED check
   // so the optimistic insert below never sees a value the server is
   // about to reject — without this the user briefly saw the position
   // size tick up to N+1 before the rejection rolled it back ~1 s later.
   const maxLotsPerScript = Number(effSettings?.max_each_lot ?? 0) || 0;
-  // Server-enforced cap in UNITS (lots × lot_size), distinct from
-  // `max_each_lot` which is in LOTS. The screenshot bug was caused by
-  // only checking the lots-cap client-side while the server rejected on
-  // this qty-cap — the order got optimistically inserted at 110 units,
-  // then rolled back to 100 after the server toast. Mirror it here.
-  const maxQtyPerScript = Number(effSettings?.max_qty_per_script ?? 0) || 0;
   // Stepper increment: when the segment's minimum is fractional (MCX 0.1,
   // crypto 0.001, forex 0.01) the +/− buttons should walk in the same units.
   // A hard-coded step of 1 made it impossible to go 0.1 → 0.2 → 0.3 from the
@@ -265,13 +188,21 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
   // through an off-by-one decimal place. Round-up to the next 0.001 to
   // avoid float-precision noise in the input.
   const lotStep = minLot < 1 ? +minLot.toFixed(3) : 1;
-  // User-chosen default lot size from profile settings takes precedence
-  // over the segment's minimum — clamped UP to min_lot so a user
-  // default of 1 on a NIFTY future (min_lot=75) still seeds at 75
-  // (the backend would reject anything smaller). When the profile
-  // default is 0 / unset, fall back to the instrument minimum.
-  const userDefaultLot = Number(me?.default_lot_size ?? 0) || 0;
-  const defaultLot = userDefaultLot > 0 ? Math.max(userDefaultLot, minLot) : minLot;
+  // Default lot when the user clicks a fresh instrument.
+  //   • Indian exchanges (NSE / BSE / MCX / NFO / BFO) — equity, futures
+  //     AND options — always start at 1 lot.  Operator preference, easier
+  //     for users than seeing whatever `min_lot` the segment ended up with.
+  //   • Non-Indian instruments (forex / crypto / spot metals / energy)
+  //     keep the server-resolved minimum so the form opens with a valid
+  //     fractional default (e.g. crypto 0.001, forex 0.01).
+  const exchUpper = String(instrument?.exchange ?? "").toUpperCase();
+  const isIndianExchange =
+    exchUpper === "NSE" ||
+    exchUpper === "BSE" ||
+    exchUpper === "MCX" ||
+    exchUpper === "NFO" ||
+    exchUpper === "BFO";
+  const defaultLot = isIndianExchange ? Math.max(1, minLot) : minLot;
 
   // Reset lot + product when instrument changes OR when we get a fresh
   // server-resolved minimum (so a crypto market correctly starts at 0.001
@@ -282,12 +213,6 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
     setStopLoss("");
     setTarget("");
   }, [instrument?.token, defaultLot, defaultProduct]);
-
-  // Reset leverage back to 100% on symbol change so a leverage chosen for
-  // one instrument doesn't bleed into the next selected symbol.
-  useEffect(() => {
-    setLeveragePct(100);
-  }, [instrument?.token]);
 
   // Lot size — trust the backend across ALL segments.
   //   • Indian F&O (NSE / BSE / NFO / BFO): Zerodha CSV (NIFTY=75, …).
@@ -309,7 +234,7 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
   // booked at execution — otherwise the user sees a number that's off by
   // half-spread × quantity. LIMIT orders use the user-entered price as
   // they always did.
-  const sideQuote = side === "BUY" ? (ask ?? ltp ?? 0) : (bid ?? ltp ?? 0);
+  const sideQuote = side === "BUY" ? (dispAsk || ltp || 0) : (dispBid || ltp || 0);
   const refPrice = orderType === "MARKET" ? (sideQuote || ltp) : Number(price || ltp);
   const notional = qty * refPrice;
 
@@ -340,16 +265,6 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
   // a flat ₹/lot, the rest of the price × lot_size math is bypassed.
   const marginCalcMode = String(effSettings?.margin_calc_mode || "").toLowerCase();
   const fixedMarginPerLot = Number(effSettings?.fixed_margin_per_lot ?? 0);
-
-  // Per-order leverage scaling: only active in TIMES mode.
-  // effectiveTimes = admin's leverage × (leveragePct / 100).
-  // A lower % reduces the effective leverage → more margin required per lot.
-  const effectiveTimes = useMemo(() => {
-    if (marginCalcMode !== "times") return null;
-    const base = Number(effSettings?.leverage ?? serverLeverage);
-    return base * (leveragePct / 100);
-  }, [marginCalcMode, effSettings, serverLeverage, leveragePct]);
-
   const marginPerLot = useMemo(() => {
     if (marginCalcMode === "fixed" && fixedMarginPerLot > 0) {
       // Flat ₹/lot — admin's configured number, charged once per lot
@@ -357,129 +272,43 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
       // fixed-mode short-circuit in order_validator.py.
       return +fixedMarginPerLot.toFixed(2);
     }
-    if (marginCalcMode === "times" && effectiveTimes != null && effectiveTimes > 0) {
-      // Times mode with per-order leverage scaling: use the scaled leverage
-      // rather than the raw serverLeverage so the live display matches what
-      // the backend will actually lock.
-      return +(((lotSize * (refPrice || ltp || 0) * serverMarginPct) / effectiveTimes) * fxMultiplier).toFixed(2);
-    }
-    // Legacy percent / fallback: notional × marginPct ÷ leverage × fx.
+    // Times / legacy percent: notional × marginPct ÷ leverage × fx.
     // `refPrice` is the BUY/SELL close-side price (ask for BUY, bid for
     // SELL) so the displayed margin tracks the price the order fills at.
     return +(((lotSize * (refPrice || ltp || 0) * serverMarginPct) / serverLeverage) * fxMultiplier).toFixed(2);
-  }, [marginCalcMode, fixedMarginPerLot, effectiveTimes, lotSize, refPrice, ltp, serverMarginPct, serverLeverage, fxMultiplier]);
+  }, [marginCalcMode, fixedMarginPerLot, lotSize, refPrice, ltp, serverMarginPct, serverLeverage, fxMultiplier]);
   const intradayMargin = +(marginPerLot * lots).toFixed(2);
-
-  // Carryforward (overnight) margin tile — must use the SERVER-RESOLVED
-  // overnight leverage / margin% / fixed-per-lot, not a hard-coded 1.4×
-  // intraday multiplier. The 1.4× shortcut was masking the admin's
-  // "Overnight Margin" segment-settings value entirely: admin set
-  // NSE_FUT intraday=200× / overnight=400× expecting the carry tile to
-  // show a TIGHTER (lower) margin than intraday, but the UI rendered
-  // 7,779 × 1.4 = 10,890 (looser than intraday) because the override
-  // never reached this calc. Mirrors the intraday formula above using
-  // the overnight triple the resolver puts on effSettings; falls back
-  // to the intraday number when the overnight fields aren't present
-  // (intraday-only segments like FOREX / CRYPTO / spot Commodity).
-  const serverOvernightMarginPct =
+  // Carry-forward margin uses the OVERNIGHT triple from segment settings
+  // — same shape as the intraday calc but reads the `overnight_*` fields
+  // the admin matrix exposes (Fixed ₹/lot OR Times-leverage OR legacy
+  // percent). The old `intradayMargin × 1.4` heuristic was only right
+  // for NSE equity tiers; on MCX FUT with Intraday=500× / Overnight=70×
+  // it under-reported by ~7× and let users open positions they couldn't
+  // afford to carry past the rollover.
+  const ovnFixedPerLot = Number(effSettings?.overnight_fixed_margin_per_lot ?? 0);
+  const ovnLeverage = Number(effSettings?.overnight_leverage ?? 1) || 1;
+  const ovnMarginPct =
     effSettings?.overnight_margin_percentage != null
       ? Number(effSettings.overnight_margin_percentage) / 100
-      : serverMarginPct;
-  const serverOvernightLeverage =
-    Number(effSettings?.overnight_leverage ?? 0) || serverLeverage;
-  const overnightFixedMarginPerLot = Number(
-    effSettings?.overnight_fixed_margin_per_lot ?? 0,
-  );
-  // Per-order leverage scaling on the carry-forward tile too — same as the
-  // intraday `effectiveTimes`. Without this the Carryforward tile ignored
-  // the leverage chip (the chip only moved the Intraday tile). Mirrors the
-  // mobile TradeDetailSheet.
-  const effectiveOvernightTimes = useMemo(() => {
-    if (marginCalcMode !== "times") return null;
-    const scaled = serverOvernightLeverage * (leveragePct / 100);
-    return scaled > 0 ? scaled : serverOvernightLeverage;
-  }, [marginCalcMode, serverOvernightLeverage, leveragePct]);
-  const overnightMarginPerLot = useMemo(() => {
-    if (marginCalcMode === "fixed" && overnightFixedMarginPerLot > 0) {
-      return +overnightFixedMarginPerLot.toFixed(2);
+      : 1;
+  const carryforwardMargin = useMemo(() => {
+    if (marginCalcMode === "fixed" && ovnFixedPerLot > 0) {
+      return +(ovnFixedPerLot * lots).toFixed(2);
     }
-    if (marginCalcMode === "fixed" && fixedMarginPerLot > 0) {
-      // Fixed-mode segment but admin didn't configure the overnight
-      // fixed value — fall back to the intraday flat ₹/lot rather than
-      // running the leveraged formula.
-      return +fixedMarginPerLot.toFixed(2);
-    }
-    const ovnLev =
-      marginCalcMode === "times" && effectiveOvernightTimes && effectiveOvernightTimes > 0
-        ? effectiveOvernightTimes
-        : serverOvernightLeverage;
-    return +(
-      ((lotSize * (refPrice || ltp || 0) * serverOvernightMarginPct) / ovnLev) *
-      fxMultiplier
-    ).toFixed(2);
+    const perLotCarry =
+      ((lotSize * (refPrice || ltp || 0) * ovnMarginPct) / ovnLeverage) * fxMultiplier;
+    return +(perLotCarry * lots).toFixed(2);
   }, [
     marginCalcMode,
-    overnightFixedMarginPerLot,
-    fixedMarginPerLot,
-    effectiveOvernightTimes,
+    ovnFixedPerLot,
+    ovnMarginPct,
+    ovnLeverage,
     lotSize,
     refPrice,
     ltp,
-    serverOvernightMarginPct,
-    serverOvernightLeverage,
     fxMultiplier,
+    lots,
   ]);
-  const carryforwardMargin = +(overnightMarginPerLot * lots).toFixed(2);
-
-  // Intraday display tile — ALWAYS the intraday tier, independent of the
-  // selected product_type. The active `marginPerLot` / `serverLeverage`
-  // switch to the overnight tier for NRML/CNC orders, and Infoway
-  // (crypto/forex) panels run in NRML by default — so without a dedicated
-  // intraday source the Intraday tile mirrored the Carry-forward tile.
-  // Reads the backend's `intraday_*` triple; falls back to the active
-  // values when an older API doesn't send them.
-  const serverIntradayMarginPct =
-    effSettings?.intraday_margin_percentage != null
-      ? Number(effSettings.intraday_margin_percentage) / 100
-      : serverMarginPct;
-  const serverIntradayLeverage =
-    Number(effSettings?.intraday_leverage ?? 0) || serverLeverage;
-  const intradayFixedMarginPerLot = Number(
-    effSettings?.intraday_fixed_margin_per_lot ?? 0,
-  );
-  const effectiveIntradayTimes = useMemo(() => {
-    if (marginCalcMode !== "times") return null;
-    const scaled = serverIntradayLeverage * (leveragePct / 100);
-    return scaled > 0 ? scaled : serverIntradayLeverage;
-  }, [marginCalcMode, serverIntradayLeverage, leveragePct]);
-  const intradayTileMarginPerLot = useMemo(() => {
-    if (marginCalcMode === "fixed" && intradayFixedMarginPerLot > 0) {
-      return +intradayFixedMarginPerLot.toFixed(2);
-    }
-    if (marginCalcMode === "fixed" && fixedMarginPerLot > 0) {
-      return +fixedMarginPerLot.toFixed(2);
-    }
-    const intraLev =
-      marginCalcMode === "times" && effectiveIntradayTimes && effectiveIntradayTimes > 0
-        ? effectiveIntradayTimes
-        : serverIntradayLeverage;
-    return +(
-      ((lotSize * (refPrice || ltp || 0) * serverIntradayMarginPct) / intraLev) *
-      fxMultiplier
-    ).toFixed(2);
-  }, [
-    marginCalcMode,
-    intradayFixedMarginPerLot,
-    fixedMarginPerLot,
-    effectiveIntradayTimes,
-    lotSize,
-    refPrice,
-    ltp,
-    serverIntradayMarginPct,
-    serverIntradayLeverage,
-    fxMultiplier,
-  ]);
-  const intradayTileMargin = +(intradayTileMarginPerLot * lots).toFixed(2);
   // `notional` is in the instrument's quote currency. For USD-quoted segments
   // (crypto / forex / spot metals / energy) that's dollars; for Indian segments
   // it's already rupees. The breakdown tile renders everything with ₹, so we
@@ -512,15 +341,17 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
   const orderTypeApi: "MARKET" | "LIMIT" | "SL_M" =
     orderType === "SL-M" ? "SL_M" : (orderType as "MARKET" | "LIMIT");
 
-  // Real exchange quotes. Backend now leaves bid/ask at 0 when there's
-  // no real depth (illiquid options, dead-instrument feeds) instead of
-  // collapsing to LTP — that way the panel can refuse the trade
-  // instead of letting the user fire an order against a fake price.
-  const sellPrice = bid ?? 0;
-  const buyPrice = ask ?? 0;
-  // The side we're about to submit on. When 0 the trade is unfillable
-  // — illiquid instruments routinely show one side > 0 and the other
-  // at 0 (e.g. far-OTM options with only one-sided depth).
+  // Displayed BUY/SELL = the spread-adjusted side prices (dispBid/dispAsk
+  // computed above). For spread segments these are mid ± half-spread; for
+  // everything else they're the raw feed bid/ask.
+  // No LTP fallback for the raw case — when the feed has no real bid/ask
+  // (illiquid options like deep-OTM GOLD150000CE, dead symbols) AND no
+  // broker spread is configured, the side stays at 0 and the panel renders
+  // "—" + disables that side. Falling back to LTP would show a fake price
+  // the user can't actually fill at. Position CLOSE paths still use LTP
+  // fallback — exits must always work.
+  const sellPrice = dispBid;
+  const buyPrice = dispAsk;
   const sidePriceMissing =
     (side === "BUY" && buyPrice <= 0) || (side === "SELL" && sellPrice <= 0);
 
@@ -531,10 +362,6 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
   const priceCcy = "";
   const priceDecimals = isCrypto ? 2 : isForex ? 4 : 2;
   function fmtPrice(n: number) {
-    // Show an em-dash when the feed has no real quote for this side —
-    // the actual number `0.00` is misleading (looks like a tradeable
-    // ₹0 price), and the SELL/BUY card now visually represents "no
-    // quote available".
     if (!n || n <= 0) return "—";
     return `${priceCcy}${Number(n).toFixed(priceDecimals)}`;
   }
@@ -614,232 +441,20 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
     return isCrypto || isForex ? n.toFixed(2) : String(n);
   }
 
-  // ── Live order-eligibility check ────────────────────────────────────
-  // Computes a single reason string when the order, as currently typed,
-  // would be rejected by the validator. Returns null when everything is
-  // green. The BUY / SELL button is disabled + a persistent warning
-  // banner renders while this is non-null, so the trader sees the
-  // failing rule continuously instead of having to click + get a toast
-  // back from the server.
-  //
-  // Order of checks mirrors `submit()` below — the first failing rule
-  // wins so the banner shows the same reason the click would surface.
-  // Network-only checks (matching-engine race conditions, server-side
-  // wallet lock at the moment of fill) stay inside submit() — those
-  // can't be pre-computed.
-  const validationReason = useMemo<string | null>(() => {
-    if (!instrument) return "Instrument not loaded";
-    // Note: hasPendingReorder no longer surfaces a banner here —
-    // user asked to remove the "Previous order pending — executing
-    // shortly…" warning and rely on the BUY button's loading
-    // spinner instead. The button itself stays disabled via the
-    // submitting state set on click, so double-fires are still
-    // blocked.
-    if (sidePriceMissing) {
-      return `No live ${side === "BUY" ? "ask" : "bid"} price — cannot ${side === "BUY" ? "buy" : "sell"} right now`;
-    }
-    if (!isInstrumentMarketOpen(
-      instrument.segment as string | undefined,
-      instrument.exchange as string | undefined,
-    )) {
-      const label = marketLabel(
-        instrument.segment as string | undefined,
-        instrument.exchange as string | undefined,
-      );
-      return `${label} market is closed — try AMO instead`;
-    }
-    if (!lots || lots < minLot) {
-      return `Minimum ${minLot} lot${minLot === 1 ? "" : "s"} required`;
-    }
-    if (maxLotPerOrder > 0 && lots > maxLotPerOrder) {
-      return `Maximum ${maxLotPerOrder} lot${maxLotPerOrder === 1 ? "" : "s"} per order`;
-    }
-    if (maxMarginPerOrder > 0) {
-      // Per-segment cumulative cap: sum margin_used of every open
-      // position whose segment-or-symbol resolves to the same admin
-      // tile as this instrument, add the new order's margin, compare
-      // against the cap. Matches the validator's resolve_admin_segment_name
-      // bucketing — closing BANKNIFTY doesn't free an NIFTY-only slot
-      // and vice-versa; but two NIFTY positions DO share the NSE_FUT
-      // cap. Front-end can't perfectly mirror the symbol-aware
-      // resolver, so we filter on the position's segment_type
-      // (same field the backend resolver routes from) plus exact
-      // symbol-token match for instruments not yet in the cache —
-      // good enough to surface the warning live; backend is the
-      // source of truth for the actual rejection.
-      const ownSeg = String(
-        (instrument as any)?.segment ?? "",
-      ).toUpperCase();
-      let segMarginUsed = 0;
-      for (const p of openPositionsLive ?? []) {
-        const pSeg = String(p?.segment_type ?? p?.segment ?? "").toUpperCase();
-        // Group by exact segment_type — coarse but correct for the
-        // common case (NSE_FUT positions all share NSE_FUT cap, NSE
-        // OPT positions share NSE_OPT cap, etc.). Index-vs-stock
-        // distinction is rare to mix on one user's book.
-        if (pSeg === ownSeg) {
-          segMarginUsed += Number(p?.margin_used ?? 0);
-        }
-      }
-      const projected = segMarginUsed + intradayMargin;
-      if (projected > maxMarginPerOrder) {
-        return `Per-segment margin cap ${formatINR(maxMarginPerOrder)} would be breached (using ${formatINR(segMarginUsed)} + this order ${formatINR(intradayMargin)} = ${formatINR(projected)})`;
-      }
-    }
-    if (orderType === "LIMIT" && !Number(price)) {
-      return "Enter a limit price";
-    }
-    if (orderType === "SL-M" && !Number(trigger)) {
-      return "Enter a trigger price";
-    }
-
-    // Net-position cap (admin's max-lots-per-script). Counts the
-    // existing open position + delta of this order; closing/reducing
-    // orders are exempt. Uses `openPositionsLive` (subscribed via
-    // useQuery above) instead of a non-reactive `qc.getQueryData`
-    // snapshot — so when the trader closes a lot the held count
-    // refreshes here within one poll tick and the warning + button
-    // re-enable on their own without needing another panel input
-    // to change.
-    const openPositionsList: any[] = openPositionsLive ?? [];
-    const existingPos = openPositionsList.find(
-      (p) =>
-        p &&
-        p.instrument_token === instrument.token &&
-        p.product_type === productType,
-    );
-    const heldQty = Number(existingPos?.quantity ?? 0);
-    const heldLots = lotSize > 0 ? Math.abs(heldQty) / lotSize : 0;
-    const signedHeldLots = lotSize > 0 ? heldQty / lotSize : 0;
-    const deltaLots = side === "BUY" ? lots : -lots;
-    const projectedNet = signedHeldLots + deltaLots;
-    const isReducing =
-      signedHeldLots !== 0 && Math.abs(projectedNet) < Math.abs(signedHeldLots);
-
-    if (
-      maxLotsPerScript > 0 &&
-      !isReducing &&
-      Math.abs(projectedNet) > maxLotsPerScript
-    ) {
-      // Wording is symbol-explicit so the trader knows WHICH instrument
-      // they need to close — the per-instrument cap doesn't share lots
-      // across symbols (closing BANKNIFTY doesn't free a NIFTY slot).
-      if (heldLots >= maxLotsPerScript) {
-        return `${instrument.symbol} at per-instrument cap (${heldLots}/${maxLotsPerScript} lots) — close a ${instrument.symbol} lot first to buy more`;
-      }
-      return `${instrument.symbol}: this order would push you to ${Math.abs(projectedNet)} lots (cap ${maxLotsPerScript})`;
-    }
-    if (maxQtyPerScript > 0 && !isReducing) {
-      const projectedQty = Math.abs(projectedNet) * lotSize;
-      if (projectedQty > maxQtyPerScript) {
-        return `${instrument.symbol} per-script qty cap ${maxQtyPerScript} would be exceeded (holding ${Math.abs(heldQty)} + new ${lots * lotSize})`;
-      }
-    }
-
-    // Insufficient-balance pre-check — exact same arithmetic the
-    // server-side wallet_service.lock_margin uses.
-    if (!isReducing && walletSummary) {
-      const free = Number(walletSummary.free ?? walletSummary.available_balance ?? 0);
-      const credit = Number(walletSummary.credit_limit ?? 0);
-      const total = free + credit;
-      if (intradayMargin > 0 && total < intradayMargin) {
-        return `Insufficient balance — need ${formatINR(intradayMargin)}, have ${formatINR(total)}`;
-      }
-    }
-
-    // Marketable-LIMIT pre-check (BUY LIMIT ≥ ask = would fill at market).
-    if (orderType === "LIMIT") {
-      const limit = Number(price);
-      const marketRef = side === "BUY" ? buyPrice : sellPrice;
-      if (marketRef > 0 && limit > 0) {
-        const marketable = side === "BUY" ? limit >= marketRef : limit <= marketRef;
-        if (marketable) {
-          return `${side} LIMIT would fill immediately at market — use SL-M for a stop-${side === "BUY" ? "buy" : "sell"} above/below market`;
-        }
-      }
-    }
-
-    // Limit-away pre-check (admin's limitAwayPercent — minimum distance
-    // the limit price must sit away from market).
-    if (limitAwayPct > 0 && limitEntryRef > 0 && (orderType === "LIMIT" || orderType === "SL-M")) {
-      const candidate = orderType === "LIMIT" ? Number(price) : Number(trigger);
-      if (candidate > 0) {
-        const upperCap = _roundPx(limitEntryRef * (1 + limitAwayPct / 100));
-        const lowerCap = _roundPx(limitEntryRef * (1 - limitAwayPct / 100));
-        const wantUpper = (side === "BUY") !== (orderType === "LIMIT");
-        const label = orderType === "LIMIT" ? "Limit" : "Trigger";
-        if (wantUpper && candidate < upperCap) {
-          return `${label} ${fmtPrice(candidate)} too close to market — must be ≥ ${fmtPrice(upperCap)} (${limitAwayPct}% away)`;
-        }
-        if (!wantUpper && candidate > lowerCap) {
-          return `${label} ${fmtPrice(candidate)} too close to market — must be ≤ ${fmtPrice(lowerCap)} (${limitAwayPct}% away)`;
-        }
-      }
-    }
-
-    // SL / TP directional sanity.
-    const slNum = stopLoss ? Number(stopLoss) : 0;
-    const tpNum = target ? Number(target) : 0;
-    if (slNum > 0 || tpNum > 0) {
-      const entryRef =
-        orderType === "LIMIT"
-          ? Number(price)
-          : orderType === "SL-M"
-            ? Number(trigger)
-            : side === "BUY"
-              ? buyPrice
-              : sellPrice;
-      if (entryRef > 0) {
-        if (slNum > 0) {
-          if (side === "BUY" && slNum >= entryRef) {
-            return `Stop loss must be BELOW entry ${fmtPrice(entryRef)} for a BUY`;
-          }
-          if (side === "SELL" && slNum <= entryRef) {
-            return `Stop loss must be ABOVE entry ${fmtPrice(entryRef)} for a SELL`;
-          }
-        }
-        if (tpNum > 0) {
-          if (side === "BUY" && tpNum <= entryRef) {
-            return `Target must be ABOVE entry ${fmtPrice(entryRef)} for a BUY`;
-          }
-          if (side === "SELL" && tpNum >= entryRef) {
-            return `Target must be BELOW entry ${fmtPrice(entryRef)} for a SELL`;
-          }
-        }
-      }
-    }
-
-    return null;
-  }, [
-    instrument,
-    sidePriceMissing,
-    side,
-    lots,
-    minLot,
-    maxLotPerOrder,
-    maxMarginPerOrder,
-    orderType,
-    price,
-    trigger,
-    productType,
-    lotSize,
-    maxLotsPerScript,
-    maxQtyPerScript,
-    walletSummary,
-    intradayMargin,
-    buyPrice,
-    sellPrice,
-    limitAwayPct,
-    limitEntryRef,
-    stopLoss,
-    target,
-    openPositionsLive,
-    hasPendingReorder,
-  ]);
-
   function submit() {
     if (!instrument) {
       toast.error("Instrument not loaded — try selecting it again");
+      return;
+    }
+    // ── No live quote on this side ─────────────────────────────────────
+    // Block the order outright when there's no real bid (for SELL) or ask
+    // (for BUY). Otherwise an illiquid option / dead feed would let the
+    // user "place" an order that the matching engine rejects, or worse,
+    // fills at a stale LTP that's nowhere near a real counter-party.
+    if (sidePriceMissing) {
+      toast.error(
+        `Cannot ${side === "BUY" ? "buy" : "sell"} — no live ${side === "BUY" ? "ask" : "bid"} price for this instrument. Try a different contract.`,
+      );
       return;
     }
     if (!lots || lots < minLot) {
@@ -934,132 +549,69 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
       }
     }
 
-    // ── SL / TP directional sanity ───────────────────────────────────
-    // The backend rejects wrong-side SL/TP with SL_WRONG_SIDE / TP_WRONG_SIDE,
-    // but doing the same check client-side avoids the optimistic insert
-    // and rollback flicker. Reference price uses the entry the order will
-    // actually land at: LIMIT/SL-M → user-typed price/trigger; MARKET →
-    // the BUY ask / SELL bid the panel is showing right now.
-    //   • BUY  (long) :  SL  <  entry  AND  TP  >  entry
-    //   • SELL (short):  SL  >  entry  AND  TP  <  entry
-    const slNum = stopLoss ? Number(stopLoss) : 0;
-    const tpNum = target ? Number(target) : 0;
-    if (slNum > 0 || tpNum > 0) {
-      const entryRef =
-        orderType === "LIMIT"
-          ? Number(price)
-          : orderType === "SL-M"
-            ? Number(trigger)
-            : side === "BUY"
-              ? buyPrice
-              : sellPrice;
-      if (entryRef > 0) {
-        if (slNum > 0) {
-          if (side === "BUY" && slNum >= entryRef) {
-            toast.error(`Stop loss must be BELOW entry ${fmtPrice(entryRef)} for a BUY`);
-            return;
-          }
-          if (side === "SELL" && slNum <= entryRef) {
-            toast.error(`Stop loss must be ABOVE entry ${fmtPrice(entryRef)} for a SELL`);
-            return;
-          }
-        }
-        if (tpNum > 0) {
-          if (side === "BUY" && tpNum <= entryRef) {
-            toast.error(`Target must be ABOVE entry ${fmtPrice(entryRef)} for a BUY`);
-            return;
-          }
-          if (side === "SELL" && tpNum >= entryRef) {
-            toast.error(`Target must be BELOW entry ${fmtPrice(entryRef)} for a SELL`);
-            return;
-          }
-        }
-      }
-    }
-
-    // ── Expiry-day cutoff pre-check ───────────────────────────────────
-    // Admin can set `expiryCutoffMinutes` per segment — the validator
-    // rejects new entries during the last X minutes before market
-    // close on the EXPIRY day itself, since Phase-4 auto-squareoff
-    // would force-flatten them almost immediately. The exact backend
-    // gate is in `order_validator.py`; we mirror it here so the user
-    // doesn't fire an order that's guaranteed to be rejected.
-    // Skipped for reducing/closing orders (those compute below via
-    // `isReducing` — kept the check above the netting computation by
-    // doing a quick targeted lookup here).
-    {
-      const cutoffMin = Number(effSettings?.expiry_cutoff_minutes ?? 0) || 0;
-      const expiryRaw = (instrument as any)?.expiry as string | null | undefined;
-      if (cutoffMin > 0 && expiryRaw) {
-        const exp = String(expiryRaw).slice(0, 10);
-        const todayIst = new Date(
-          new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }),
-        );
-        const todayIso = `${todayIst.getFullYear()}-${String(
-          todayIst.getMonth() + 1,
-        ).padStart(2, "0")}-${String(todayIst.getDate()).padStart(2, "0")}`;
-        if (exp === todayIso) {
-          // Same close-time map as the backend's _close_time_for_segment
-          // and the ExpiryBanner component — keep them in sync.
-          const seg = ((instrument as any)?.segment ?? "").toUpperCase();
-          const closeHHMM = seg.startsWith("MCX")
-            ? "23:30"
-            : seg.startsWith("CDS") || seg === "FOREX"
-            ? "17:00"
-            : seg.startsWith("CRYPTO")
-            ? "23:55"
-            : seg === "STOCKS" || seg === "INDICES"
-            ? "21:00"
-            : "15:30";
-          const [hh, mm] = closeHHMM.split(":").map(Number);
-          const closeIst = new Date(todayIst);
-          closeIst.setHours(hh, mm, 0, 0);
-          const gateIst = new Date(closeIst.getTime() - cutoffMin * 60_000);
-          // Reducing-orders check is below this block — for the cutoff
-          // we need a quick local netting peek so closes always go
-          // through. Mirrors the lower `isReducing` computation but
-          // limited to what we need here.
-          const openPositionsCacheLocal =
-            (qc.getQueryData<any[]>(["positions", "open"]) as
-              | any[]
-              | undefined) || [];
-          const existingPosLocal = openPositionsCacheLocal.find(
-            (p) =>
-              p &&
-              p.instrument_token === instrument.token &&
-              p.product_type === productType,
+    // ── SL / TP validation ────────────────────────────────────────────
+    // Reference = limit price for LIMIT orders, live ask/bid for MARKET.
+    const _slTpRef =
+      orderType === "LIMIT" && Number(price) > 0
+        ? Number(price)
+        : side === "BUY"
+          ? buyPrice
+          : sellPrice;
+    if (_slTpRef > 0) {
+      const slNum = stopLoss ? Number(stopLoss) : 0;
+      const tpNum = target ? Number(target) : 0;
+      // 1. Directional check
+      if (slNum > 0) {
+        if (side === "BUY" && slNum >= _slTpRef) {
+          toast.error(
+            `Stop Loss ₹${slNum} must be BELOW entry ₹${fmtPrice(_slTpRef)} for a BUY order.`,
+            { duration: 5000 },
           );
-          const heldQtyLocal = Number(existingPosLocal?.quantity ?? 0);
-          const heldLotsLocal = lotSize > 0 ? heldQtyLocal / lotSize : 0;
-          const deltaLotsLocal = side === "BUY" ? lots : -lots;
-          const projectedNetLocal = heldLotsLocal + deltaLotsLocal;
-          const isReducingLocal =
-            heldLotsLocal !== 0 &&
-            Math.abs(projectedNetLocal) < Math.abs(heldLotsLocal);
-          if (!isReducingLocal && todayIst >= gateIst) {
-            toast.error(
-              `New entries blocked — this contract auto-closes at ${closeHHMM} IST today, and new orders are not allowed within ${cutoffMin} minutes of close. Closing trades are still allowed.`,
-            );
-            return;
-          }
+          return;
+        }
+        if (side === "SELL" && slNum <= _slTpRef) {
+          toast.error(
+            `Stop Loss ₹${slNum} must be ABOVE entry ₹${fmtPrice(_slTpRef)} for a SELL order.`,
+            { duration: 5000 },
+          );
+          return;
         }
       }
-    }
-
-    // ── No-quote pre-check ────────────────────────────────────────────
-    // Illiquid instruments (deep-OTM options like GOLD150000CE, dead
-    // feeds, stale tickers) come back from the backend with the
-    // trading-side price at 0 — there's no real bid/ask to fill
-    // against. Submitting anyway would either reject server-side or
-    // fill at a junk price. Block it here with a clear English
-    // warning so the user knows why the order didn't go through.
-    if (sidePriceMissing) {
-      toast.error(
-        `Cannot ${side === "BUY" ? "buy" : "sell"} — no live ${
-          side === "BUY" ? "ask" : "bid"
-        } price for this instrument. Try a different contract.`,
-      );
-      return;
+      if (tpNum > 0) {
+        if (side === "BUY" && tpNum <= _slTpRef) {
+          toast.error(
+            `Target ₹${tpNum} must be ABOVE entry ₹${fmtPrice(_slTpRef)} for a BUY order.`,
+            { duration: 5000 },
+          );
+          return;
+        }
+        if (side === "SELL" && tpNum >= _slTpRef) {
+          toast.error(
+            `Target ₹${tpNum} must be BELOW entry ₹${fmtPrice(_slTpRef)} for a SELL order.`,
+            { duration: 5000 },
+          );
+          return;
+        }
+      }
+      // 2. Limit-away min-distance check on SL/TP
+      if (limitAwayPct > 0) {
+        const _upper = _roundPx(_slTpRef * (1 + limitAwayPct / 100));
+        const _lower = _roundPx(_slTpRef * (1 - limitAwayPct / 100));
+        if (slNum > 0 && slNum > _lower && slNum < _upper) {
+          toast.error(
+            `Stop Loss ₹${slNum} is too close to entry ₹${fmtPrice(_slTpRef)}. Must be at least ${limitAwayPct}% away (≤ ₹${fmtPrice(_lower)}).`,
+            { duration: 6000 },
+          );
+          return;
+        }
+        if (tpNum > 0 && tpNum > _lower && tpNum < _upper) {
+          toast.error(
+            `Target ₹${tpNum} is too close to entry ₹${fmtPrice(_slTpRef)}. Must be at least ${limitAwayPct}% away (≥ ₹${fmtPrice(_upper)}).`,
+            { duration: 6000 },
+          );
+          return;
+        }
+      }
     }
 
     // ── Market-closed pre-check ───────────────────────────────────────
@@ -1088,38 +640,6 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
       return;
     }
 
-    // ── Netting pre-flight: detect reducing/closing orders ───────────
-    // The same instrument+product can be held long OR short — a SELL
-    // against an open long (or BUY against an open short) is REDUCING
-    // exposure, not creating new exposure, so it must NOT be gated by
-    // margin or per-instrument-cap checks. Without this guard the
-    // insufficient-balance toast fired on a sell-to-close when the
-    // wallet didn't have headroom for an unrelated fresh short — the
-    // user-reported "trade open hai me sell karna chahta hu par margin
-    // check kar rha" bug. The validator already does the same check
-    // server-side (`order_validator.py:is_reducing`); we mirror it
-    // here to keep the panel UX consistent with the server's verdict.
-    const openPositionsCache =
-      (qc.getQueryData<any[]>(["positions", "open"]) as any[] | undefined) ||
-      [];
-    const existingPos = openPositionsCache.find(
-      (p) =>
-        p &&
-        p.instrument_token === instrument.token &&
-        p.product_type === productType,
-    );
-    const heldQty = Number(existingPos?.quantity ?? 0);
-    const heldLots = lotSize > 0 ? heldQty / lotSize : 0;
-    const deltaLots = side === "BUY" ? lots : -lots;
-    const projectedNet = heldLots + deltaLots;
-    // `signed_held` semantics — positive = net long, negative = net
-    // short. Reducing = the absolute exposure shrinks (could even flip
-    // through zero on an over-close, in which case the over-portion
-    // becomes a fresh opposite leg — but for sub-position closes the
-    // check below is exact).
-    const isReducing =
-      heldLots !== 0 && Math.abs(projectedNet) < Math.abs(heldLots);
-
     // ── Insufficient-balance pre-check ────────────────────────────────
     // The backend's `wallet_service.lock_margin` rejects the order with
     // INSUFFICIENT_FUNDS when (available_balance + credit_limit) < margin.
@@ -1130,8 +650,8 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
     // positions table stays clean. We only block when we *know* the user
     // is short — if the wallet hasn't loaded yet, fall through and let the
     // server decide (safer than blocking a valid trade behind a stale
-    // cache). Skipped entirely for reducing orders.
-    if (!isReducing && walletSummary) {
+    // cache).
+    if (walletSummary) {
       // Dabba / CFD pre-flight: deployable money is `free` (= equity −
       // margin), not just available cash. A wallet with float losses
       // already has those losses subtracted from `free`, so the check
@@ -1157,29 +677,24 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
     // rejection rolls it back — the user-reported "1 sec ke liye size
     // badh jata hai" flicker. Computing the projected net here keeps
     // the rejected click invisible to the UI.
-    if (
-      maxLotsPerScript > 0 &&
-      !isReducing &&
-      Math.abs(projectedNet) > maxLotsPerScript
-    ) {
-      toast.error(
-        `Per-instrument cap reached: would hold ${Math.abs(projectedNet)} > ${maxLotsPerScript} lot(s)`,
+    if (maxLotsPerScript > 0) {
+      const openPositions =
+        (qc.getQueryData<any[]>(["positions", "open"]) as any[] | undefined) ||
+        [];
+      const existing = openPositions.find(
+        (p) =>
+          p &&
+          p.instrument_token === instrument.token &&
+          p.product_type === productType,
       );
-      return;
-    }
-
-    // ── Per-script qty cap pre-check (MAX_QTY_PER_SCRIPT) ─────────────
-    // Mirrors order_validator.py:611. The cap is in UNITS, not lots —
-    // e.g. SBIN with lot_size=1 and cap=100 means at most 100 shares
-    // total across all entries. Without this guard the server toast
-    // fires AFTER the optimistic insert briefly shows 110 units in the
-    // Size column, then the rollback snaps it back to 100 — the bug
-    // visible in the screenshot.
-    if (maxQtyPerScript > 0 && !isReducing) {
-      const projectedQty = Math.abs(projectedNet) * lotSize;
-      if (projectedQty > maxQtyPerScript) {
+      const heldQty = Number(existing?.quantity ?? 0);
+      const heldLots = lotSize > 0 ? heldQty / lotSize : 0;
+      const deltaLots = side === "BUY" ? lots : -lots;
+      const projectedNet = heldLots + deltaLots;
+      const isReducing = Math.abs(projectedNet) < Math.abs(heldLots);
+      if (!isReducing && Math.abs(projectedNet) > maxLotsPerScript) {
         toast.error(
-          `Per-script quantity cap ${maxQtyPerScript} would be breached (held ${Math.abs(heldQty)} + new ${lots * lotSize})`,
+          `Per-instrument cap reached: would hold ${Math.abs(projectedNet)} > ${maxLotsPerScript} lot(s)`,
         );
         return;
       }
@@ -1207,17 +722,8 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
     const signedQty = (side === "BUY" ? 1 : -1) * lots * lotSize;
     const fillPrice = refPrice || ltp || 0;
     const isImmediate = orderTypeApi === "MARKET";
-    // When this user is on the re-order pipeline (global default or
-    // per-user override → effective delay > 0), the backend parks the
-    // order with status=PENDING_REORDER for ~N seconds before the
-    // matching engine fires. Doing the optimistic position insert in
-    // that case causes the row to flash in on click → vanish on the
-    // next 2-s positions poll (server has no Position yet) → reappear
-    // after the delay. Skip the insert entirely — the real row lands
-    // once via the regular poll after the fill, no flicker.
-    const skipOptimistic = isImmediate && reorderDelayActive;
 
-    if (isImmediate && !skipOptimistic) {
+    if (isImmediate) {
       // Cancel any in-flight positions refetch FIRST — otherwise the poll
       // that's already on the wire returns server data (without our trade
       // yet) and overwrites the optimistic row before the user sees it.
@@ -1288,12 +794,6 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
         const merged = {
           ...existing,
           quantity: newQty,
-          // Keep `lots` in lock-step with quantity so the LOT column
-          // updates in the same tick as SIZE. Without this the merge
-          // updated only quantity → resolveQty kept reading the stale
-          // `existing.lots` until the 2 s positions-poll caught up,
-          // which is the "LOT updates late" symptom the user saw.
-          lots: (Number(existing.lots) || 0) + (side === "BUY" ? 1 : -1) * lots,
           avg_price: nextAvg,
           ltp: ltp || existing.ltp,
           margin_used: (Number(existing.margin_used) || 0) + marginPerLot * lots,
@@ -1306,6 +806,47 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
           next[matchIdx] = merged;
         }
         return next;
+      });
+
+      // Mirror the fill into the Active-trades cache too. Active trades are
+      // per-fill (no merge), so we PREPEND a fresh optimistic row. Without
+      // this the Active tab waited for the 2-3 s network poll — worse on iOS
+      // Safari, where the page navigation + Atlas read-replica lag stacked
+      // into a 5-7 s blank the user flagged ("trade lete hi position page
+      // 5-7 sec"). The 1.8 s reconcile in .then() replaces it with the real
+      // server row once the replica has the fill.
+      qc.cancelQueries({ queryKey: ["positions", "active-trades"] });
+      qc.setQueryData<any[]>(["positions", "active-trades"], (old) => {
+        const prev = Array.isArray(old) ? old : [];
+        return [
+          {
+            id: optimisticId,
+            _optimistic: true,
+            symbol: instrument.symbol,
+            exchange: instrument.exchange,
+            segment: instrument.segment,
+            currency_quote: (instrument as any).currency_quote,
+            action: side,
+            side,
+            product_type: productType,
+            quantity: Math.abs(signedQty),
+            lots,
+            lot_size: lotSize,
+            price: fillPrice,
+            avg_price: fillPrice,
+            ltp: ltp || fillPrice,
+            margin: marginPerLot * lots,
+            used_margin: marginPerLot * lots,
+            margin_used: marginPerLot * lots,
+            stop_loss: stopLoss ? Number(stopLoss) : null,
+            target: target ? Number(target) : null,
+            token: instrument.token,
+            instrument_token: instrument.token,
+            status: "OPEN",
+            opened_at: new Date().toISOString(),
+          },
+          ...prev,
+        ];
       });
     } else {
       // LIMIT / SL-M: park an optimistic order row so the pending-orders
@@ -1353,24 +894,26 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
       });
     }
 
-    // Lock out the button until the API responds AND (for reorder users)
-    // the matching engine actually fires the parked order ~N seconds
-    // later. Cleared in .then()/.catch() for instant fills; cleared by
-    // the pendingPlacement useEffect above for re-order fills.
+    // Brief 250 ms lockout JUST to prevent accidental double-clicks. The
+    // button does NOT wait for the API response — we already inserted the
+    // optimistic position row above, so the user sees their trade
+    // immediately. The request itself runs fire-and-forget; success/error
+    // are handled via toast + cache invalidation when it settles.
     setSubmitting(true);
+    setTimeout(() => setSubmitting(false), 250);
 
-    // Synchronous "placed" toast — only for INSTANT fills. Re-order
-    // users get the toast deferred until the order transitions out of
-    // PENDING_REORDER (via the pendingPlacement / pendingOrderDetail
-    // useEffect above), so the popup pairs with the row actually
-    // landing in Positions (the user's explicit ask: "execute
-    // notification trade execute hone ke baad ana chahiye").
-    const pendingToastId = skipOptimistic
-      ? null
-      : toast.success(
-          `${side} ${fmtLots(lots)} ${instrument.symbol} placed`,
-          { duration: 1500 },
-        );
+    // Instant feedback — fire the "placed" toast immediately for MARKET (fills
+    // at once). It carries an `id` so a server reject (market closed / holiday)
+    // REPLACES it in place via `.catch()` — one toast morphs into the error, no
+    // stacked second popup. LIMIT/SL-M wait for the ack (commonly price-rejected,
+    // so no premature "placed").
+    let pendingToastId: string | number | undefined;
+    if (orderType === "MARKET") {
+      pendingToastId = toast.success(
+        `${side} ${fmtLots(lots)} ${instrument.symbol} placed`,
+        { duration: 1500 },
+      );
+    }
 
     OrderAPI.place({
       token: instrument.token,
@@ -1384,120 +927,41 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
       is_amo: false,
       stop_loss: stopLoss ? Number(stopLoss) : null,
       target: target ? Number(target) : null,
-      // For MARKET orders, pin the fill at exactly what the user just saw
-      // on the BUY/SELL strip (ask for BUY, bid for SELL). The backend
-      // caps this at ±1% from the current live bid/ask so a tampered
-      // client can't book off-market, but inside that band the displayed
-      // price wins — ENTRY then matches the panel down to the rupee.
       expected_price:
         orderType === "MARKET" ? (side === "BUY" ? buyPrice : sellPrice) || null : null,
-      // Per-order leverage scaling. Only meaningful in TIMES mode; backend
-      // ignores it for FIXED segments. UI restricts to 4 chips but backend
-      // accepts any 1-100.
-      leverage_pct: leveragePct,
     })
-      .then((resp: any) => {
-        // ── Re-order delay branch ─────────────────────────────────
-        // When the user (or global default) has a re-order delay
-        // configured, the backend parks this MARKET order with
-        // status=PENDING_REORDER and the matching engine fires it
-        // ~N seconds later. We must:
-        //   • Roll back the optimistic POSITION row — no fill has
-        //     happened yet; leaving it in place would flicker out
-        //     on the next 2-s positions poll (which returns no
-        //     matching row from the server) and reappear after the
-        //     delay (matching the bug the user reported).
-        //   • Suppress the "placed" success toast — the order
-        //     hasn't actually executed yet.
-        //   • Show a "queued" toast so the user knows the click
-        //     was accepted and an execution will follow.
-        // The real Position lands via the regular 2-s positions
-        // poll once the executor finishes the asymmetric fill.
-        // `resp` is the already-unwrapped OrderOut — unwrap() strips
-        // the {data: ...} envelope, so the fields are directly on
-        // `resp` (not `resp.data`). Previous version read resp.data.id
-        // which was always undefined, breaking the deferred-toast +
-        // submitting-clear flow for re-order users.
-        const respStatus = String(resp?.status ?? "").toUpperCase();
-        if (respStatus === "PENDING_REORDER") {
-          // Defensive rollback — `skipOptimistic` already prevented the
-          // insert when reorderDelayActive was true at click time, but
-          // when the user-me cache is stale (e.g. admin just toggled
-          // reorder ON for this user) the response can still come back
-          // PENDING_REORDER even though we did insert. Filter just in
-          // case so we never leave a phantom row behind.
-          if (isImmediate && !skipOptimistic) {
-            qc.setQueryData<any[]>(["positions", "open"], (old) =>
-              Array.isArray(old) ? old.filter((p) => p.id !== optimisticId) : []
-            );
-          }
-          // Stash the parked order's id so the pendingOrderDetail
-          // poll above can drive the deferred toast (success or
-          // rejected) once the executor fires. Works for BOTH the
-          // already-known reorder case AND the stale-me catch-up
-          // (cached delay was 0 but server applied one anyway).
-          const orderId = String(resp?.id ?? "");
-          if (orderId) {
-            setPendingPlacement({
-              id: orderId,
-              side: side as "BUY" | "SELL",
-              lots,
-              symbol: instrument.symbol,
-            });
-          }
-          // Dismiss the eager "placed" toast in the stale-me case —
-          // the order hasn't actually executed yet, the deferred
-          // useEffect will pop the right one once it does.
-          if (!skipOptimistic && pendingToastId !== null) {
-            toast.dismiss(pendingToastId);
-          }
-          // Refresh the cached effective-delay so next click takes the
-          // fast path (skipOptimistic = true) without another stale hit.
-          qc.invalidateQueries({ queryKey: ["users", "me"] });
-          // Eagerly seed the pending-reorder cache so the BUY/SELL button
-          // stays disabled INSTANTLY (no 2-s gap waiting for the next
-          // OrderAPI.list("PENDING_REORDER") poll). The real row replaces
-          // this synthetic one on the next poll.
-          qc.setQueryData<any[]>(["orders", "pending-reorder"], (old) => {
-            const prev = Array.isArray(old) ? old : [];
-            return [
-              {
-                id: String(resp?.id ?? `pending_${Date.now()}`),
-                status: "PENDING_REORDER",
-                symbol: instrument.symbol,
-              },
-              ...prev,
-            ];
+      .then(() => {
+        if (orderType !== "MARKET") {
+          // LIMIT/SL-M: success only after confirmed (MARKET fired instantly above).
+          toast.success(`${side} ${fmtLots(lots)} ${instrument.symbol} order placed`, {
+            duration: 2000,
           });
-          qc.invalidateQueries({ queryKey: ["orders", "pending-reorder"] });
-          qc.invalidateQueries({ queryKey: ["wallet"] });
-          // Do NOT setSubmitting(false) here — the button must stay
-          // loading until the matching engine actually fires the order
-          // ~N seconds later. The pendingPlacement useEffect clears
-          // submitting + pops the deferred "placed" toast at that point.
-          return;
         }
-        // Success toast already fired synchronously above — no need to
-        // double-pop here. Just refresh dependent caches.
-        // DO NOT invalidate "positions" here for MARKET — that triggers an
-        // immediate refetch which can return server data that doesn't yet
-        // include the new trade (Atlas can be ~100 ms behind the write
-        // that just succeeded), and the resulting "flicker" wipes the
-        // optimistic row for one tick before the next regular poll
-        // restores it. The 2 s polling interval handles reconciliation.
-        // For LIMIT/SL-M we DO want an orders refetch so the optimistic
-        // placeholder is replaced with the real persisted row (carries
-        // the proper id, order_number, server-side margin).
         qc.invalidateQueries({ queryKey: ["orders"] });
         qc.invalidateQueries({ queryKey: ["wallet"] });
-        setSubmitting(false);
+        // A MARKET (immediate) fill creates a new active-trade row. Pull it
+        // into the Active tab right away instead of waiting up to 3 s for
+        // the background poll — immediate + delayed invalidate so the new
+        // fill shows even with Atlas read-replica lag. (LIMIT/SL-M orders
+        // have no fill yet, so we skip the extra fetch for them.)
+        if (isImmediate) {
+          // Reconcile ONCE after the Atlas read-replica has had time to
+          // commit the fill. An immediate invalidate would refetch the
+          // pre-commit snapshot and wipe the optimistic Active row for a
+          // frame (the "trade flashes then vanishes" flicker on iOS).
+          setTimeout(
+            () => qc.invalidateQueries({ queryKey: ["positions", "active-trades"] }),
+            1800,
+          );
+        }
       })
       .catch((e: any) => {
-        // Rollback whichever optimistic row we inserted — server rejected
-        // the order so the user shouldn't see a phantom position/order.
-        // (Nothing to roll back when skipOptimistic was true.)
-        if (isImmediate && !skipOptimistic) {
+        // Rollback optimistic row
+        if (isImmediate) {
           qc.setQueryData<any[]>(["positions", "open"], (old) =>
+            Array.isArray(old) ? old.filter((p) => p.id !== optimisticId) : []
+          );
+          qc.setQueryData<any[]>(["positions", "active-trades"], (old) =>
             Array.isArray(old) ? old.filter((p) => p.id !== optimisticId) : []
           );
         } else {
@@ -1505,19 +969,17 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
             Array.isArray(old) ? old.filter((o) => o.id !== optimisticId) : []
           );
         }
-        // Dismiss the early success toast (instant-fill path only) and
-        // show the real rejection. Clear the deferred-toast tracker so
-        // the useEffect doesn't fire a stale "placed" later.
-        if (pendingToastId !== null) toast.dismiss(pendingToastId);
-        setPendingPlacement(null);
-        toast.error(e.message || "Order rejected");
-        setSubmitting(false);
+        const msg = e?.message || "Order rejected";
+        // Morph the instant "placed" toast into the error IN PLACE (same id)
+        // for MARKET → one toast, not two. LIMIT/SL-M have no pending toast
+        // (id undefined) → a fresh error toast.
+        toast.error(msg, { id: pendingToastId, duration: 6000 });
       });
   }
 
   return (
     <aside className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
-      <div className="space-y-2 border-b border-border px-3 py-2">
+      <div className="border-b border-border px-3 py-2">
         <div className="flex items-baseline gap-2">
           <div className="text-sm font-semibold">{instrument?.symbol ?? "—"} order</div>
           {instrument?.expiry && (
@@ -1526,74 +988,51 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
             </div>
           )}
         </div>
-        {/* Day OHLC strip — mirrors the chart header so the trader sees the
-            session's Open/High/Low/Close right on the order panel. */}
-        {[open, high, low, close].some((v) => Number(v) > 0) && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] tabular-nums">
-            <span className="text-muted-foreground">
-              O <span className="text-foreground">{fmtPrice(Number(open) || 0)}</span>
-            </span>
-            <span className="text-muted-foreground">
-              H <span className="text-emerald-500">{fmtPrice(Number(high) || 0)}</span>
-            </span>
-            <span className="text-muted-foreground">
-              L <span className="text-red-500">{fmtPrice(Number(low) || 0)}</span>
-            </span>
-            <span className="text-muted-foreground">
-              C <span className="text-foreground">{fmtPrice(Number(close) || 0)}</span>
-            </span>
+        {((open ?? 0) > 0 || (high ?? 0) > 0 || (low ?? 0) > 0) && (
+          <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px]">
+            {(open ?? 0) > 0 && (
+              <span className="text-muted-foreground">
+                O <span className="font-tabular text-foreground">{open!.toFixed(2)}</span>
+              </span>
+            )}
+            {(high ?? 0) > 0 && (
+              <span className="text-muted-foreground">
+                H <span className="font-tabular text-buy">{high!.toFixed(2)}</span>
+              </span>
+            )}
+            {(low ?? 0) > 0 && (
+              <span className="text-muted-foreground">
+                L <span className="font-tabular text-sell">{low!.toFixed(2)}</span>
+              </span>
+            )}
+            {(close ?? 0) > 0 && (
+              <span className="text-muted-foreground">
+                C <span className="font-tabular text-foreground">{close!.toFixed(2)}</span>
+              </span>
+            )}
           </div>
         )}
-        {/* Expiry-day banner — invisible 99% of the time. Fires red
-            on the expiry day itself (with the IST auto-squareoff
-            time from `expiry_squareoff.py`'s per-segment map) and
-            amber one day before, so the trader doesn't open a
-            fresh NRML carry that'd get force-flattened the next
-            day. */}
-        <ExpiryBanner
-          expiry={instrument?.expiry as string | null | undefined}
-          segment={instrument?.segment as string | null | undefined}
-        />
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-2 scrollbar-thin">
         {/* Order type tabs (the decorative "Trade" button that sat above was
-            a no-op heading and just stole vertical space — removed.)
-            When `pendingOrdersDisabled`, only the MARKET tab is shown and
-            a grey informational banner replaces the hidden tabs. */}
-        {pendingOrdersDisabled ? (
-          <>
-            <div className="grid grid-cols-1 border-b border-border text-xs">
-              <button
-                type="button"
-                className="relative py-2 text-foreground"
-              >
-                Market
-                <span className="absolute inset-x-3 -bottom-px h-0.5 rounded-t bg-primary" />
-              </button>
-            </div>
-            <div className="mt-2 rounded-md border border-muted-foreground/30 bg-muted/30 px-2.5 py-1.5 text-[11px] text-muted-foreground">
-              Only MARKET orders are accepted at the moment.
-            </div>
-          </>
-        ) : (
-          <div className="grid grid-cols-3 border-b border-border text-xs">
-            {ORDER_TABS.map((o) => (
-              <button
-                key={o.key}
-                type="button"
-                onClick={() => setOrderType(o.key)}
-                className={cn(
-                  "relative py-2 transition-colors",
-                  orderType === o.key ? "text-foreground" : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {o.label}
-                {orderType === o.key && <span className="absolute inset-x-3 -bottom-px h-0.5 rounded-t bg-primary" />}
-              </button>
-            ))}
-          </div>
-        )}
+            a no-op heading and just stole vertical space — removed.) */}
+        <div className="grid grid-cols-3 border-b border-border text-xs">
+          {ORDER_TABS.map((o) => (
+            <button
+              key={o.key}
+              type="button"
+              onClick={() => setOrderType(o.key)}
+              className={cn(
+                "relative py-2 transition-colors",
+                orderType === o.key ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {o.label}
+              {orderType === o.key && <span className="absolute inset-x-3 -bottom-px h-0.5 rounded-t bg-primary" />}
+            </button>
+          ))}
+        </div>
 
         {/* SELL / BUY price cards — compact: label + price on one row so
             the whole panel fits in the viewport without scrolling. */}
@@ -1721,57 +1160,22 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
           )}
         </div>
 
-        {/* Leverage usage selector — only shown for TIMES-mode segments.
-            4 fixed chips: 20 / 45 / 75 / 100 (%). Choosing a lower % reduces
-            the effective leverage → more margin locked → safer trade.
-            Hidden entirely for FIXED-mode segments (flat ₹/lot, leverage
-            scaling makes no sense). */}
-        {marginCalcMode === "times" && (
-          <div className="mt-2">
-            <div className="mb-1.5 text-xs text-muted-foreground">Leverage usage</div>
-            <div className="grid grid-cols-4 gap-1.5">
-              {([20, 45, 75, 100] as const).map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => setLeveragePct(p)}
-                  className={cn(
-                    "rounded-md border px-2 py-1.5 text-xs font-medium transition",
-                    leveragePct === p
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "border-border bg-background text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {p}%
-                </button>
-              ))}
-            </div>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              Lower % = higher margin per lot = safer trade.
-            </p>
-          </div>
-        )}
-
-        {/* Take Profit + Stop Loss — hidden when disablePendingOrders is ON
-            because bracket SL/TP create resting pending legs. */}
-        {!pendingOrdersDisabled && (
-          <>
-            <PriceStepper
-              label="Take Profit"
-              value={target}
-              onChange={setTarget}
-              step={isUsdQuoted ? 0.5 : 0.05}
-              placeholder={tpPlaceholder || "Not set"}
-            />
-            <PriceStepper
-              label="Stop Loss"
-              value={stopLoss}
-              onChange={setStopLoss}
-              step={isUsdQuoted ? 0.5 : 0.05}
-              placeholder={slPlaceholder || "Not set"}
-            />
-          </>
-        )}
+        {/* Take Profit + Stop Loss — always visible with +/- steppers.
+            Empty value = no bracket leg (the order is still placed without it). */}
+        <PriceStepper
+          label="Take Profit"
+          value={target}
+          onChange={setTarget}
+          step={isUsdQuoted ? 0.5 : 0.05}
+          placeholder={tpPlaceholder || "Not set"}
+        />
+        <PriceStepper
+          label="Stop Loss"
+          value={stopLoss}
+          onChange={setStopLoss}
+          step={isUsdQuoted ? 0.5 : 0.05}
+          placeholder={slPlaceholder || "Not set"}
+        />
 
         {/* Margin breakdown — tighter spacing */}
         <div className="mt-2 space-y-1 rounded-md border border-border bg-muted/10 px-2.5 py-2 text-[11px]">
@@ -1783,21 +1187,25 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
                 : marginCalcMode === "fixed"
                   ? "Fixed"
                   : marginCalcMode === "times"
-                    ? `${effectiveTimes != null ? Math.round(effectiveTimes) : Math.round(serverLeverage)}×`
+                    ? `${Math.round(serverLeverage)}×`
                     : `${(serverMarginPct * 100).toFixed(2)}%`}
               {" · "}
               {formatINR(marginPerLot)}/lot
             </span>
           </div>
-          <Row label="Intraday" value={formatINR(intradayTileMargin)} />
-          {/* Carryforward is shown for every segment — every admin tile
-              (including CRYPTO_OPT) now carries a distinct overnight
-              margin tier configured on Segment Settings → Fixed Margin
-              → Overnight Margin column. Users see what holding the
-              position past close will cost. Mirror the same
-              INTRADAY_ONLY_ADMIN_ROWS set the backend resolver uses
-              (currently empty). */}
-          <Row label="Carryforward" value={formatINR(carryforwardMargin)} />
+          <Row label="Intraday" value={formatINR(intradayMargin)} />
+          {/* Carryforward is meaningful only for segments that have a
+              daily settlement (NSE / BSE cash + F&O, MCX). Infoway-fed
+              segments (Forex, Stocks, Indices, Commodities, Crypto) don't
+              settle daily — admin's segment matrix even hides their
+              overnight column — so showing a Carryforward number here is
+              misleading. Mirror the same INTRADAY_ONLY_ADMIN_ROWS set the
+              backend resolver uses. */}
+          {!["FOREX", "STOCKS", "INDICES", "COMMODITIES", "CRYPTO"].some(
+            (s) => seg.includes(s),
+          ) && (
+            <Row label="Carryforward" value={formatINR(carryforwardMargin)} />
+          )}
           <Row label="Total value" value={formatINR(totalValue)} />
           {brokeragePreview != null && (
             <Row label="Brokerage" value={formatINR(brokeragePreview)} />
@@ -1821,25 +1229,42 @@ export function OrderPanel({ instrument, ltp, bid, ask, fxRate, open, high, low,
         )}
       </div>
 
-      <div className="space-y-2 border-t border-border p-3">
-        {/* Persistent eligibility banner — surfaces the FIRST admin /
-            segment-settings rule the order would fail right now (min
-            lot, max-lots-per-script, insufficient balance, marketable
-            limit, market closed, …). The BUY / SELL button below stays
-            disabled while a reason is present, so the trader can't fire
-            a request the server is guaranteed to reject — they see the
-            rule continuously and adjust without round-tripping a toast. */}
-        {validationReason && (
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
-            {validationReason}
-          </div>
-        )}
+      <div className="border-t border-border p-3">
+        {sidePriceMissing &&
+          (lastLtp && lastLtp > 0 ? (
+            <div className="mb-2 flex items-start gap-2 rounded-md border border-atm/40 bg-atm/10 px-2.5 py-1.5 text-[11px] text-atm">
+              <AlertTriangle className="mt-px size-3.5 shrink-0" />
+              <span>
+                Market closed / no live feed — trading disabled. Last price{" "}
+                <span className="font-semibold tabular-nums">
+                  {fmtPrice(lastLtp)}
+                </span>{" "}
+                (for reference).
+              </span>
+            </div>
+          ) : priceGrace ? (
+            // Still inside the post-switch grace — price is most likely just
+            // warming up. Calm, no alarm.
+            <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+              <span className="inline-block size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-muted-foreground/40 border-t-transparent" />
+              <span>Fetching live price…</span>
+            </div>
+          ) : (
+            <div className="mb-2 flex items-start gap-2 rounded-md border border-atm/40 bg-atm/10 px-2.5 py-1.5 text-[11px] text-atm">
+              <AlertTriangle className="mt-px size-3.5 shrink-0" />
+              <span>
+                No live {side === "BUY" ? "ask" : "bid"} price for this
+                instrument — illiquid or feed unavailable. Try a different
+                contract.
+              </span>
+            </div>
+          ))}
         <Button
           type="button"
           variant={side === "BUY" ? "buy" : "sell"}
           className="h-11 w-full text-sm font-semibold"
           loading={submitting}
-          disabled={submitting || validationReason !== null}
+          disabled={sidePriceMissing}
           onClick={submit}
         >
           {side} {fmtLots(lots)} {isCrypto || isForex ? "lots" : `lot${lots === 1 ? "" : "s"}`}

@@ -13,7 +13,6 @@
  *    always sits between the SELL and BUY prices.
  */
 import { InstrumentAPI } from "./api";
-import { marketTickBus, type MarketQuote } from "./marketTickBus";
 
 /* ── Resolution mapping ──────────────────────────────────────────── */
 const RESOLUTION_MAP: Record<string, string> = {
@@ -107,181 +106,12 @@ function isExtendedHoursSymbol(token: string, meta?: SymbolMeta): boolean {
   return false;
 }
 
-/** Indian commodity exchanges (MCX / NCDEX) trade IST but with a much
- * wider session than NSE equity. Without this, a GOLD/CRUDE/SILVER
- * future renders a blank gap between yesterday's 15:30 and today's
- * 09:30 because TradingView thinks the market closes at 15:30 (NSE
- * equity hours) when in reality MCX runs until 23:30.
- */
-function isMCXSymbol(_token: string, meta?: SymbolMeta): boolean {
-  const exch = meta?.exchange?.toUpperCase() ?? "";
-  const seg = (meta as any)?.segment?.toString().toUpperCase() ?? "";
-  if (exch === "MCX" || exch === "NCDEX") return true;
-  // Zerodha sometimes returns "MCX" inside a longer segment string
-  // (e.g. "MCX_FUT", "MCX_OPT"). Match on prefix to be safe.
-  if (seg.startsWith("MCX") || seg.startsWith("NCDEX")) return true;
-  return false;
-}
-
-/**
- * Map the Instrument doc's `exchange` field to a user-facing label
- * for the TradingView legend badge.
- *
- * Backend stores the data-provider name in `exchange` for the symbols
- * we mirror through Infoway or Zerodha (eg. crypto / forex / spot
- * metals come through as "INFOWAY"). That vendor name leaks into the
- * chart's top-left legend pill as a colored badge — which the user
- * doesn't want their traders to see. Real exchange names (NSE / BSE /
- * MCX / NFO / BFO / NCDEX) pass through unchanged.
- *
- * Replacement strategy when we see a vendor name:
- *   • Crypto pairs (BTCUSDT / ETHUSDT / *USDT / *USDC / known crypto
- *     bases ending in USD)   → "CRYPTO"
- *   • Spot metals (XAU / XAG / XPT / XPD)            → "METALS"
- *   • Energy (USOIL / UKOIL / NATGAS)                → "ENERGY"
- *   • Indices (SPX500 / NAS100 / US30 / DE40 etc)    → "INDEX"
- *   • Forex pairs (6-letter alpha, common bases)     → "FOREX"
- *   • Fallback                                       → "MARKET"
- */
-function friendlyExchange(
-  exchange: string | null | undefined,
-  segment?: string | null,
-  token?: string | null,
-  inst?: any,
-): string {
-  const raw = (exchange || "").trim();
-  const up = raw.toUpperCase();
-  // Real exchange names pass through. Common Indian exchange codes
-  // first, then anything else that ISN'T a known vendor name.
-  if (
-    up === "NSE" ||
-    up === "BSE" ||
-    up === "NFO" ||
-    up === "BFO" ||
-    up === "MCX" ||
-    up === "NCDEX" ||
-    up === "CDS" ||
-    up === "BCD"
-  ) {
-    return up;
-  }
-  if (up && up !== "INFOWAY" && up !== "ZERODHA" && up !== "ALLTICK") {
-    return raw;
-  }
-
-  // We have a vendor name (or empty) — derive a friendly label.
-  const seg = (segment || (inst as any)?.segment || "").toString().toUpperCase();
-  const tok = (token || "").toString().toUpperCase();
-
-  if (seg.includes("CRYPTO") || isCryptoSymbol(tok, inst as any)) return "CRYPTO";
-  if (seg.includes("FOREX") || seg.includes("FX")) return "FOREX";
-  if (seg.includes("METAL") || /^X(AU|AG|PT|PD)/.test(tok)) return "METALS";
-  if (
-    seg.includes("ENERGY") ||
-    tok === "USOIL" ||
-    tok === "UKOIL" ||
-    tok === "NATGAS"
-  ) {
-    return "ENERGY";
-  }
-  if (
-    seg.includes("INDEX") ||
-    seg.includes("INDICES") ||
-    /^(SPX|NAS|US30|UK100|DE40|GER40|JPN225|HK50|FRA40|AUS200|EU50)/.test(tok)
-  ) {
-    return "INDEX";
-  }
-  // Six-letter alpha tokens are almost always forex pairs (EURUSD,
-  // USDJPY, GBPUSD, USDINR, …)
-  if (/^[A-Z]{6}$/.test(tok)) return "FOREX";
-  return "MARKET";
-}
-
 function toBinancePair(token: string): string {
   const t = (token || "").toUpperCase();
   if (KNOWN_BINANCE_PAIRS.has(t)) return t;
   // BTCUSD → BTCUSDT (the form AllTick uses sometimes)
   if (t.endsWith("USD") && !t.endsWith("USDT")) return `${t}T`;
   return t;
-}
-
-/* ── Session-window check ────────────────────────────────────────────
- * Returns true when `nowMs` falls inside the symbol's trading hours.
- * The live-tick poller in `subscribeBars` consults this so it doesn't
- * create phantom bars during off-hours.
- *
- * Why this matters: without the gate, the live-tick poller fires every
- * 1 s regardless of session. During the MCX overnight break (23:30 IST
- * → 09:00 IST next day) it would create 5 min × 114 ≈ a hundred flat
- * bars at the previous close, and on the next session's first tick the
- * "lastBar" the gap detector sees is the most-recent off-hours filler
- * (5 min ago), NOT the real prev-session close (9.5 h ago). So the gap
- * detector reports `barsSinceLast = 1` → uses lastBar.close as the new
- * bar's open → the new session's first bar gets stuck opening at the
- * previous trading-day's close and closing at the actual new price,
- * which renders as a giant single candle bridging the overnight price
- * move (the "huge red wick" symptom on GOLD/SILVER charts the user
- * reported).
- *
- * TradingView's session string is "HHMM-HHMM" or "HHMM-HHMM:DAYS" with
- * day codes (Sun=1, Mon=2, ..., Sat=7). Times are in the symbol's
- * `timezone`. We parse both and check the localised "now".
- */
-const _SESSION_DAY_OF_WEEK: Record<string, string> = {
-  Sun: "1", Mon: "2", Tue: "3", Wed: "4", Thu: "5", Fri: "6", Sat: "7",
-};
-
-function isWithinSession(symbolInfo: any, nowMs: number): boolean {
-  const session = (symbolInfo?.session || "").toString();
-  if (!session || session === "24x7") return true;
-  const tz = (symbolInfo?.timezone || "Etc/UTC").toString();
-
-  let hh = "00", mm = "00", weekday = "Mon";
-  try {
-    const fmt = new Intl.DateTimeFormat("en-US", {
-      timeZone: tz,
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-      weekday: "short",
-    });
-    for (const p of fmt.formatToParts(new Date(nowMs))) {
-      if (p.type === "hour") hh = p.value;
-      else if (p.type === "minute") mm = p.value;
-      else if (p.type === "weekday") weekday = p.value;
-    }
-  } catch {
-    // Bad timezone string — fail open (count as in-session) so we
-    // never lock a chart out due to an unsupported tz.
-    return true;
-  }
-  const nowHM = parseInt(hh, 10) * 100 + parseInt(mm, 10);
-
-  // Session may be a comma-separated list of day-rules:
-  //   "0900-1530,1700-2330" → two trading windows on the same day
-  //   "0900-2330:23456"     → one window, Mon-Fri only
-  // Iterate every clause; in-session if ANY matches.
-  for (const clause of session.split(",")) {
-    const [range, days] = clause.split(":");
-    if (!range) continue;
-    const [s, e] = range.split("-");
-    if (!s || !e) continue;
-    if (days) {
-      const code = _SESSION_DAY_OF_WEEK[weekday];
-      if (!code || !days.includes(code)) continue;
-    }
-    const start = parseInt(s, 10);
-    const end = parseInt(e, 10);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-    if (start <= end) {
-      if (nowHM >= start && nowHM < end) return true;
-    } else {
-      // Overnight range (e.g., "1700-0500"): valid if past start OR
-      // before end.
-      if (nowHM >= start || nowHM < end) return true;
-    }
-  }
-  return false;
 }
 
 /* ── Types ───────────────────────────────────────────────────────── */
@@ -299,9 +129,50 @@ interface SymbolMeta {
 interface Subscriber {
   symbolInfo: any;
   resolution: string;
+  token: string;
+  barSec: number;
   onTick: (bar: any) => void;
-  unsubscribe: (() => void) | null;
+  timer: ReturnType<typeof setInterval> | null;
   lastBar: any | null;
+}
+
+/* ── Live tick fan-out ───────────────────────────────────────────────
+ * Every active subscriber, module-level so `pushLiveQuote` (called by the
+ * chart component on EVERY WebSocket tick) can find the right one and grow
+ * its candle synchronously. This is what makes the bar move per-tick
+ * (sub-second), the smooth Upstox/Zerodha feel — the old code only sampled
+ * the price on a 1 s timer, so the candle moved in visible 1 Hz steps.
+ */
+const _activeSubs = new Set<Subscriber>();
+
+function priceFromQuote(ltp: number, bid: number, ask: number): number {
+  if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0) return (bid + ask) / 2;
+  if (Number.isFinite(ltp) && ltp > 0) return ltp;
+  return NaN;
+}
+
+function applyTickToBar(sub: Subscriber, price: number) {
+  if (!(price > 0)) return;
+  const now = Math.floor(Date.now() / 1000);
+  const barTime = Math.floor(now / sub.barSec) * sub.barSec * 1000;
+  if (sub.lastBar && sub.lastBar.time === barTime) {
+    sub.lastBar = {
+      ...sub.lastBar,
+      high: Math.max(sub.lastBar.high, price),
+      low: Math.min(sub.lastBar.low, price),
+      close: price,
+    };
+  } else if (!sub.lastBar || barTime > sub.lastBar.time) {
+    // Roll a fresh bar at the new bucket (or bootstrap the very first one).
+    sub.lastBar = { time: barTime, open: price, high: price, low: price, close: price, volume: 0 };
+  } else {
+    return; // tick older than the current bar — ignore
+  }
+  try {
+    sub.onTick(sub.lastBar);
+  } catch {
+    /* TradingView teardown race — ignore */
+  }
 }
 
 /* ── Binance history fetch ──────────────────────────────────────── */
@@ -316,6 +187,14 @@ const _binanceCache = new Map<string, { bars: any[]; ts: number }>();
  */
 const _backendHistoryCache = new Map<string, { bars: any[]; ts: number }>();
 const BACKEND_HISTORY_TTL_MS = 30_000;
+
+/* ── Symbol metadata cache (cross-widget) ───────────────────────────
+ * Module-level so a symbol swap — or a widget rebuild on theme flip —
+ * reuses the resolved instrument detail instead of re-hitting
+ * InstrumentAPI.detail(), which was a serial network blocker before any
+ * candle could load. Instant repeat resolves = faster chart loads.
+ */
+const _symbolDetailCache = new Map<string, SymbolMeta>();
 
 async function fetchBinanceKlines(
   pair: string,
@@ -430,6 +309,29 @@ function generateSyntheticBars(
   return bars;
 }
 
+/* ── Live quote cache (WebSocket → chart bridge) ─────────────────────
+ * The terminal's `useMarketStream` hook delivers sub-second tick data
+ * via /ws/marketdata, but the datafeed's subscribeBars runs in a
+ * separate closure and can't read React state. This module-level Map
+ * bridges the gap: the chart component calls `pushLiveQuote()` on
+ * every WebSocket tick; subscribeBars reads the cache instead of
+ * polling REST. Result: chart price = order panel price always.
+ */
+const _liveQuoteCache = new Map<string, { ltp: number; bid: number; ask: number; ts: number }>();
+
+export function pushLiveQuote(token: string, ltp: number, bid: number, ask: number) {
+  if (!token) return;
+  const t = String(token);
+  _liveQuoteCache.set(t, { ltp, bid, ask, ts: Date.now() });
+  const price = priceFromQuote(ltp, bid, ask);
+  if (!(price > 0)) return;
+  // Push the tick into every subscriber on this token RIGHT NOW so the
+  // candle grows on every WS tick — no waiting on the fallback poll.
+  for (const sub of _activeSubs) {
+    if (sub.token === t) applyTickToBar(sub, price);
+  }
+}
+
 /* ── Datafeed class ──────────────────────────────────────────────── */
 export class CustomDatafeed {
   private subscribers: Map<string, Subscriber> = new Map();
@@ -455,17 +357,14 @@ export class CustomDatafeed {
   ) {
     try {
       const instruments = await InstrumentAPI.search(userInput);
-      const items = (instruments ?? []).map((i: any) => {
-        const ex = friendlyExchange(i.exchange, i.segment, i.token, i);
-        return {
-          symbol: `${i.token}`,
-          full_name: `${ex}:${i.symbol}`,
-          description: i.name || i.symbol,
-          exchange: ex,
-          ticker: `${i.token}`,
-          type: i.instrument_type === "EQ" ? "stock" : "futures",
-        };
-      });
+      const items = (instruments ?? []).map((i: any) => ({
+        symbol: `${i.token}`,
+        full_name: `${i.exchange}:${i.symbol}`,
+        description: i.name || i.symbol,
+        exchange: i.exchange,
+        ticker: `${i.token}`,
+        type: i.instrument_type === "EQ" ? "stock" : "futures",
+      }));
       onResult(items);
     } catch {
       onResult([]);
@@ -479,50 +378,43 @@ export class CustomDatafeed {
   ) {
     try {
       const token = symbolName.split(":").pop() || symbolName;
-      const inst = await InstrumentAPI.detail(token);
+      // Serve symbol metadata from cache when we've seen this token before —
+      // a symbol swap then skips the InstrumentAPI.detail() round-trip
+      // entirely, so the chart resolves + paints noticeably faster on every
+      // instrument click (the detail fetch was a serial blocker before bars).
+      let inst = this.symbolCache.get(token) ?? _symbolDetailCache.get(token);
       if (!inst) {
-        onError("Symbol not found");
-        return;
+        inst = await InstrumentAPI.detail(token);
+        if (!inst) {
+          onError("Symbol not found");
+          return;
+        }
+        _symbolDetailCache.set(token, inst);
       }
       this.symbolCache.set(token, inst);
       const tickSize = parseFloat(inst.tick_size) || 0.05;
       const pricescale = Math.round(1 / tickSize);
       const crypto = isCryptoSymbol(token, inst);
       const extended = isExtendedHoursSymbol(token, inst);
-      const mcx = isMCXSymbol(token, inst);
       const is24h = crypto || extended;
-      // Pick the session string TradingView uses to mask non-trading
-      // hours. The wrong choice paints an "after-hours" gap right where
-      // bars actually exist — that's the "chart me gap aa raha hai"
-      // symptom on MCX futures.
-      //   24h (crypto / forex / spot metals)   → "24x7"
-      //   MCX / NCDEX commodities (09:00-23:30) → "0900-2330:23456"
-      //   NSE / BSE equity & F&O               → "0915-1530:23456"
-      //
-      // The ":23456" suffix is the TradingView day-of-week code for
-      // Mon-Fri (Sun=1, Sat=7). Without it, the chart paints empty
-      // weekend slots between Friday close and Monday open, which the
-      // user sees as a horizontal "gap" on Monday's first paint. The
-      // suffix tells TradingView to compress weekends out of the time
-      // axis the same way it already compresses overnight off-hours.
-      const session = is24h
-        ? "24x7"
-        : mcx
-          ? "0900-2330:23456"
-          : "0915-1530:23456";
-      const timezone = is24h ? "Etc/UTC" : "Asia/Kolkata";
+      // Indian exchange session strings — include ":23456" (Mon-Fri only) so
+      // TradingView doesn't render weekend gaps on the chart. Without the day
+      // suffix the library treats every day as a trading day, leaving two
+      // large blank spaces (Sat + Sun) between every Friday close and Monday
+      // open, which makes the chart look broken ("bahut gaffe").
+      // MCX metals/energy trade till 11:30 PM IST — use extended MCX session.
+      const exch = (inst.exchange || "").toUpperCase();
+      const isMCX = exch === "MCX";
+      const indianSession = isMCX ? "0900-2330:23456" : "0915-1530:23456";
       onResolve({
         name: inst.symbol,
         description: inst.name || inst.symbol,
         type: crypto ? "crypto" : inst.instrument_type === "EQ" ? "stock" : "futures",
-        session,
-        timezone,
+        session: is24h ? "24x7" : indianSession,
+        timezone: is24h ? "Etc/UTC" : "Asia/Kolkata",
         ticker: token,
-        // Replace vendor names (INFOWAY / ZERODHA) leaking through the
-        // Instrument doc with a friendlier segment label. NSE / BSE /
-        // MCX / NFO / BFO and other real exchange names pass through.
-        exchange: friendlyExchange(inst.exchange, inst.segment, token, inst),
-        listed_exchange: friendlyExchange(inst.exchange, inst.segment, token, inst),
+        exchange: inst.exchange,
+        listed_exchange: inst.exchange,
         minmov: 1,
         pricescale: pricescale > 0 ? pricescale : 20,
         has_intraday: true,
@@ -585,141 +477,73 @@ export class CustomDatafeed {
       // earlier filter was throwing away the whole result when the backend
       // returned bars older than `periodParams.from` on the first paint
       // (the case that left option charts blank).
-      //
-      // Time field tolerance: every backend source (Zerodha, Yahoo,
-      // Binance) is normalised to emit `time` (int Unix seconds) — but
-      // we keep a fallback parse for `date` (ISO string) so a stale
-      // cached response from before the schema unification still
-      // renders instead of silently dropping every bar.
-      //
-      // Sanity filter on each individual bar:
-      //   - all OHLC values must be finite, positive numbers
-      //   - high >= low (rejects rows where the feed returned the columns
-      //     in the wrong order or one value was zeroed out)
-      //   - intra-bar range sanity: min(O,H,L,C) >= 0.5 * max(O,H,L,C).
-      //     Catches the per-bar corruption pattern (one OHLC value zeroed
-      //     or 10× off) without depending on a window-wide median, so it
-      //     doesn't false-positive on stocks that genuinely trended hard
-      //     across the lookback (Adani / Bajaj / Tata Motors etc.). The
-      //     previous median-based filter clipped legitimate bars at the
-      //     edges of strong trends → reported gap.
-      //   - timestamp not in the future and not absurdly old (1 year back
-      //     is the deepest we ever ask for)
-      const nowMs = Date.now();
-      const earliestMs = nowMs - 366 * 86400 * 1000;
       const bars = candles
-        .map((c: any) => {
-          const tsRaw = c?.time;
-          let tMs: number;
-          if (typeof tsRaw === "number" && Number.isFinite(tsRaw)) {
-            // Backend emits int Unix seconds (preferred), so multiply.
-            // Guard against accidentally already-ms values: anything >
-            // year-2100 in seconds is treated as ms directly.
-            tMs = tsRaw > 4_102_444_800 ? tsRaw : tsRaw * 1000;
-          } else if (typeof c?.date === "string") {
-            tMs = Date.parse(c.date);
-          } else {
-            tMs = NaN;
-          }
-          return {
-            time: tMs,
-            open: Number(c.open),
-            high: Number(c.high),
-            low: Number(c.low),
-            close: Number(c.close),
-            volume: Number(c.volume) || 0,
-          };
-        })
-        .filter((b: any) => {
-          if (!Number.isFinite(b.time) || !Number.isFinite(b.open) ||
-              !Number.isFinite(b.close) || !Number.isFinite(b.high) ||
-              !Number.isFinite(b.low)) return false;
-          if (b.open <= 0 || b.close <= 0 || b.high <= 0 || b.low <= 0) return false;
-          if (b.high < b.low) return false;
-          if (b.time < earliestMs || b.time > nowMs + 86400_000) return false;
-          // Per-bar OHLC sanity: the smallest of {O,H,L,C} should be at
-          // least half the largest. Anything tighter than that is a
-          // legitimate big-move bar; anything wider is data corruption
-          // (one of the four was zeroed out or mis-decoded).
-          const mx = Math.max(b.open, b.high, b.low, b.close);
-          const mn = Math.min(b.open, b.high, b.low, b.close);
-          if (mn < mx * 0.5) return false;
-          return true;
-        })
+        .map((c: any) => ({
+          time: c.time * 1000,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume || 0,
+        }))
+        .filter((b: any) =>
+          Number.isFinite(b.time) && Number.isFinite(b.open) &&
+          Number.isFinite(b.close) && b.open > 0 && b.close > 0
+        )
         .sort((a: any, b: any) => a.time - b.time);
 
-      // Filter bars to requested range so TradingView full-update never
-      // rejects them with "data should be in the requested range".
       const fromMs = (periodParams.from || 0) * 1000;
       const toMs = (periodParams.to || Math.floor(Date.now() / 1000)) * 1000;
-      const filteredBars = bars.filter((b: any) => b.time >= fromMs && b.time <= toMs);
 
-      if (filteredBars.length > 0) {
-        const latest = filteredBars[filteredBars.length - 1];
-        this.lastHistoryBar.set(token, latest);
-        // Sync any live subscribers for this token to the freshly
-        // fetched latest bar — but only forward in time, never backward.
-        // Without this, after a `resetData()` refetch (periodic or tab-
-        // visibility) the live-tick handler is still anchored to the
-        // bar it had before the refetch, so its next emitted bar uses
-        // the STALE close as its open. That mismatch is what paints a
-        // single live candle floating well above (or below) the rest of
-        // the freshly-refetched cluster — the symptom flagged in the
-        // SILVER26JULFUT screenshot.
-        //
-        // Binance / Yahoo flicker fix: those upstream providers INCLUDE
-        // the in-progress bar in their klines / chart response (the
-        // current 5-min slot's running OHLC), while Zerodha returns
-        // only SETTLED bars. So on every 60-s periodic refetch the
-        // Binance bar for the active slot overwrites whatever the live
-        // WS tick handler had accumulated (high/low extremes, latest
-        // close), the very next WS tick reverts it back, and the candle
-        // body visibly flickers between the two states. When the
-        // refetched `latest.time` matches a sub's `lastBar.time` we
-        // KEEP the sub's accumulated values for that slot — the live
-        // tick handler owns the in-progress bar, the refetch only
-        // refreshes the slots BEHIND it.
-        for (const sub of this.subscribers.values()) {
-          const subToken = sub.symbolInfo?.ticker || sub.symbolInfo?.name;
-          if (subToken !== token) continue;
-          const subTime = Number(sub.lastBar?.time ?? 0);
-          if (latest.time > subTime) {
-            sub.lastBar = { ...latest };
-          } else if (latest.time === subTime && sub.lastBar) {
-            filteredBars[filteredBars.length - 1] = { ...sub.lastBar };
-          }
+      if (bars.length > 0) {
+        if (periodParams.firstDataRequest) {
+          // First paint: return ALL bars regardless of the requested window.
+          // TradingView clips the viewport itself. This is the fix for
+          // options that only started trading today — they have valid bars
+          // but only from today, so the range filter used to remove them all
+          // and hand the chart a blank synthetic series instead.
+          this.lastHistoryBar.set(token, bars[bars.length - 1]);
+          onResult(bars, { noData: false });
+          return;
         }
-        onResult(filteredBars, { noData: false });
+        // Pagination backward (firstDataRequest=false): return only bars
+        // within the requested window. If all bars are newer than `to`
+        // (TradingView scrolled back further than our history), signal
+        // noData:true so TradingView stops paginating — without this it
+        // loops endlessly until the synthetic fallback fires.
+        const inRange = bars.filter((b: any) => b.time >= fromMs && b.time <= toMs);
+        if (inRange.length > 0) {
+          this.lastHistoryBar.set(token, inRange[inRange.length - 1]);
+          onResult(inRange, { noData: false });
+          return;
+        }
+        onResult([], { noData: true });
         return;
       }
 
       // ── Fallback: synthetic candles anchored to the live quote ─────
-      // Hit for symbols the backend has no OHLC for (typically weekly
-      // NIFTY/BANKNIFTY options whose history Zerodha doesn't keep).
-      // Anchor to LTP (same source the live tick handler uses) so the
-      // chart's last synthetic candle joins the live stream without a
-      // visible jump. Bid/ask are only used to size the candle wicks,
-      // not the price level.
+      // Only reached when the backend returns zero bars (Zerodha not
+      // connected, very new contract with no history yet, or API error).
+      // Anchoring to the bid/ask mid means the chart's last candle
+      // matches the BUY/SELL price the order panel shows.
       try {
         const from = periodParams.from || Math.floor(Date.now() / 1000) - 30 * 86400;
         const to = periodParams.to || Math.floor(Date.now() / 1000);
         const q = await InstrumentAPI.quote(token);
-        const bid = Number(q?.bid ?? NaN);
-        const ask = Number(q?.ask ?? NaN);
+        const bid = Number(q?.bid ?? q?.ltp ?? NaN);
+        const ask = Number(q?.ask ?? q?.ltp ?? NaN);
         const ltp = Number(q?.ltp ?? NaN);
-        let anchor = NaN;
+        let mid = NaN;
         let spread = 0;
-        if (Number.isFinite(ltp) && ltp > 0) {
-          anchor = ltp;
-          spread = Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0
-            ? Math.abs(ask - bid)
-            : ltp * 0.0005;
-        } else if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0) {
-          anchor = (bid + ask) / 2;
+        if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0) {
+          mid = (bid + ask) / 2;
           spread = Math.abs(ask - bid);
+        } else if (Number.isFinite(ltp) && ltp > 0) {
+          mid = ltp;
+          spread = ltp * 0.0005;
         }
-        if (anchor > 0) {
-          const synth = generateSyntheticBars(token, anchor, spread, resolution, from, to);
+        if (mid > 0) {
+          const synth = generateSyntheticBars(token, mid, spread, resolution, from, to);
           if (synth.length > 0) {
             this.lastHistoryBar.set(token, synth[synth.length - 1]);
             onResult(synth, { noData: false });
@@ -744,234 +568,108 @@ export class CustomDatafeed {
   ) {
     const token = symbolInfo.ticker || symbolInfo.name;
     const barSec = RESOLUTION_TO_SECONDS[resolution] ?? 300;
-
-    // ── Live tick path: shared marketTickBus WebSocket ───────────────
-    // Previously this was a 250 ms `setInterval(InstrumentAPI.quote)`
-    // HTTP poll. The poller was responsible for the chart visibly
-    // lagging Zerodha Kite — Zerodha streams ticks to all their
-    // surfaces (Web / app / API) over the same WS at the same rate,
-    // so HTTP polling on our side IS the entire latency budget.
-    //
-    // Switching to the bus collapses the chart's data path onto the
-    // exact same `/ws/marketdata` connection the order panel /
-    // positions / marketwatch already use. The bus refcounts per-token
-    // listeners across all consumers in the tab, so a chart that's
-    // viewing the same instrument the user already has open in the
-    // order panel reuses the existing subscription — zero extra
-    // sockets, zero extra upstream traffic.
-    //
-    // Real-tick → chart-paint latency: ~1700 ms → ~50-100 ms (Redis
-    // pub/sub fan-out + WS frame). The chart now ticks in lockstep
-    // with Kite Web.
-    const handleTick = (q: MarketQuote) => {
-      // Off-hours gate: if the wall-clock has crossed outside the
-      // symbol's session, do nothing. Without this we'd keep creating
-      // flat bars at the previous close throughout MCX's overnight
-      // break (23:30 IST → 09:00 IST), and the next session's first
-      // bar would open at the stale prev-day close — exactly the
-      // "giant red bar at session open" artefact the user reported.
-      // 24x7 sessions (crypto, forex) and unspecified sessions fall
-      // through (the helper returns true), so this is a no-op for
-      // them.
-      if (!isWithinSession(symbolInfo, Date.now())) return;
-
-      const sub = this.subscribers.get(listenerGuid);
-      if (!sub) return;
-
-      // Build the live price. The CHART must use the SAME price source
-      // as the historical bars or the live candle visually jumps away
-      // from the historical series at session boundaries. Both Zerodha
-      // historical and Infoway historical (via Yahoo) are LTP-based, so
-      // prefer `q.ltp` and only fall back to mid = (bid+ask)/2 when LTP
-      // is missing (some pre-market quotes ship only bid/ask).
-      //
-      // The OrderPanel still reads bid/ask for the BUY/SELL buttons
-      // independently — that's correct because orders execute against
-      // the bid (sell) / ask (buy), but the CHART represents trade
-      // prices, which are LTP. Mixing the two was the root cause of
-      // the "historical and live price don't match" complaint.
-      const bid = Number(q.bid ?? NaN);
-      const ask = Number(q.ask ?? NaN);
-      const ltp = Number(q.ltp ?? NaN);
-      let price: number;
-      // Prefer the bid/ask MID over LTP for the live bar. On thinly-traded
-      // contracts (far-month F&O, illiquid options) Kite's last_price stays
-      // frozen for seconds between actual trades while the order book keeps
-      // moving — so an LTP-based chart looked dead / "tick to tick nahi ho
-      // raha" even though the SELL/BUY strip was moving. The mid ticks on
-      // every depth change, so the chart now moves in lockstep with the
-      // tradeable price the client actually sees. The backend keeps the
-      // spread sane (last-good-width overlay), so mid ≈ LTP and the live bar
-      // still lines up with the LTP-based historical series. LTP is the
-      // fallback for feeds that ship no depth (e.g. some indices).
-      if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0) {
-        price = (bid + ask) / 2;
-      } else if (Number.isFinite(ltp) && ltp > 0) {
-        price = ltp;
-      } else {
-        return;
-      }
-
-      // Guard against bad ticks corrupting the live bar:
-      //   1. Reject non-positive prices (zero / negative LTP that some
-      //      feeds emit pre-market or between sessions).
-      //   2. Reject obvious outliers — if the tick deviates >10% from
-      //      the previous bar's close it's almost certainly a glitch
-      //      (mis-decoded packet, stale bid/ask while the other side
-      //      is missing, etc.). Without this guard a single bad tick
-      //      with `low: 0` produces a candle that wicks all the way
-      //      down to the x-axis on the chart.
-      //   3. Skip the deviation check when `lastBar` is stale (>= 2 bars
-      //      old) — after a long idle period the real price legitimately
-      //      may have moved well past 10%, and the gap-fill branch
-      //      below will paint intermediate bars to keep the chart
-      //      continuous. Without this, the guard would lock the chart
-      //      on the stale price forever.
-      if (!Number.isFinite(price) || price <= 0) return;
-      const now = Math.floor(Date.now() / 1000);
-      const barTime = Math.floor(now / barSec) * barSec * 1000;
-      const lastBarTime = Number(sub.lastBar?.time ?? 0);
-      const barsSinceLast = lastBarTime > 0 ? (barTime - lastBarTime) / (barSec * 1000) : 0;
-      const prevClose = Number(sub.lastBar?.close ?? NaN);
-      if (barsSinceLast < 2 && Number.isFinite(prevClose) && prevClose > 0) {
-        const deviation = Math.abs(price - prevClose) / prevClose;
-        if (deviation > 0.1) {
-          // Tick is >10% away from the last known good price — skip it.
-          // The next tick will usually be sane; persistent deviations
-          // (real spikes) will be picked up via the historical refetch
-          // on chart resolution change.
-          return;
-        }
-      }
-
-      if (sub.lastBar && sub.lastBar.time === barTime) {
-        sub.lastBar = {
-          ...sub.lastBar,
-          high: Math.max(sub.lastBar.high, price),
-          low: Math.min(sub.lastBar.low, price),
-          close: price,
-          volume: (sub.lastBar.volume || 0) + 1,
-        };
-        onTick(sub.lastBar);
-      } else {
-        // ── Gap fill ─────────────────────────────────────────────
-        // If the new bar slot is more than 1 bar ahead of `lastBar`,
-        // some bar slots in between have nothing. Without filling,
-        // the chart shows a visible discontinuity (vertical jump or
-        // missing candle column) between the historical series and
-        // the live candle — exactly the symptom reported as "candle
-        // is not match in chart" / "gap aa raha hai".
-        //
-        // We:
-        //   1. Bust the backend history cache so the next 60-s
-        //      `resetData()` refetches fresh bars covering the gap.
-        //   2. Emit flat filler bars (O=H=L=C=prevClose) for each
-        //      missing slot, so the chart is visually continuous
-        //      immediately, even before the resetData arrives.
-        //   3. Seed the new live bar's open from prevClose (small
-        //      gap) or from the live price (large gap, where the
-        //      pre-gap close is too stale to trust).
-        if (barsSinceLast >= 2) {
-          for (const key of Array.from(_backendHistoryCache.keys())) {
-            if (key.startsWith(`${token}:`)) {
-              _backendHistoryCache.delete(key);
-            }
-          }
-        }
-        // Only fill SMALL intra-session gaps with synthetic bars. A
-        // small gap (≤ 3 missing slots, ~15 min on a 5 m chart) is
-        // almost always backend-history lag — flat fillers paper over
-        // the discontinuity until the next `resetData()` replaces
-        // them with real candles. Larger gaps (overnight breaks,
-        // weekends, holidays) span thousands of bar slots; emitting
-        // fillers there pollutes the X-axis with off-hours flat bars
-        // that TradingView's session compressor then has to hide
-        // again, and corrupts our own `lastBar` state for the next
-        // tick. For large gaps we let the resetData refetch handle
-        // it and just open the new live bar at the live price.
-        const SMALL_GAP_LIMIT = 3;
-        if (
-          barsSinceLast >= 2 &&
-          barsSinceLast - 1 <= SMALL_GAP_LIMIT &&
-          lastBarTime > 0 &&
-          Number.isFinite(prevClose) && prevClose > 0
-        ) {
-          const missing = barsSinceLast - 1;
-          for (let i = 1; i <= missing; i++) {
-            const fillerTime = lastBarTime + i * barSec * 1000;
-            const filler = {
-              time: fillerTime,
-              open: prevClose,
-              high: prevClose,
-              low: prevClose,
-              close: prevClose,
-              volume: 0,
-            };
-            onTick(filler);
-          }
-        }
-        // Open price by gap size:
-        //   • Small gap (≤ SMALL_GAP_LIMIT bars, ~15 min on 5 m): open at
-        //     prevClose. Flat fillers above bridge the slots in between,
-        //     so the new bar continues naturally from the prev-bar close.
-        //   • Large gap (> SMALL_GAP_LIMIT bars, e.g. 5+ min of Zerodha
-        //     historical lag): open at LIVE price. Bridging from a stale
-        //     prevClose here paints a giant single bar (the
-        //     "GOLD26JUNFUT 158,654 → 160,006 wick" artefact the user
-        //     reported) — every tick that follows extends the bar's high
-        //     but the open stays at the 5-min-old prevClose, so the body
-        //     stretches across the entire missed move. Better to draw a
-        //     small doji at the live price and let the resetData below
-        //     pull in the real bars within 1-2 s.
-        const isLargeGap =
-          barsSinceLast > SMALL_GAP_LIMIT + 1;
-        const open =
-          isLargeGap || !Number.isFinite(prevClose) || prevClose <= 0
-            ? price
-            : prevClose;
-        // Ask the chart wrapper to refetch historical immediately when
-        // we detect a large gap. The wrapper throttles per-token so a
-        // burst of live ticks during a stale-historical window only
-        // fires one resetData call, not one per tick.
-        if (isLargeGap && typeof window !== "undefined") {
-          try {
-            window.dispatchEvent(
-              new CustomEvent("stock4x:chart-gap", { detail: { token } })
-            );
-          } catch {
-            /* dispatch failures are non-fatal */
-          }
-        }
-        const newBar = {
-          time: barTime,
-          open,
-          high: Math.max(open, price),
-          low: Math.min(open, price),
-          close: price,
-          volume: 1,
-        };
-        sub.lastBar = newBar;
-        onTick(newBar);
-      }
-    };
-
-    const unsubscribe = marketTickBus.subscribe([token], handleTick);
-
-    // Seed lastBar from the most recent historical bar so TradingView's
-    // incremental update logic sees a continuation, not a gap.
     const seedBar = this.lastHistoryBar.get(token) ?? null;
-    this.subscribers.set(listenerGuid, {
+
+    // Register subscriber immediately (timer=null until gap-fill done).
+    // Also add it to the module-level fan-out set so pushLiveQuote can grow
+    // its candle on every WebSocket tick (the smooth per-tick movement).
+    const subscriber: Subscriber = {
       symbolInfo,
       resolution,
+      token,
+      barSec,
       onTick,
-      unsubscribe,
+      timer: null,
       lastBar: seedBar ? { ...seedBar } : null,
-    });
+    };
+    this.subscribers.set(listenerGuid, subscriber);
+    _activeSubs.add(subscriber);
+
+    // Gap-fill first, then start live interval — so bars arrive in
+    // chronological order. If gap bars were pushed AFTER the first live
+    // tick, TradingView would discard the out-of-order historical bars
+    // and the blank column would remain.
+    void (async () => {
+      // ── 1. Fill the gap between last history bar and now ──────────
+      const sub = this.subscribers.get(listenerGuid);
+      if (sub && seedBar) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const lastSec = seedBar.time / 1000;
+        if (nowSec - lastSec >= barSec * 1.5) {
+          try {
+            const interval = RESOLUTION_MAP[resolution] || "5minute";
+            const gapDays = Math.min(Math.ceil((nowSec - lastSec) / 86400) + 1, 5);
+            const recent = (await InstrumentAPI.history(token, interval, gapDays)) ?? [];
+            const gapBars = recent
+              .map((c: any) => ({
+                time: c.time * 1000,
+                open: c.open,
+                high: c.high,
+                low: c.low,
+                close: c.close,
+                volume: c.volume || 0,
+              }))
+              .filter(
+                (b: any) =>
+                  b.time > seedBar.time &&
+                  Number.isFinite(b.open) && b.open > 0 &&
+                  Number.isFinite(b.close) && b.close > 0,
+              )
+              .sort((a: any, b: any) => a.time - b.time);
+            for (const bar of gapBars) {
+              // Re-read sub each iteration in case it was removed
+              const s = this.subscribers.get(listenerGuid);
+              if (!s) break;
+              s.lastBar = bar;
+              onTick(bar);
+            }
+          } catch {
+            // ignore — live bar will appear on next interval tick
+          }
+        }
+      }
+
+      // ── 2. Start the REST fallback poll AFTER gap-fill completes ──────
+      // The smooth per-tick updates now come from pushLiveQuote() (WS) →
+      // applyTickToBar(), so this timer is only a SAFETY NET for instruments
+      // whose WS stream is quiet (no recent pushLiveQuote). It runs slower
+      // (2.5 s) and skips entirely while the WS is delivering fresh ticks, so
+      // it never fights the live stream or doubles the work.
+      if (!this.subscribers.has(listenerGuid)) return; // removed during gap-fill
+
+      const timer = setInterval(async () => {
+        try {
+          const sub = this.subscribers.get(listenerGuid);
+          if (!sub) return;
+
+          // WS is actively driving this token (a tick landed < 5 s ago) →
+          // pushLiveQuote already moved the candle. Nothing to do.
+          const cached = _liveQuoteCache.get(token);
+          if (cached && Date.now() - cached.ts < 5000) return;
+
+          // No fresh WS tick — pull the price over REST and apply it.
+          const q = await InstrumentAPI.quote(token);
+          if (!q) return;
+          const price = priceFromQuote(
+            Number(q.ltp ?? NaN),
+            Number(q.bid ?? NaN),
+            Number(q.ask ?? NaN),
+          );
+          applyTickToBar(sub, price);
+        } catch {
+          // ignore polling errors
+        }
+      }, 2500);
+
+      const s = this.subscribers.get(listenerGuid);
+      if (s) s.timer = timer;
+    })();
   }
 
   unsubscribeBars(listenerGuid: string) {
     const sub = this.subscribers.get(listenerGuid);
-    if (sub?.unsubscribe) sub.unsubscribe();
+    if (sub?.timer) clearInterval(sub.timer);
+    if (sub) _activeSubs.delete(sub);
     this.subscribers.delete(listenerGuid);
   }
 }

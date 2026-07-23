@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  CandlestickChart,
+  Briefcase,
   Home,
   LineChart,
   ListOrdered,
@@ -14,12 +14,12 @@ import { cn } from "@/lib/utils";
 const items = [
   { href: "/dashboard", label: "Home", icon: Home },
   { href: "/marketwatch", label: "Market", icon: LineChart },
-  { href: "/terminal", label: "Trade", icon: CandlestickChart, accent: true },
+  // Centre slot is the Orders book (Open / Executed / Rejected tabs).
+  // Replaced the old "Trade" → /terminal FAB per the operator.
+  { href: "/orders", label: "Orders", icon: ListOrdered },
   // /positions is the unified blotter (Position / Active / Closed /
-  // Cancelled / Rejected tabs all live there). The old /orders route
-  // is being phased out — keeping the icon as "Orders" until users
-  // adapt, but the destination is the new positions page.
-  { href: "/positions", label: "Orders", icon: ListOrdered },
+  // Cancelled / Rejected tabs). Relabelled "Position" — it was "Orders".
+  { href: "/positions", label: "Position", icon: Briefcase },
   { href: "/profile", label: "Profile", icon: User },
 ];
 
@@ -37,9 +37,12 @@ export function BottomNav() {
   return (
     <nav
       className={cn(
-        "fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background/95 backdrop-blur",
+        // Solid bg (no backdrop-blur): a fixed full-width blur bar makes iOS
+        // Safari re-composite the whole viewport every frame → the iPhone-only
+        // scroll jank + slow route transitions. Solid is visually equivalent
+        // and cheap. Android Chrome handled the blur fine; iOS does not.
+        "fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background",
         "md:hidden",
-        "supports-[backdrop-filter]:bg-background/80",
       )}
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
     >
@@ -47,32 +50,6 @@ export function BottomNav() {
         {items.map((it) => {
           const active = pathname === it.href || pathname?.startsWith(it.href + "/");
           const Icon = it.icon;
-          if (it.accent) {
-            // TRADE tab — matches the surrounding icons in size, just
-            // tinted primary so it still reads as the "main action"
-            // without a giant circle dominating the bar. User
-            // feedback after the previous iteration: "ek jda bada
-            // circle nahi chiaye, jitne baki sab icon hai utna hi
-            // trade bhi dikhe". Small filled circle wraps only the
-            // icon (size-8) — same vertical rhythm as Home/Market/
-            // Orders/Profile.
-            return (
-              <li key={it.href}>
-                <Link
-                  href={it.href}
-                  className={cn(
-                    "flex h-14 flex-col items-center justify-center gap-0.5 text-[10px] transition-colors",
-                    active ? "text-primary" : "text-primary/85 hover:text-primary",
-                  )}
-                >
-                  <span className="grid size-8 place-items-center rounded-full bg-primary/15 text-primary">
-                    <Icon className="size-5" />
-                  </span>
-                  <span className="font-semibold uppercase tracking-wider">{it.label}</span>
-                </Link>
-              </li>
-            );
-          }
           return (
             <li key={it.href}>
               <Link

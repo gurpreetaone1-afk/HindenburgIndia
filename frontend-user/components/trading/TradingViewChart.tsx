@@ -1,13 +1,7 @@
 "use client";
 
 import { useEffect, useRef, memo } from "react";
-import { CustomDatafeed } from "@/lib/tradingview-datafeed";
-import { toTradingViewSymbol } from "@/lib/tvSymbol";
-import { TradingViewAdvancedWidget } from "@/components/trading/TradingViewAdvancedWidget";
-import {
-  ChartFullscreenButton,
-  useChartFullscreen,
-} from "@/components/trading/ChartFullscreen";
+import { CustomDatafeed, pushLiveQuote } from "@/lib/tradingview-datafeed";
 
 interface TradingViewChartProps {
   token: string;
@@ -15,11 +9,10 @@ interface TradingViewChartProps {
   interval?: string;
   theme?: "light" | "dark";
   className?: string;
-  /** Instrument segment + exchange — used to decide whether to serve the
-   *  free TradingView Advanced Chart (Infoway: forex/crypto/metals/energy)
-   *  or the licensed library on the platform feed (Indian / crypto options). */
-  segment?: string | null;
-  exchange?: string | null;
+  /** Live quote from the terminal's WebSocket stream. When provided, the
+   *  chart's real-time bar uses this price instead of REST polling, so
+   *  the chart and the order panel always show the same price. */
+  quote?: { ltp?: number; bid?: number; ask?: number } | null;
 }
 
 function TradingViewChartInner({
@@ -27,19 +20,27 @@ function TradingViewChartInner({
   interval = "5",
   theme = "dark",
   className = "",
+  quote,
 }: TradingViewChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<any>(null);
-  // Same fullscreen toggle the free Advanced Chart widget uses — driven on the
-  // wrapper (not the TV container) so the library iframe just re-fits via the
-  // ResizeObserver below when the box grows to fill the viewport.
-  const { isFullscreen, toggle: toggleFullscreen } = useChartFullscreen(wrapRef);
   // Latest token always available to the build effect via ref — that way the
   // build effect only depends on `theme`, and a token change never tears the
   // widget down. (See the dedicated `[token]` effect below.)
   const tokenRef = useRef(token);
   tokenRef.current = token;
+
+  // Push incoming WebSocket quote into the datafeed's live cache so the
+  // chart's subscribeBars reads the same price as the order panel.
+  useEffect(() => {
+    if (!token || !quote) return;
+    const ltp = Number(quote.ltp ?? 0);
+    const bid = Number(quote.bid ?? 0);
+    const ask = Number(quote.ask ?? 0);
+    if (ltp > 0 || bid > 0) {
+      pushLiveQuote(token, ltp, bid, ask);
+    }
+  }, [token, quote?.ltp, quote?.bid, quote?.ask]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -112,10 +113,15 @@ function TradingViewChartInner({
             "create_volume_indicator_by_default",
             // Avoid forcing the volume pane overlay; one less layout calc.
             "volume_force_overlay",
-            // Drop the library's own header fullscreen icon — we render our
-            // own overlay button (shared with the free Advanced Chart widget)
-            // so the control is identical across every instrument type.
-            "header_fullscreen_button",
+            // Drawing-tools rail hidden on phones — it overlaps the candles
+            // on a narrow viewport (operator: "side vale tools mat dikh").
+            // Full charting library needs this in disabled_features (the
+            // `hide_side_toolbar` widget option is ignored here). Desktop
+            // keeps the toolbar.
+            ...(typeof window !== "undefined" &&
+            window.matchMedia("(max-width: 1023px)").matches
+              ? ["left_toolbar"]
+              : []),
           ],
           enabled_features: [
             // Pulls the last-bar price label out as a tracked horizontal
@@ -135,7 +141,6 @@ function TradingViewChartInner({
             // Bottom-of-pane date scale gets the range selector buttons
             // (1D / 1W / 1M …) — same as TradingView's public chart UI.
             "header_resolutions",
-            "left_toolbar",
           ],
           overrides: {
             "paneProperties.background": theme === "dark" ? "#131122" : "#ffffff",
@@ -301,126 +306,22 @@ function TradingViewChartInner({
     }
   }, [interval]);
 
-  // ── Periodic historical refresh + tab-visibility refetch ─────────
-  // Two mechanisms:
-  //   1. Periodic `resetData()` every 60 s while the tab is visible.
-  //      Without this, a chart that's been open for hours shows a gap
-  //      from the last historical bar up to "now" because TradingView's
-  //      datafeed only auto-refreshes the live bar — older slots stay
-  //      empty until the user pans or changes timeframe.
-  //   2. Immediate `resetData()` on `visibilitychange` whenever the tab
-  //      goes from hidden → visible.
-  //
-  // The visibility hook is critical for the "user switched tabs and
-  // came back" symptom: while the tab is backgrounded, browsers throttle
-  // setInterval (often to once-per-minute or worse), so both the
-  // periodic refresh and the 1 s live-tick poller in the datafeed slow
-  // way down. Prices can move 1-2% during that quiet period without
-  // any tick reaching the chart. When the user returns, the first live
-  // tick fires with the current LTP — but the historical paint is still
-  // showing bars from minutes ago. Result: a single live candle floats
-  // 3,500 INR above the surrounding cluster (the SILVER26JULFUT artefact
-  // the user reported). The immediate visibility-refetch closes that
-  // gap before the live-tick handler has a chance to paint a mismatched
-  // bar.
-  //
-  // We also pause the periodic timer when the tab is hidden — the
-  // browser throttles anyway, and pausing avoids a stale refetch firing
-  // a hundredth of a second after the user comes back, racing the
-  // visibility refetch.
-  useEffect(() => {
-    if (!widgetRef.current) return;
-
-    const doReset = () => {
-      const w = widgetRef.current;
-      if (!w) return;
-      try {
-        w.activeChart()?.resetData?.();
-      } catch {
-        /* widget mid-rebuild; next tick will retry */
-      }
-    };
-
-    let refreshTimer: ReturnType<typeof setInterval> | null = null;
-    const startTimer = () => {
-      if (refreshTimer) return;
-      refreshTimer = setInterval(doReset, 60_000);
-    };
-    const stopTimer = () => {
-      if (refreshTimer) {
-        clearInterval(refreshTimer);
-        refreshTimer = null;
-      }
-    };
-
-    const onVisibility = () => {
-      if (document.hidden) {
-        stopTimer();
-      } else {
-        // Tab is back in focus: immediately re-pull the latest history,
-        // then resume the periodic cadence.
-        doReset();
-        startTimer();
-      }
-    };
-
-    // Large-gap event from the datafeed — fires when the live tick
-    // lands in a bar slot more than ~15 min ahead of the last historical
-    // close. Triggers an immediate resetData so the missing intermediate
-    // bars get pulled in within ~1 s, instead of waiting up to 60 s for
-    // the next periodic refresh. Throttled per-token to 3 s so a burst
-    // of ticks while historical is stale only fires one refetch.
-    let lastGapResetAt = 0;
-    const GAP_RESET_THROTTLE_MS = 3_000;
-    const onGap = (ev: Event) => {
-      const detail = (ev as CustomEvent).detail as { token?: string } | undefined;
-      if (!detail || String(detail.token) !== String(token)) return;
-      const now = Date.now();
-      if (now - lastGapResetAt < GAP_RESET_THROTTLE_MS) return;
-      lastGapResetAt = now;
-      doReset();
-    };
-
-    startTimer();
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("stock4x:chart-gap", onGap);
-    return () => {
-      stopTimer();
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("stock4x:chart-gap", onGap);
-    };
-  }, [token, interval]);
-
   return (
-    // Wrapper is the fullscreen target + positioning context for the overlay
-    // button. It fills the page's `relative` chart card exactly as the bare
-    // container used to, so the licensed library's sizing is unchanged.
     <div
-      ref={wrapRef}
-      style={{
-        position: "absolute",
-        inset: 0,
-        background: theme === "dark" ? "#131122" : "#ffffff",
-      }}
-      className="block"
-    >
-      <ChartFullscreenButton isFullscreen={isFullscreen} onToggle={toggleFullscreen} />
-      <div
-        ref={containerRef}
-        // `absolute inset-0` forces the container to fill its (relative)
-        // parent regardless of flex / intrinsic-size quirks — that's the
-        // robust fix for the "chart faat raha" symptom where TradingView's
-        // iframe got stuck at its initial small bounds because the parent
-        // chart wrapper was reporting 0 × 0 at widget-init time. The
-        // wrapper above is `absolute inset-0` with a definite size, so this
-        // absolute child gets the same definite size and TV's autosize has a
-        // real bounding box to fit into. Inline style + Tailwind class both
-        // included so the rule still applies if a stray utility class
-        // disables `inset`.
-        style={{ position: "absolute", inset: 0 }}
-        className={`block ${className}`}
-      />
-    </div>
+      ref={containerRef}
+      // `absolute inset-0` forces the container to fill its (relative)
+      // parent regardless of flex / intrinsic-size quirks — that's the
+      // robust fix for the "chart faat raha" symptom where TradingView's
+      // iframe got stuck at its initial small bounds because the parent
+      // chart wrapper was reporting 0 × 0 at widget-init time. The
+      // parent in `terminal/page.tsx` is `relative` + has a definite
+      // `h-[calc(100vh-13rem)]` on mobile, so this absolute child gets
+      // the same definite size and TV's autosize has a real bounding
+      // box to fit into. Inline style + Tailwind class both included so
+      // the rule still applies if a stray utility class disables `inset`.
+      style={{ position: "absolute", inset: 0 }}
+      className={`block ${className}`}
+    />
   );
 }
 
@@ -431,32 +332,4 @@ declare global {
   }
 }
 
-const LicensedChart = memo(TradingViewChartInner);
-
-/**
- * Chart router: Infoway-fed instruments (forex / crypto / metals / energy)
- * get TradingView's free Advanced Chart widget (TradingView's own data, no
- * feed gaps); Indian instruments and crypto options keep the licensed
- * charting library on the platform feed.
- */
-function TradingViewChartRouter(props: TradingViewChartProps) {
-  const tvSymbol = toTradingViewSymbol(
-    props.token,
-    props.segment,
-    props.exchange,
-    props.symbol,
-  );
-  if (tvSymbol) {
-    return (
-      <TradingViewAdvancedWidget
-        symbol={tvSymbol}
-        interval={props.interval}
-        theme={props.theme}
-        className={props.className}
-      />
-    );
-  }
-  return <LicensedChart {...props} />;
-}
-
-export const TradingViewChart = memo(TradingViewChartRouter);
+export const TradingViewChart = memo(TradingViewChartInner);

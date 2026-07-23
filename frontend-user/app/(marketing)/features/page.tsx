@@ -66,6 +66,7 @@ const RISK = [
 
 const REPORTS = [
   { icon: FileText,    title: "Contract notes",   body: "ECN per trading day. STT, exchange, SEBI, GST and stamp duty itemised — exactly as SEBI prescribes." },
+  { icon: Receipt,     title: "Tax P&L",          body: "Year-wise STCG, LTCG and intraday speculation split. CSV + PDF, ready for your CA." },
   { icon: LineChart,   title: "Trade book",       body: "Every fill across every segment, searchable by instrument, side, date range or order-id." },
   { icon: PieChart,    title: "P&L analytics",    body: "Win-rate, average R, max drawdown, time-of-day heatmap. Stop guessing what works." },
   { icon: Wallet,      title: "Ledger view",      body: "Running balance with every credit and debit — deposits, brokerage, statutory, expiry settlement, withdrawals." },
@@ -92,9 +93,9 @@ export default function FeaturesPage() {
   return (
     <>
       <section className="relative overflow-hidden border-b border-border">
-        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-b from-primary/10 via-background to-background" />
+        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-b from-primary/8 via-background to-background" />
         <div className="mx-auto max-w-5xl px-4 py-20 text-center sm:px-6 sm:py-24 lg:px-8">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-xs font-semibold text-primary">
             <Sparkles className="size-3" /> The platform
           </span>
           <h1 className="mt-5 text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
@@ -116,7 +117,7 @@ export default function FeaturesPage() {
           {HERO_PILLARS.map((p) => {
             const Icon = p.icon;
             return (
-              <div key={p.title} className="rounded-2xl border border-border bg-card p-7">
+              <div key={p.title} className="rounded-2xl border border-border/40 bg-card/60 p-7">
                 <div className="grid size-12 place-items-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
                   <Icon className="size-6" />
                 </div>
@@ -128,7 +129,7 @@ export default function FeaturesPage() {
         </div>
       </section>
 
-      <section className="border-y border-border bg-muted/20">
+      <section className="border-y border-border/40 bg-muted/20">
         <div className="mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-24 lg:px-8">
           <div className="max-w-2xl">
             <span className="text-xs font-semibold uppercase tracking-wider text-primary">The terminal</span>
@@ -141,7 +142,7 @@ export default function FeaturesPage() {
             {TERMINAL.map((f) => {
               const Icon = f.icon;
               return (
-                <div key={f.title} className="rounded-2xl border border-border bg-card p-6">
+                <div key={f.title} className="rounded-2xl border border-border/40 bg-card/60 p-6">
                   <div className="grid size-10 place-items-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
                     <Icon className="size-5" />
                   </div>
@@ -183,7 +184,7 @@ export default function FeaturesPage() {
             {RISK.map((f) => {
               const Icon = f.icon;
               return (
-                <div key={f.title} className="rounded-2xl border border-border bg-card p-5">
+                <div key={f.title} className="rounded-2xl border border-border/40 bg-card/60 p-5">
                   <div className="grid size-10 place-items-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
                     <Icon className="size-5" />
                   </div>
@@ -196,7 +197,7 @@ export default function FeaturesPage() {
         </div>
       </section>
 
-      <section className="border-y border-border bg-card/40">
+      <section className="border-y border-border/40 bg-card/40">
         <div className="mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-24 lg:px-8">
           <div className="max-w-2xl">
             <span className="text-xs font-semibold uppercase tracking-wider text-primary">Reports &amp; books</span>
@@ -228,7 +229,7 @@ export default function FeaturesPage() {
             {MOBILE.map((f) => {
               const Icon = f.icon;
               return (
-                <div key={f.title} className="rounded-2xl border border-border bg-card p-5">
+                <div key={f.title} className="rounded-2xl border border-border/40 bg-card/60 p-5">
                   <div className="grid size-10 place-items-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
                     <Icon className="size-5" />
                   </div>
@@ -251,7 +252,7 @@ export default function FeaturesPage() {
         </div>
       </section>
 
-      <section className="border-y border-border bg-muted/20">
+      <section className="border-y border-border/40 bg-muted/20">
         <div className="mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-24 lg:px-8">
           <div className="max-w-2xl">
             <span className="text-xs font-semibold uppercase tracking-wider text-primary">Platform</span>
@@ -274,7 +275,7 @@ export default function FeaturesPage() {
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
-        <div className="rounded-3xl border border-primary/30 bg-gradient-to-br from-primary/15 via-primary/5 to-background p-10 text-center sm:p-14">
+        <div className="rounded-3xl border border-primary/20 bg-gradient-to-br from-primary/15 via-primary/5 to-background p-10 text-center sm:p-14">
           <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">See it on your screen.</h2>
           <p className="mx-auto mt-3 max-w-xl text-muted-foreground">
             Open a free account, fund ₹100, place a token order on the smallest
@@ -282,10 +283,10 @@ export default function FeaturesPage() {
             on it.
           </p>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <Link href="/register" className="inline-flex h-12 items-center gap-2 rounded-md bg-primary px-7 text-sm font-semibold text-primary-foreground hover:bg-primary/90">
+            <Link href="/register" className="inline-flex h-12 items-center gap-2 rounded-full bg-primary px-7 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 hover:bg-primary/90">
               Open free account <ArrowRight className="size-4" />
             </Link>
-            <Link href="/pricing" className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-background px-7 text-sm font-semibold hover:bg-muted/50">
+            <Link href="/pricing" className="inline-flex h-12 items-center gap-2 rounded-full border border-border/60 bg-background px-7 text-sm font-semibold hover:bg-muted/50">
               See pricing
             </Link>
           </div>

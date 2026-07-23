@@ -22,9 +22,10 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { BonusesUserAPI, WalletAPI } from "@/lib/api";
+import { WalletAPI } from "@/lib/api";
 import { API_URL } from "@/lib/constants";
-import { BonusCard } from "@/components/wallet/BonusCard";
+import { useAuthStore } from "@/stores/authStore";
+import { DemoUpgradeDialog } from "@/components/wallet/DemoUpgradeDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,15 +39,14 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { UpiQR, buildUpiUri } from "@/components/common/UpiQR";
+import { WdRulesBanner } from "@/components/common/WdRulesBanner";
+import { AddFundsWizard } from "@/components/wallet/AddFundsWizard";
 import { cn, formatINR, pnlColor } from "@/lib/utils";
 import {
   buildMailtoUrl,
   buildWhatsappUrl,
   useSupportContacts,
-  useSupportBrand,
 } from "@/lib/useSupport";
-import { useBranding } from "@/lib/branding-context";
-import { useAuthStore } from "@/stores/authStore";
 
 // ─────────────────────────────────────────────────────────────────
 // Official-style UPI logo mark (orange/green chevrons + UPI text).
@@ -87,11 +87,8 @@ function UpiLogo({ className }: { className?: string }) {
 
 export default function WalletPage() {
   const qc = useQueryClient();
-  const isDemo = Boolean(useAuthStore((s) => s.user?.is_demo));
-  // Wallet card sub-label uses the tenant BRAND, not the platform's company
-  // bank holder — a white-label trader must not see "Hindenburg India Pvt Ltd".
-  const { branding } = useBranding();
-  const brandLabel = (branding?.brand_name || "").trim() || "Hindenburg India";
+  const authUser = useAuthStore((s) => s.user);
+  const isDemo = authUser?.is_demo ?? false;
   const { data: summary } = useQuery({
     queryKey: ["wallet-summary"],
     queryFn: () => WalletAPI.summary(),
@@ -123,6 +120,16 @@ export default function WalletPage() {
   const [depositOpen, setDepositOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [bankOpen, setBankOpen] = useState(false);
+  const [demoUpgradeOpen, setDemoUpgradeOpen] = useState(false);
+
+  function openDeposit() {
+    if (isDemo) { setDemoUpgradeOpen(true); return; }
+    setDepositOpen(true);
+  }
+  function openWithdraw() {
+    if (isDemo) { setDemoUpgradeOpen(true); return; }
+    setWithdrawOpen(true);
+  }
 
   // ── Form state ──────────────────────────────────────────────────
   const [dep, setDep] = useState({
@@ -144,41 +151,14 @@ export default function WalletPage() {
     account_holder: "",
     remarks: "",
   });
-  const [wdQrUploading, setWdQrUploading] = useState(false);
+  const [wdSubmitting, setWdSubmitting] = useState(false);
+  // Stable idempotency key for the in-progress withdrawal — generated on the
+  // first submit, reused on a retry (network blip / lost response), cleared
+  // after success. Combined with the disabled button this guarantees a
+  // double / triple click never creates more than ONE withdrawal request.
+  const wdIdemRef = useRef<string>("");
   const [newBank, setNewBank] = useState({ bank_name: "", account_holder: "", account_number: "", ifsc_code: "" });
   const [qrPreview, setQrPreview] = useState<{ upiId: string; payee?: string; amount?: number } | null>(null);
-
-  // ── Bonus eligibility (deposit dialog) ─────────────────────────
-  const [eligibility, setEligibility] = useState<{
-    bonus_amount?: number;
-    template_name?: string;
-    below_minimum?: boolean;
-    minimum_required?: number;
-    minimum_template_name?: string;
-  } | null>(null);
-  const eligibilityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Debounced eligibility check whenever deposit amount changes
-  useEffect(() => {
-    if (eligibilityTimer.current) clearTimeout(eligibilityTimer.current);
-    const amount = dep.amount.trim();
-    if (!amount || Number(amount) <= 0) {
-      setEligibility(null);
-      return;
-    }
-    eligibilityTimer.current = setTimeout(async () => {
-      try {
-        const result = await BonusesUserAPI.eligible(amount);
-        setEligibility(result);
-      } catch {
-        // 503 (flag off) or any error → silently hide the pill
-        setEligibility(null);
-      }
-    }, 400);
-    return () => {
-      if (eligibilityTimer.current) clearTimeout(eligibilityTimer.current);
-    };
-  }, [dep.amount]);
 
   // Auto-pick the default (or first) company bank when dialog opens
   useEffect(() => {
@@ -186,8 +166,6 @@ export default function WalletPage() {
       const def = companyBanks.find((b: any) => b.is_default) ?? companyBanks[0];
       setDep((d) => ({ ...d, bank_account_id: def.id }));
     }
-    // Clear eligibility pill when dialog closes
-    if (!depositOpen) setEligibility(null);
   }, [depositOpen, companyBanks]);
 
   const selectedBank = companyBanks?.find((b: any) => b.id === dep.bank_account_id) ?? companyBanks?.[0];
@@ -254,6 +232,7 @@ export default function WalletPage() {
   }
 
   async function submitWithdrawal() {
+    if (wdSubmitting) return; // guard against double / triple clicks
     if (!wd.amount || Number(wd.amount) <= 0) return toast.error("Amount required");
 
     const bank: Record<string, string> = {};
@@ -261,7 +240,6 @@ export default function WalletPage() {
       const vpa = wd.upi_id.trim();
       if (!vpa || !vpa.includes("@")) return toast.error("Enter a valid UPI ID (e.g. name@bank)");
       bank.upi_id = vpa;
-      if (wd.qr_url) bank.qr_url = wd.qr_url;
     } else {
       if (!wd.account_number.trim()) return toast.error("Account number required");
       if (!wd.ifsc_code.trim()) return toast.error("IFSC required");
@@ -272,13 +250,25 @@ export default function WalletPage() {
       bank.holder = wd.account_holder.trim();
     }
 
+    // One stable key per intended withdrawal — reused if the user retries
+    // after a network blip, so the backend dedups instead of double-booking.
+    if (!wdIdemRef.current) {
+      wdIdemRef.current =
+        typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
+    setWdSubmitting(true);
     try {
       await WalletAPI.createWithdrawal({
         amount: Number(wd.amount),
         remarks: wd.remarks,
         bank,
+        idempotency_key: wdIdemRef.current,
       });
       toast.success("Withdrawal requested");
+      wdIdemRef.current = "";
       setWithdrawOpen(false);
       setWd({
         amount: "",
@@ -296,6 +286,8 @@ export default function WalletPage() {
       qc.invalidateQueries({ queryKey: ["wallet-txns"] });
     } catch (e: any) {
       toast.error(e.message);
+    } finally {
+      setWdSubmitting(false);
     }
   }
 
@@ -314,40 +306,6 @@ export default function WalletPage() {
   // (UPI deeplink generation removed — payment is manual via the user's
   // own UPI app; we only show a static "UPI accepted" badge.)
 
-  // Demo (paper) accounts have NO real wallet — deposits / withdrawals /
-  // bank / transactions are disabled. Show a simple paper-balance card; the
-  // demo banner at the top of the layout owns the Reset action.
-  if (isDemo) {
-    return (
-      <div className="space-y-5">
-        <section className="overflow-hidden rounded-2xl bg-gradient-to-br from-amber-500/90 via-amber-500/80 to-amber-600/80 p-5 text-white shadow-lg">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider opacity-90">
-            <WalletIcon className="size-4" /> Demo wallet
-          </div>
-          <div className="mt-3 font-tabular text-3xl font-bold">
-            {formatINR(summary?.available_balance ?? 0)}
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <div className="text-xs opacity-80">Used margin</div>
-              <div className="font-tabular font-semibold">{formatINR(summary?.used_margin ?? 0)}</div>
-            </div>
-            <div>
-              <div className="text-xs opacity-80">Realized P&L</div>
-              <div className="font-tabular font-semibold">{formatINR(summary?.realized_pnl ?? 0)}</div>
-            </div>
-          </div>
-        </section>
-        <p className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
-          This is a <span className="font-semibold text-foreground">demo account</span> — deposits,
-          withdrawals, bank accounts and payments are disabled. Practice with paper funds, and use{" "}
-          <span className="font-semibold text-foreground">Reset</span> in the banner above to restore
-          your starting balance any time.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-5">
       {/* ── Hero balance card ──────────────────────────────────── */}
@@ -358,33 +316,21 @@ export default function WalletPage() {
               <WalletIcon className="size-3.5" /> Available balance
             </div>
             <div className="font-tabular text-3xl font-bold md:text-4xl">
-              {/* Manual-settlement users (auto_settlement=false) can
-                  legitimately sit with a negative available_balance
-                  until admin acts on the pending SettlementRequest. We
-                  surface the true number (in destructive red) so they
-                  see how much they owe. Auto-settlement users never go
-                  negative — the wallet service floors at 0 and books
-                  the shortfall into settlement_outstanding. */}
-              {Number(summary?.available_balance ?? 0) < 0 ? (
-                <span className="text-red-200">
-                  {formatINR(summary?.available_balance ?? 0)}
-                </span>
-              ) : (
-                formatINR(Math.max(0, Number(summary?.available_balance ?? 0)))
-              )}
+              {/* Never display a negative balance on the user-facing hero —
+                  any shortfall is surfaced as settlement_outstanding in
+                  the banner below. */}
+              {formatINR(Math.max(0, Number(summary?.available_balance ?? 0)))}
             </div>
-            <div className="text-[11px] opacity-80">Wallet · {brandLabel}</div>
+            <div className="text-[11px] opacity-80">Wallet · {selectedBank?.account_holder ?? "Hindenburg India"}</div>
           </div>
           <div className="hidden gap-2 sm:flex">
-            <Dialog open={depositOpen} onOpenChange={setDepositOpen}>
-              <DialogTrigger asChild>
-                <button className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-xs font-semibold text-primary shadow-sm transition hover:bg-white/90">
-                  <ArrowDownToLine className="size-3.5" /> Add funds
-                </button>
-              </DialogTrigger>
-              {/* dialog body below */}
-            </Dialog>
-            <Dialog open={withdrawOpen} onOpenChange={setWithdrawOpen}>
+            <button
+              onClick={openDeposit}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-xs font-semibold text-primary shadow-sm transition hover:bg-white/90"
+            >
+              <ArrowDownToLine className="size-3.5" /> Add funds
+            </button>
+            <Dialog open={withdrawOpen} onOpenChange={(v) => v ? openWithdraw() : setWithdrawOpen(false)}>
               <DialogTrigger asChild>
                 <button className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-4 py-2 text-xs font-semibold text-primary-foreground backdrop-blur transition hover:bg-white/25">
                   <ArrowUpToLine className="size-3.5" /> Withdraw
@@ -401,39 +347,13 @@ export default function WalletPage() {
         </div>
       </section>
 
-      {/* ── Settlement-booked banner ──────────────────────────────
-          Informational only. Settlement is a record of past shortfalls
-          (losses that exceeded the wallet at the moment of debit) —
-          it is NEVER auto-deducted from future deposits and NEVER
-          counted in any P&L calculation. Amber-toned (NOT red /
-          destructive) because there's no action the user needs to
-          take. */}
-      {Number(summary?.settlement_outstanding ?? 0) > 0 && (
-        <section className="flex items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
-          <div className="flex-1 space-y-0.5">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-amber-500">
-              Settlement
-            </div>
-            <div className="font-tabular text-2xl font-bold text-amber-500">
-              {formatINR(summary?.settlement_outstanding ?? 0)}
-            </div>
-            <div className="text-[11px] text-muted-foreground">
-              Recorded as a past shortfall. Your wallet balance has been
-              settled at zero — no further action needed from you.
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* ── Bonus credit card ─────────────────────────────────────── */}
-      <BonusCard />
 
       {/* ── Mobile-only action row (desktop has them in the hero) ── */}
       <div className="grid grid-cols-2 gap-3 sm:hidden">
-        <Button onClick={() => setDepositOpen(true)} className="h-12 rounded-xl">
+        <Button onClick={openDeposit} className="h-12 rounded-xl">
           <ArrowDownToLine className="size-4" /> Add funds
         </Button>
-        <Button onClick={() => setWithdrawOpen(true)} variant="outline" className="h-12 rounded-xl">
+        <Button onClick={openWithdraw} variant="outline" className="h-12 rounded-xl">
           <ArrowUpToLine className="size-4" /> Withdraw
         </Button>
       </div>
@@ -454,125 +374,39 @@ export default function WalletPage() {
         />
       </section>
 
-      {/* ── Recent activity + Bank accounts ─────────────────── */}
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {(() => {
-          // Wallet page transaction history is the deposit/withdrawal
-          // ledger PLUS settlement-booked rows (so the user can see
-          // when their losses got auto-floored to 0 and the shortfall
-          // booked to settlement). TRADE / BROKERAGE / CHARGES / PNL
-          // live on the dedicated /reports and /ledger pages and used
-          // to swamp this panel after a single active session. Filtering
-          // here (rather than the API) keeps the existing 50-row fetch
-          // usable for any future "all transactions" view.
-          const cashOnlyTxns = (txns ?? []).filter((t: any) => {
-            const tt = String(t?.transaction_type ?? "").toUpperCase();
-            return (
-              tt === "DEPOSIT" ||
-              tt === "WITHDRAWAL" ||
-              tt === "SETTLEMENT_OUTSTANDING_BOOKED"
-            );
-          });
-          return (
-        <PanelCard title="Transaction history" subtitle={`Last ${cashOnlyTxns.length} entries`} className="lg:col-span-2">
-          {cashOnlyTxns.length === 0 ? (
-            <EmptyState message="No deposits or withdrawals yet" />
-          ) : (
-            <ul className="divide-y divide-border">
-              {cashOnlyTxns.slice(0, 8).map((t: any) => (
-                <li key={t.id} className="flex items-center justify-between py-2.5">
-                  <div className="flex items-center gap-3">
-                    <div className="grid size-9 place-items-center rounded-full bg-muted">
-                      <CreditCard className="size-4 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium">{t.narration ?? t.transaction_type}</div>
-                      <div className="text-[11px] text-muted-foreground">
-                        {new Date(t.created_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className={cn("font-tabular text-sm font-semibold", pnlColor(t.amount))}>
-                      {Number(t.amount) >= 0 ? "+" : ""}
-                      {formatINR(t.amount)}
-                    </div>
-                    <div className="text-[10px] text-muted-foreground">{formatINR(t.balance_after)} bal</div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </PanelCard>
-          );
-        })()}
+      {/* ── Unified Transactions section ─────────────────────────
+          Operator request: drop the 4-box layout (Transaction history,
+          My banks, Deposit requests, Withdrawal requests) and surface
+          ONE clean activity feed showing every cash movement on the
+          wallet — user deposits, user withdrawals, and admin Add /
+          Deduct Fund (ADJUSTMENT). Trade brokerage, settlement
+          accruals, etc. live on /ledger and /reports — never on this
+          page. Status badges (Pending / Approved / Rejected /
+          Completed) show inline so there is no need for a separate
+          request-list panel.
+       */}
+      <TransactionsFeed
+        txns={txns ?? []}
+        deposits={deposits ?? []}
+        withdrawals={withdrawals ?? []}
+      />
 
-        <PanelCard
-          title="My bank accounts"
-          subtitle={`${(myBanks ?? []).length} linked`}
-          action={
-            <Dialog open={bankOpen} onOpenChange={setBankOpen}>
-              <DialogTrigger asChild>
-                <button className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline">
-                  <Plus className="size-3.5" /> Add
-                </button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Add bank account</DialogTitle>
-                  <DialogDescription>For withdrawals into your account.</DialogDescription>
-                </DialogHeader>
-                <div className="space-y-3">
-                  {(["bank_name", "account_holder", "account_number", "ifsc_code"] as const).map((k) => (
-                    <Field key={k} label={k.replace(/_/g, " ")}>
-                      <Input
-                        value={(newBank as any)[k]}
-                        onChange={(e) => setNewBank((b) => ({ ...b, [k]: e.target.value }))}
-                        className={k === "ifsc_code" ? "uppercase" : undefined}
-                      />
-                    </Field>
-                  ))}
-                </div>
-                <DialogFooter>
-                  <Button variant="outline" onClick={() => setBankOpen(false)}>
-                    Cancel
-                  </Button>
-                  <Button onClick={addBank}>Add</Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          }
-        >
-          {(myBanks ?? []).length === 0 ? (
-            <EmptyState message="No bank accounts yet" hint="Add one to enable withdrawals." />
-          ) : (
-            <ul className="space-y-2">
-              {(myBanks ?? []).map((b: any) => (
-                <li key={b.id} className="rounded-lg border border-border bg-muted/20 p-3 text-xs">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <div className="font-medium">{b.bank_name}</div>
-                      <div className="text-muted-foreground">{b.account_holder}</div>
-                    </div>
-                    <Building2 className="size-4 text-muted-foreground" />
-                  </div>
-                  <div className="mt-2 font-mono text-[11px]">
-                    A/C •••• {String(b.account_number).slice(-4)} · IFSC {b.ifsc_code}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </PanelCard>
-      </section>
-
-      {/* ── Deposit/Withdrawal request lists ─────────────────────── */}
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <RequestList title="Deposit requests" rows={deposits} kind="deposit" />
-        <RequestList title="Withdrawal requests" rows={withdrawals} kind="withdrawal" />
-      </section>
-
-      {/* ── Add funds dialog ──────────────────────────────────── */}
+      {/* ── Add funds — 4-step wizard (Amount → UPI app → QR → screenshot) ── */}
+      <AddFundsWizard
+        open={depositOpen}
+        onClose={() => setDepositOpen(false)}
+        companyBanks={(companyBanks as any[]) ?? []}
+        payeeName={selectedBank?.account_holder}
+        onSuccess={() => {
+          qc.invalidateQueries({ queryKey: ["my-deposits"] });
+          qc.invalidateQueries({ queryKey: ["wallet-summary"] });
+          qc.invalidateQueries({ queryKey: ["wallet-txns"] });
+        }}
+      />
+      {/* Legacy deposit dialog — disabled, superseded by AddFundsWizard.
+          Kept (gated false) so its helpers stay referenced; remove in a
+          follow-up cleanup once the wizard is verified live. */}
+      {false && (
       <Dialog open={depositOpen} onOpenChange={setDepositOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
@@ -589,6 +423,12 @@ export default function WalletPage() {
               <DepositSupportButton />
             </div>
           </DialogHeader>
+
+          {/* Rules banner — admin-configured min / max / daily limit / day +
+              time window. Resolves through the tier cascade so the user
+              sees the same rules the server validator will enforce on
+              submit. */}
+          <WdRulesBanner kind="deposit" className="mb-2" />
 
           {/* Step indicator */}
           <div className="grid gap-4 md:grid-cols-2">
@@ -684,19 +524,6 @@ export default function WalletPage() {
                   className="h-11 text-lg font-semibold"
                   placeholder="500"
                 />
-                {/* Bonus eligibility pill */}
-                {eligibility && Number(eligibility.bonus_amount ?? 0) > 0 && (
-                  <div className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-                    +₹{Number(eligibility.bonus_amount).toLocaleString("en-IN")} bonus credit on approval ({eligibility.template_name})
-                  </div>
-                )}
-                {eligibility &&
-                  !(Number(eligibility.bonus_amount ?? 0) > 0) &&
-                  eligibility.below_minimum && (
-                  <div className="mt-1.5 text-[11px] text-muted-foreground">
-                    Minimum ₹{Number(eligibility.minimum_required).toLocaleString("en-IN")} for next bonus tier ({eligibility.minimum_template_name})
-                  </div>
-                )}
               </Field>
 
               {/* Quick amount pills */}
@@ -800,9 +627,13 @@ export default function WalletPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
+
+      {/* ── Demo upgrade dialog ─────────────────────────────── */}
+      <DemoUpgradeDialog open={demoUpgradeOpen} onClose={() => setDemoUpgradeOpen(false)} />
 
       {/* ── Withdraw dialog ───────────────────────────────────── */}
-      <Dialog open={withdrawOpen} onOpenChange={setWithdrawOpen}>
+      <Dialog open={withdrawOpen} onOpenChange={(v) => v ? openWithdraw() : setWithdrawOpen(false)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Withdraw funds</DialogTitle>
@@ -810,6 +641,9 @@ export default function WalletPage() {
               Enter your UPI ID or bank details. Admin approves before payout.
             </DialogDescription>
           </DialogHeader>
+          {/* Rules banner — withdraw is the more-restricted side
+              (day + time window + mandatory-remark typically matter). */}
+          <WdRulesBanner kind="withdrawal" className="mb-2" />
           <div className="space-y-3">
             <Field label="Amount (₹)">
               <Input
@@ -847,58 +681,6 @@ export default function WalletPage() {
                     value={wd.upi_id}
                     onChange={(e) => setWd((d) => ({ ...d, upi_id: e.target.value }))}
                   />
-                </Field>
-                <Field label="QR (optional)">
-                  <div className="flex items-center gap-2">
-                    <input
-                      id="wd-qr-input"
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={async (e) => {
-                        const f = e.target.files?.[0];
-                        if (!f) return;
-                        if (!f.type.startsWith("image/")) {
-                          toast.error("Pick an image file");
-                          return;
-                        }
-                        if (f.size > 15 * 1024 * 1024) {
-                          toast.error("File too large (max 15 MB)");
-                          return;
-                        }
-                        setWdQrUploading(true);
-                        try {
-                          const toUpload = await compressImage(f);
-                          const r = await WalletAPI.uploadScreenshot(toUpload);
-                          setWd((d) => ({ ...d, qr_url: r.url }));
-                          toast.success("QR uploaded");
-                        } catch (err: any) {
-                          toast.error(err.message || "Upload failed");
-                        } finally {
-                          setWdQrUploading(false);
-                          e.target.value = "";
-                        }
-                      }}
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => document.getElementById("wd-qr-input")?.click()}
-                      disabled={wdQrUploading}
-                    >
-                      {wdQrUploading ? "Uploading…" : wd.qr_url ? "Replace QR" : "Upload QR"}
-                    </Button>
-                    {wd.qr_url && (
-                      <a
-                        href={wd.qr_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs text-primary underline"
-                      >
-                        Preview
-                      </a>
-                    )}
-                  </div>
                 </Field>
               </>
             ) : (
@@ -938,12 +720,13 @@ export default function WalletPage() {
               <Input value={wd.remarks} onChange={(e) => setWd((d) => ({ ...d, remarks: e.target.value }))} />
             </Field>
           </div>
-
           <DialogFooter>
             <Button variant="outline" onClick={() => setWithdrawOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={submitWithdrawal}>Request withdrawal</Button>
+            <Button onClick={submitWithdrawal} disabled={wdSubmitting}>
+              {wdSubmitting ? "Requesting…" : "Request withdrawal"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -977,6 +760,263 @@ export default function WalletPage() {
 // ─────────────────────────────────────────────────────────────────
 // Sub-components
 // ─────────────────────────────────────────────────────────────────
+
+/**
+ * Unified transactions feed for the wallet page.
+ *
+ * Merges three data sources into a single chronological list:
+ *   1. WalletTransaction rows filtered to DEPOSIT / WITHDRAWAL /
+ *      ADJUSTMENT — the ledger-applied cash movements.
+ *   2. PENDING DepositRequest rows — not yet in the ledger but the
+ *      user should see them with a "Pending" badge.
+ *   3. PENDING WithdrawalRequest rows — same idea.
+ *   4. REJECTED requests, so the user knows why their submission
+ *      didn't go through.
+ *
+ * Excluded by design: trade brokerage, charges, settlement accruals,
+ * P&L bookings. Those live on /ledger and /reports — operator
+ * explicitly wanted this page to read as "money in / money out" only.
+ *
+ * UI is mobile-first: card-style rows with the type icon on the
+ * left, narration + date in the middle, signed amount + status pill
+ * on the right. Filter chips (All / Deposits / Withdrawals) work on
+ * both layouts.
+ */
+type FeedKind = "deposit" | "withdrawal" | "admin_add" | "admin_deduct";
+type FeedRow = {
+  id: string;
+  kind: FeedKind;
+  amount: number; // always positive — sign comes from `kind`
+  date: string;
+  status: "completed" | "pending" | "rejected";
+  narration: string;
+  balance_after?: number | null;
+};
+
+function TransactionsFeed({
+  txns,
+  deposits,
+  withdrawals,
+}: {
+  txns: any[];
+  deposits: any[];
+  withdrawals: any[];
+}) {
+  const [filter, setFilter] = useState<"all" | "in" | "out">("all");
+
+  const rows: FeedRow[] = (() => {
+    const out: FeedRow[] = [];
+
+    // 1) Ledger txns — DEPOSIT / WITHDRAWAL / ADJUSTMENT. Anything
+    //    else (brokerage, settlement, pnl) is ignored on this page.
+    for (const t of txns) {
+      const tt = String(t?.transaction_type ?? "").toUpperCase();
+      const amt = Number(t?.amount ?? 0);
+      const absAmt = Math.abs(amt);
+      let kind: FeedKind | null = null;
+      let narration = String(t?.narration ?? "").trim();
+      if (tt === "DEPOSIT") {
+        kind = "deposit";
+        if (!narration) narration = "Deposit credited";
+      } else if (tt === "WITHDRAWAL") {
+        kind = "withdrawal";
+        if (!narration) narration = "Withdrawal debited";
+      } else if (tt === "ADJUSTMENT") {
+        kind = amt >= 0 ? "admin_add" : "admin_deduct";
+        if (!narration) narration = amt >= 0 ? "Admin credited funds" : "Admin debited funds";
+      }
+      if (!kind) continue;
+      out.push({
+        id: `txn-${t.id}`,
+        kind,
+        amount: absAmt,
+        date: t.created_at,
+        status: "completed",
+        narration,
+        balance_after: t.balance_after != null ? Number(t.balance_after) : null,
+      });
+    }
+
+    // 2) Deposit requests still awaiting approval, plus rejected ones
+    //    so the user can see why. Approved requests already surface
+    //    via the ledger txns above so we'd double-count if we added
+    //    them here too — skip.
+    for (const d of deposits) {
+      const status = String(d?.status ?? "").toUpperCase();
+      if (status !== "PENDING" && status !== "REJECTED") continue;
+      out.push({
+        id: `dep-${d.id}`,
+        kind: "deposit",
+        amount: Math.abs(Number(d.amount ?? 0)),
+        date: d.created_at,
+        status: status === "PENDING" ? "pending" : "rejected",
+        narration:
+          status === "REJECTED"
+            ? `Deposit rejected${d.admin_remark ? ` — ${d.admin_remark}` : ""}`
+            : `Deposit request · ${d.payment_mode ?? "manual"}`,
+        balance_after: null,
+      });
+    }
+
+    // 3) Same for withdrawals.
+    for (const w of withdrawals) {
+      const status = String(w?.status ?? "").toUpperCase();
+      if (status !== "PENDING" && status !== "REJECTED") continue;
+      out.push({
+        id: `wd-${w.id}`,
+        kind: "withdrawal",
+        amount: Math.abs(Number(w.amount ?? 0)),
+        date: w.created_at,
+        status: status === "PENDING" ? "pending" : "rejected",
+        narration:
+          status === "REJECTED"
+            ? `Withdrawal rejected${w.admin_remark ? ` — ${w.admin_remark}` : ""}`
+            : `Withdrawal request · ${w.mode ?? "bank"}`,
+        balance_after: null,
+      });
+    }
+
+    // Chronological, newest first.
+    out.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return out;
+  })();
+
+  const filtered = rows.filter((r) => {
+    if (filter === "all") return true;
+    if (filter === "in") return r.kind === "deposit" || r.kind === "admin_add";
+    return r.kind === "withdrawal" || r.kind === "admin_deduct";
+  });
+
+  return (
+    <section className="rounded-2xl border border-border bg-card shadow-sm">
+      {/* Header + filter pills */}
+      <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Transactions</h2>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            Every deposit, withdrawal and admin adjustment on your wallet.
+          </p>
+        </div>
+        <div className="flex gap-1.5">
+          {(["all", "in", "out"] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setFilter(k)}
+              className={cn(
+                "h-8 rounded-full border px-3 text-[11px] font-semibold uppercase tracking-wider transition-colors",
+                filter === k
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-card text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {k === "all" ? "All" : k === "in" ? "Money in" : "Money out"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Rows */}
+      {filtered.length === 0 ? (
+        <div className="px-4 py-12 text-center">
+          <div className="mx-auto grid size-12 place-items-center rounded-full bg-muted">
+            <CreditCard className="size-5 text-muted-foreground" />
+          </div>
+          <div className="mt-3 text-sm font-medium">No transactions yet</div>
+          <div className="mt-1 text-[12px] text-muted-foreground">
+            {filter === "in"
+              ? "Deposits and admin credits will show here."
+              : filter === "out"
+                ? "Withdrawals and admin debits will show here."
+                : "Use the Add funds / Withdraw buttons above to get started."}
+          </div>
+        </div>
+      ) : (
+        <ul className="divide-y divide-border">
+          {filtered.map((r) => (
+            <FeedRowItem key={r.id} row={r} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function FeedRowItem({ row }: { row: FeedRow }) {
+  const isIn = row.kind === "deposit" || row.kind === "admin_add";
+  const Icon = isIn ? ArrowDownToLine : ArrowUpToLine;
+
+  const iconBg = isIn
+    ? "bg-emerald-500/15 text-emerald-500 ring-emerald-500/20"
+    : "bg-rose-500/15 text-rose-500 ring-rose-500/20";
+
+  const amountText = `${isIn ? "+" : "−"} ${formatINR(row.amount)}`;
+  const amountColor = isIn ? "text-emerald-500" : "text-rose-500";
+
+  const titleByKind: Record<FeedKind, string> = {
+    deposit: "Deposit",
+    withdrawal: "Withdrawal",
+    admin_add: "Admin credit",
+    admin_deduct: "Admin debit",
+  };
+
+  const statusPill = (() => {
+    if (row.status === "pending") {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-500 ring-1 ring-inset ring-amber-500/30">
+          <Clock className="size-2.5" /> Pending
+        </span>
+      );
+    }
+    if (row.status === "rejected") {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-rose-500 ring-1 ring-inset ring-rose-500/30">
+          <XCircle className="size-2.5" /> Rejected
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-emerald-500 ring-1 ring-inset ring-emerald-500/30">
+        <CheckCircle2 className="size-2.5" /> Completed
+      </span>
+    );
+  })();
+
+  return (
+    <li className="flex items-start gap-3 px-4 py-3 transition-colors hover:bg-muted/30 sm:items-center">
+      <div className={cn("grid size-10 shrink-0 place-items-center rounded-full ring-1 ring-inset", iconBg)}>
+        <Icon className="size-4" />
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-sm font-semibold">{titleByKind[row.kind]}</span>
+          {statusPill}
+        </div>
+        <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{row.narration}</div>
+        <div className="mt-0.5 text-[10px] text-muted-foreground">
+          {new Date(row.date).toLocaleString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+        </div>
+      </div>
+
+      <div className="shrink-0 text-right">
+        <div className={cn("font-tabular text-sm font-bold tabular-nums", amountColor)}>{amountText}</div>
+        {row.balance_after != null && (
+          <div className="mt-0.5 text-[10px] text-muted-foreground">
+            Bal {formatINR(row.balance_after)}
+          </div>
+        )}
+      </div>
+    </li>
+  );
+}
+
 function HeroStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="px-2">
@@ -1188,13 +1228,12 @@ async function compressImage(file: File): Promise<File> {
  */
 function DepositSupportButton() {
   const { data: support } = useSupportContacts();
-  const brand = useSupportBrand();
   const waUrl = buildWhatsappUrl(
     support?.whatsapp,
-    `Hi, I need help adding funds to my ${brand} account`,
+    "Hi, I need help adding funds to my Hindenburg India account",
   );
   const mailUrl = buildMailtoUrl(support?.email, {
-    subject: `${brand} deposit help`,
+    subject: "Hindenburg India deposit help",
   });
   if (!waUrl && !mailUrl) return null;
   const target = waUrl ?? mailUrl!;

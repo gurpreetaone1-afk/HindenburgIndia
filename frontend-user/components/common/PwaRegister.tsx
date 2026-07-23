@@ -19,20 +19,32 @@ export function PwaRegister() {
 
     // ── Service worker registration ─────────────────────────────────
     if ("serviceWorker" in navigator) {
-      // Defer until after first paint so the install doesn't compete
-      // with hydration for the main thread.
-      const idle = (cb: () => void) =>
-        ("requestIdleCallback" in window
-          ? (window as any).requestIdleCallback(cb)
-          : setTimeout(cb, 1000));
-      idle(() => {
-        navigator.serviceWorker
-          .register("/sw.js", { scope: "/" })
-          .catch(() => {
-            // Silent — the app stays usable without the SW, the user
-            // just doesn't get the install affordance.
+      const isDev = process.env.NODE_ENV === "development";
+
+      if (isDev) {
+        // In dev mode, unregister any existing SW to prevent it from
+        // caching stale webpack chunks (which causes "Cannot read
+        // properties of undefined (reading 'call')" on every page).
+        navigator.serviceWorker.getRegistrations().then((regs) => {
+          regs.forEach((r) => r.unregister());
+        });
+        // Also clear SW caches so stale chunks are gone immediately.
+        if ("caches" in window) {
+          caches.keys().then((keys) => {
+            keys.forEach((k) => caches.delete(k));
           });
-      });
+        }
+      } else {
+        const idle = (cb: () => void) =>
+          ("requestIdleCallback" in window
+            ? (window as any).requestIdleCallback(cb)
+            : setTimeout(cb, 1000));
+        idle(() => {
+          navigator.serviceWorker
+            .register("/sw.js", { scope: "/" })
+            .catch(() => {});
+        });
+      }
     }
 
     // ── Install prompt capture ─────────────────────────────────────

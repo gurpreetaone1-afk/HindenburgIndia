@@ -58,6 +58,16 @@ export const useAuthStore = create<AuthState>()(
           // device doesn't briefly see the previous user's balance while
           // their own /wallet/summary fetch is in flight.
           clearWalletSnapshot();
+          // Also wipe the persisted React Query cache (key = RQ_CACHE_KEY in
+          // app/providers.tsx) for the same reason — otherwise the next user
+          // would briefly see the previous user's cached positions / orders /
+          // portfolio restored from localStorage on first paint.
+          try {
+            if (typeof window !== "undefined")
+              window.localStorage.removeItem("mp-rq-cache-v1");
+          } catch {
+            // ignore — best-effort cleanup
+          }
           set({ user: null });
         }
       },

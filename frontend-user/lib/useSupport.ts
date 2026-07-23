@@ -1,21 +1,36 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, unwrap } from "@/lib/api";
-import { useBranding } from "@/lib/branding-context";
 
 export interface SupportContacts {
   whatsapp: string;
   email: string;
 }
 
-/**
- * Tenant brand name for white-label support pre-fill messages (WhatsApp text
- * + email subject). A trader on a white-label domain (e.g. metatrader6.in)
- * must see THEIR brand, not "Hindenburg India". Falls back to "Hindenburg India" on the
- * platform domain / before branding resolves.
- */
-export function useSupportBrand(): string {
-  const { branding } = useBranding();
-  return (branding?.brand_name || "").trim() || "Hindenburg India";
+export interface UserTerms {
+  text: string;
+  enabled: boolean;
+  needs_accept: boolean;
+  accepted_at: string | null;
+}
+
+/** Resolved T&C for the logged-in user (cascades up the broker chain).
+ *  Used by the Terms gate that runs once after register / on first
+ *  dashboard hit if the admin enabled it and the user hasn't accepted
+ *  yet (or the admin updated the text since the last accept). */
+export function useUserTerms(enabled = true) {
+  return useQuery<UserTerms>({
+    queryKey: ["user", "terms"],
+    queryFn: () => unwrap<UserTerms>(api.get("/user/support/terms")),
+    enabled,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useAcceptTerms() {
+  return useMutation({
+    mutationFn: () => unwrap<any>(api.post("/user/support/terms/accept", {})),
+  });
 }
 
 /**

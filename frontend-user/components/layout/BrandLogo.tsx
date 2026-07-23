@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
-import { isPlatformHost, resolveLogoUrl, useBranding } from "@/lib/branding-context";
+import { useBranding } from "@/lib/branding-context";
+import { API_URL } from "@/lib/constants";
+import { HindenburgMark } from "./HindenburgMark";
 
 interface BrandLogoProps {
   href?: string | null;
@@ -13,105 +13,59 @@ interface BrandLogoProps {
   className?: string;
 }
 
-// Renders the Hindenburg India logomark by default. When the BrandingProvider
-// has loaded a tenant brand (custom domain visitor, referral link
-// landing, or logged-in user under a branded broker) the logo +
-// alt-text swap to that brand on the fly. Falls back to the
-// platform logo when branding payload has no `logo_url`.
+// Whitelabel-aware brand mark.
+// - When `BrandingProvider` has resolved a tenant brand (via ?ref= or
+//   custom domain), we render the admin's uploaded logo + custom brand
+//   name. The logo image is given the same size budget as the default
+//   icon so layout doesn't shift.
+// - When no branding is loaded, we fall back to the default
+//   Hindenburg India tricolour "H" mark + wordmark — keeping the
+//   existing UX byte-identical for the bulk of traffic that isn't on a
+//   branded link.
 export function BrandLogo({ href = "/dashboard", size = "md", iconOnly = false, className }: BrandLogoProps) {
-  const { branding, loading } = useBranding();
-  const customLogo = resolveLogoUrl(branding?.logo_url);
-  const customName = (branding?.brand_name || "").trim();
-  const altText = customName || "Hindenburg India";
+  const { branding } = useBranding();
+  const customName = (branding?.brand_name ?? "").trim();
+  // logo_url from the API is relative (e.g. "/static/branding/...");
+  // prefix with API_URL so it loads from the backend host. Same logic
+  // BrandingProvider uses for the favicon.
+  const logoSrc = branding?.logo_url ? `${API_URL}${branding.logo_url}` : null;
 
-  const dims = {
-    sm: { w: 110, h: 28 },
-    md: { w: 150, h: 38 },
-    lg: { w: 200, h: 50 },
+  const sizes = {
+    sm: { wrap: "text-sm", icon: "size-5", badge: "p-1", img: "size-5" },
+    md: { wrap: "text-lg", icon: "size-6", badge: "p-1.5", img: "size-6" },
+    lg: { wrap: "text-2xl", icon: "size-8", badge: "p-2", img: "size-8" },
   }[size];
 
-  // FOUC guard: on tenant hosts we don't know the brand until the
-  // /by-domain fetch resolves. Rather than flashing the platform logo
-  // first and snapping to the tenant logo on hydration, reserve the
-  // space with an invisible placeholder of the same dimensions.
-  // Platform hosts are unaffected — they show the default logo
-  // immediately.
-  const [tenantSuspectHost, setTenantSuspectHost] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    setTenantSuspectHost(!isPlatformHost(window.location.hostname));
-  }, []);
-  if (loading && tenantSuspectHost && !customLogo) {
-    const w = iconOnly ? dims.h : dims.w;
-    return (
-      <span
-        aria-hidden
-        className={cn("inline-block", className)}
-        style={{ width: `${w}px`, height: `${dims.h}px` }}
-      />
-    );
-  }
-
-  // iconOnly crops to a square thumbnail of just the left chart-arrow
-  // tile of the logo (used in tight spots like the mobile auth header).
-  // Implemented with object-position + a fixed square frame instead of
-  // shipping a second asset.
-  const content = iconOnly ? (
-    <span
-      className={cn(
-        "relative inline-block overflow-hidden rounded-md",
-        size === "sm" ? "size-6" : size === "lg" ? "size-10" : "size-8",
-        className,
-      )}
-    >
-      {customLogo ? (
-        // Tenant logo via plain <img>: next/image needs `domains`
-        // config for cross-origin and we don't know tenant CDN
-        // origins up-front. Plain img + object-fit covers every
-        // case.
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={customLogo}
-          alt={altText}
-          className="size-full"
-          style={{ objectFit: "cover", objectPosition: "left center" }}
-        />
+  const content = (
+    <span className={cn("inline-flex items-center gap-2 font-semibold tracking-tight", sizes.wrap, className)}>
+      {logoSrc ? (
+        <span className={cn("rounded-md bg-primary/15 text-primary", sizes.badge)}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={logoSrc}
+            alt={customName || "Logo"}
+            className={cn(sizes.img, "rounded object-contain")}
+          />
+        </span>
       ) : (
-        <Image
-          src="/logo1.png"
-          alt={altText}
-          fill
-          priority
-          sizes="40px"
-          style={{ objectFit: "cover", objectPosition: "left center" }}
-        />
+        <HindenburgMark className={sizes.icon} />
+      )}
+      {!iconOnly && (
+        customName ? (
+          <span className="text-foreground">{customName}</span>
+        ) : (
+          <span>
+            <span className="text-primary">Hindenburg</span>
+            <span className="text-foreground"> India</span>
+          </span>
+        )
       )}
     </span>
-  ) : customLogo ? (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={customLogo}
-      alt={altText}
-      className={cn("select-none", className)}
-      style={{ height: `${dims.h}px`, width: "auto" }}
-    />
-  ) : (
-    <Image
-      src="/logo1.png"
-      alt={altText}
-      width={dims.w}
-      height={dims.h}
-      priority
-      className={cn("select-none", className)}
-      // Explicit height + width:auto preserves aspect ratio and silences
-      // the next/image "modified one dimension only" runtime warning.
-      style={{ height: `${dims.h}px`, width: "auto" }}
-    />
   );
 
   if (href) {
     return (
-      <Link href={href} className="inline-flex items-center outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md">
+      <Link href={href} className="outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md">
         {content}
       </Link>
     );

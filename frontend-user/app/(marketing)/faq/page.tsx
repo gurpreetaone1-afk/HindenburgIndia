@@ -1,182 +1,79 @@
-import Link from "next/link";
 import type { Metadata } from "next";
-import {
-  ArrowRight,
-  CircleHelp,
-  CreditCard,
-  IndianRupee,
-  Landmark,
-  Receipt,
-  ShieldCheck,
-  Smartphone,
-  Sparkles,
-  Wallet,
-} from "lucide-react";
+import { ArrowRight, Plus } from "lucide-react";
+import { MpButton, MpPageHero, MpSection } from "@/components/marketing/mp-ui";
 
 export const metadata: Metadata = {
-  title: "FAQs",
+  title: "FAQs | Hindenburg India — Trading & Investing on NSE, BSE & MCX",
   description:
-    "Common questions about opening an account, brokerage, statutory charges, margin, withdrawals, taxes and security on Hindenburg India.",
+    "Answers about Hindenburg India: opening a Demat account, what you can trade, fund and securities safety, platforms, IPOs, mutual funds and charges.",
 };
 
-type FAQ = { q: string; a: string };
-type Section = { icon: any; key: string; title: string; faqs: FAQ[] };
-
-const SECTIONS: Section[] = [
+const GROUPS: { heading: string; items: { q: string; a: string }[] }[] = [
   {
-    icon: CreditCard,
-    key: "account",
-    title: "Opening an account",
-    faqs: [
+    heading: "Account",
+    items: [
       {
-        q: "What do I need to open an account?",
-        a: "Aadhaar, PAN, a selfie video, and a bank account in your name. The whole flow is digital — no courier, no branch visit. You can complete it in 5 minutes from your phone.",
+        q: "How do I open a Demat & trading account?",
+        a: "Complete a 100% online e-KYC with your PAN and Aadhaar. Most accounts are ready to trade within minutes — no paperwork or branch visit needed.",
       },
       {
-        q: "Is there an account opening fee?",
-        a: "No. ₹0 to open. No annual maintenance for the first year. From year 2 onwards, AMC is ₹300/year.",
+        q: "Is account opening free?",
+        a: "Yes, opening a Demat & trading account is free. A small annual demat maintenance charge applies — see the Pricing page for details.",
       },
       {
-        q: "Can NRIs open an account?",
-        a: "Currently we onboard Indian residents only. NRI accounts (NRE/NRO) are on the roadmap for late 2026.",
-      },
-      {
-        q: "Why was my KYC rejected?",
-        a: "The two most common reasons are: (1) PAN-Aadhaar not linked on income-tax portal, (2) selfie video mismatch with Aadhaar photo. Fix the first on incometax.gov.in; re-record the second in better light. The rejection email lists the exact reason.",
+        q: "Are my securities and funds safe?",
+        a: "Your securities are held in your own demat account with the depository (CDSL/NSDL), and your funds move only through regulated banking channels.",
       },
     ],
   },
   {
-    icon: IndianRupee,
-    key: "brokerage",
-    title: "Brokerage & charges",
-    faqs: [
+    heading: "Trading",
+    items: [
+      {
+        q: "What can I trade on Hindenburg India?",
+        a: "Equity Delivery and Intraday, Futures & Options, Commodities on MCX, IPOs and Mutual Funds — all from a single account.",
+      },
+      {
+        q: "What are the market hours?",
+        a: "Equity and F&O trade 9:15 AM to 3:30 PM IST on market days. MCX commodities trade until 11:30 PM IST. No weekends or exchange holidays.",
+      },
+      {
+        q: "Can I apply for IPOs and invest in mutual funds?",
+        a: "Yes. Apply to mainboard and SME IPOs via UPI, and invest in direct mutual funds — all from the same platform.",
+      },
+      {
+        q: "Do you offer API / algo trading?",
+        a: "Yes. API and algo access is available on Pro and HNI/Algo accounts so you can build and deploy your own strategies.",
+      },
+    ],
+  },
+  {
+    heading: "Platforms",
+    items: [
+      {
+        q: "Which platforms can I trade on?",
+        a: "A browser-based web terminal, iOS and Android apps, and a pro-grade desktop platform. Your account works seamlessly across all of them.",
+      },
+      {
+        q: "Can I practise before trading real money?",
+        a: "Yes. Use Paper / Virtual Trading to practise on live NSE, BSE & MCX prices with virtual funds — no KYC and no real money required.",
+      },
+    ],
+  },
+  {
+    heading: "Pricing & payments",
+    items: [
       {
         q: "How much is the brokerage?",
-        a: "Equity delivery (CNC) is ₹20 / order. Equity intraday (MIS) is ₹20 / order or 0.03% — whichever is lower. F&O, currency F&O and MCX are ₹20 / order flat. Crypto is 0.10% per leg. Direct mutual funds are ₹20 / order.",
+        a: "Equity delivery is free. Intraday and F&O are charged at a low flat per-order rate, and direct mutual funds and IPO applications are free. See the Pricing page.",
       },
-      {
-        q: "What are the statutory charges on top of brokerage?",
-        a: "STT/CTT (segment-dependent), exchange transaction charges (~0.00345%), SEBI fee (₹10/crore), stamp duty (0.015% delivery / 0.003% intraday / 0.002% F&O — state-dependent), and 18% GST on (brokerage + exchange + SEBI charges). Every charge is itemised on the contract note.",
-      },
-      {
-        q: "Why does the contract note show DP charges?",
-        a: "DP charges (₹13.5 + GST) apply per scrip per day on debit — i.e., when you sell a delivery holding. They're charged by the depository (CDSL/NSDL), not by us. Buy-side delivery has no DP charge.",
-      },
-      {
-        q: "Are there any hidden charges?",
-        a: "No. Every line on your contract note maps to a SEBI-prescribed levy or our flat brokerage. There's no 'platform fee', no 'inactivity fee', and no per-segment subscription.",
-      },
-    ],
-  },
-  {
-    icon: Wallet,
-    key: "funds",
-    title: "Funds & withdrawals",
-    faqs: [
       {
         q: "How do I add funds?",
-        a: "UPI, IMPS, NEFT or net-banking. UPI/IMPS deposits reflect in seconds. NEFT depends on your bank's cycle. There are no deposit fees.",
+        a: "Add money instantly via UPI, Net Banking or NEFT/RTGS/IMPS. There are no deposit fees from our side.",
       },
       {
-        q: "How fast are withdrawals?",
-        a: "Withdrawals are settled to your linked bank account within working-day hours (T+0 for crypto/spot, T+1 for equity/F&O margin release per SEBI). Up to 5 withdrawals per month are free. Beyond that, ₹10 per withdrawal.",
-      },
-      {
-        q: "Why can't I withdraw the full balance?",
-        a: "Funds blocked as margin against open positions are not withdrawable. The 'available for withdrawal' figure in your dashboard is what's actually free. Settlement money from equity sells unlocks per the T+1 cycle.",
-      },
-      {
-        q: "Can I withdraw to a different bank account?",
-        a: "No. Withdrawals only go to the bank account that funded your deposit. This is a regulatory requirement and a fraud-prevention control.",
-      },
-    ],
-  },
-  {
-    icon: Landmark,
-    key: "trading",
-    title: "Trading & orders",
-    faqs: [
-      {
-        q: "What order types are supported?",
-        a: "Market, Limit, Stop-Loss Market (SL-M), Stop-Loss Limit (SL-L), Good-Till-Triggered (GTT), Cover Order (CO), and Bracket Order (BO). The terminal greys out anything not allowed in the current segment / market state.",
-      },
-      {
-        q: "When are GTT orders triggered?",
-        a: "GTT triggers when the last-traded price crosses your trigger level. The trigger is checked every 1.5 seconds against the live tick. Once triggered, the resulting limit/market order is fired through our matching engine.",
-      },
-      {
-        q: "Can I trade outside market hours?",
-        a: "Indian segments (NSE/BSE/MCX/CDS) trade only during their published session hours. After-market orders (AMO) can be placed and are queued for the next open. Crypto and spot forex are open 24×7 / 24×5.",
-      },
-      {
-        q: "What happens if my F&O margin shortfall persists?",
-        a: "At 80% margin used, your account enters exit-only mode (no new entries). At 90%, the risk engine starts squaring positions in FIFO order until margin used falls back under 70%. All actions are logged and visible in the ledger.",
-      },
-    ],
-  },
-  {
-    icon: Receipt,
-    key: "tax",
-    title: "Taxes & reports",
-    faqs: [
-      {
-        q: "How is crypto taxed?",
-        a: "Section 115BBH applies a flat 30% tax on net VDA gains. We also deduct 1% TDS on the sell side under Section 194S — visible on every crypto contract note. Losses cannot be set off against other heads.",
-      },
-      {
-        q: "When are contract notes sent?",
-        a: "Within T+1 working day, by email, signed digitally. You can also download every historic contract note from Reports → Contract notes.",
-      },
-      {
-        q: "Will I get a Form 26AS / AIS feed?",
-        a: "Yes. STT, TDS on dividends, and 1% crypto TDS are reported to the income-tax department as per SEBI / CBDT timelines. Check your AIS on the IT portal; ours typically appears within 30 days of the quarter end.",
-      },
-    ],
-  },
-  {
-    icon: ShieldCheck,
-    key: "security",
-    title: "Security & data",
-    faqs: [
-      {
-        q: "Is 2FA mandatory?",
-        a: "2FA is mandatory for admins. For regular trading accounts it's optional — but we strongly recommend turning it on. Set up under Profile → Security → Enable 2FA.",
-      },
-      {
-        q: "I lost my phone with the authenticator app. Now what?",
-        a: "Use one of your backup recovery codes (generated at 2FA enrolment) to log in, then re-enrol with the new device. If you've lost the codes too, contact support@hindenburgindia.live from your registered email — we verify identity before resetting.",
-      },
-      {
-        q: "Where is my data stored?",
-        a: "All India-resident user data is stored in AWS Mumbai (ap-south-1). Backups are encrypted. We are DPDP-aligned and you can request a data export or deletion from your dashboard.",
-      },
-      {
-        q: "How are my funds protected?",
-        a: "Funds sit in a SEBI-prescribed escrow / settlement bank account, segregated from our working capital. Withdrawals can only go back to the bank account that funded you.",
-      },
-    ],
-  },
-  {
-    icon: Smartphone,
-    key: "platform",
-    title: "Platform & apps",
-    faqs: [
-      {
-        q: "Are the mobile and web apps the same account?",
-        a: "Yes. One account, one funded balance, one P&L. Login from web, the phone, or both — orders sync over WebSockets in real time.",
-      },
-      {
-        q: "Which browsers are supported?",
-        a: "Chrome, Edge, Firefox, Safari on their current and previous major versions. Brave works fine if you disable shields on our domain.",
-      },
-      {
-        q: "Do you have a trading API?",
-        a: "An open API is on the roadmap for 2026. Today's terminal already exposes WebSocket market data and order events to logged-in sessions; the public REST/WS docs are coming with the API beta.",
-      },
-      {
-        q: "What if the platform goes down during a trade?",
-        a: "Submit the affected order details to support@hindenburgindia.live. Our infra team has detailed audit logs of every tick and order event for 1 year. Genuine platform-side issues are made whole as per SEBI guidelines.",
+        q: "Are there hidden charges?",
+        a: "No. Statutory charges (STT, exchange, GST, SEBI and stamp duty) are shown clearly before you place any order, so there are no surprises.",
       },
     ],
   },
@@ -185,102 +82,54 @@ const SECTIONS: Section[] = [
 export default function FaqPage() {
   return (
     <>
-      <section className="relative overflow-hidden border-b border-border">
-        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-b from-primary/10 via-background to-background" />
-        <div className="mx-auto max-w-5xl px-4 py-20 text-center sm:px-6 sm:py-24 lg:px-8">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-            <Sparkles className="size-3" /> Help centre
-          </span>
-          <h1 className="mt-5 text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-            Questions, answered.
-            <br />
-            <span className="mp-gradient-text">Without the fine print.</span>
-          </h1>
-          <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-muted-foreground sm:text-lg">
-            The same questions traders email us most — answered in plain
-            English. If yours isn't here, drop us a line and we'll add it.
-          </p>
-        </div>
-      </section>
+      <MpPageHero
+        eyebrow="FAQs"
+        title="Frequently asked questions."
+        lead="Everything you need to know about trading and investing with Hindenburg India. Can't find what you're looking for? Contact our team."
+      >
+        <MpButton href="/contact" size="lg">
+          Contact our team
+          <ArrowRight className="size-4" />
+        </MpButton>
+      </MpPageHero>
 
-      <section className="border-b border-border bg-muted/20">
-        <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-          <nav className="flex flex-wrap items-center gap-2">
-            {SECTIONS.map((s) => {
-              const Icon = s.icon;
-              return (
-                <a
-                  key={s.key}
-                  href={`#${s.key}`}
-                  className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-semibold transition-colors hover:border-primary/40 hover:text-primary"
-                >
-                  <Icon className="size-3.5" />
-                  {s.title}
-                </a>
-              );
-            })}
-          </nav>
-        </div>
-      </section>
-
-      {SECTIONS.map((s) => {
-        const Icon = s.icon;
-        return (
-          <section
-            key={s.key}
-            id={s.key}
-            className="mx-auto max-w-5xl scroll-mt-24 px-4 py-14 sm:px-6 sm:py-16 lg:px-8"
-          >
-            <div className="flex items-center gap-3">
-              <div className="grid size-10 place-items-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
-                <Icon className="size-5" />
-              </div>
-              <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">{s.title}</h2>
-            </div>
-
-            <div className="mt-8 divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
-              {s.faqs.map((f, i) => (
-                <details
-                  key={f.q}
-                  className="group"
-                  open={i === 0}
-                >
-                  <summary className="flex cursor-pointer list-none items-start justify-between gap-4 p-5 transition-colors hover:bg-muted/30">
-                    <div className="flex items-start gap-3">
-                      <CircleHelp className="mt-0.5 size-4 shrink-0 text-primary" />
-                      <span className="text-base font-semibold">{f.q}</span>
-                    </div>
-                    <span className="mt-1 grid size-6 shrink-0 place-items-center rounded-full border border-border text-muted-foreground transition-transform group-open:rotate-45">
-                      +
-                    </span>
-                  </summary>
-                  <div className="px-5 pb-5 pl-12 text-sm leading-relaxed text-muted-foreground">
-                    {f.a}
-                  </div>
-                </details>
-              ))}
-            </div>
-          </section>
-        );
-      })}
-
-      <section className="mx-auto max-w-7xl px-4 pb-24 sm:px-6 lg:px-8">
-        <div className="rounded-3xl border border-primary/30 bg-gradient-to-br from-primary/15 via-primary/5 to-background p-10 text-center sm:p-14">
-          <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Still stuck?</h2>
-          <p className="mx-auto mt-3 max-w-xl text-muted-foreground">
-            Write to us. Median first reply on a trading day: 84 seconds. We
-            don't use ticket numbers — a real person signs off every response.
-          </p>
-          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <Link href="/contact" className="inline-flex h-12 items-center gap-2 rounded-md bg-primary px-7 text-sm font-semibold text-primary-foreground hover:bg-primary/90">
-              Contact us <ArrowRight className="size-4" />
-            </Link>
-            <Link href="/learn" className="inline-flex h-12 items-center gap-2 rounded-md border border-border bg-background px-7 text-sm font-semibold hover:bg-muted/50">
-              Browse the Learn hub
-            </Link>
+      {GROUPS.map((group, gi) => (
+        <MpSection key={group.heading} className={gi % 2 === 1 ? "bg-mp-surface-2/60" : ""}>
+          <h2 className="font-display text-2xl font-bold text-mp-text">
+            {group.heading}
+          </h2>
+          <div className="mt-6 flex flex-col gap-3">
+            {group.items.map((item) => (
+              <details
+                key={item.q}
+                className="group rounded-2xl border border-mp-border bg-mp-surface p-5 [&_summary::-webkit-details-marker]:hidden"
+              >
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-4">
+                  <span className="font-display text-base font-semibold text-mp-text">
+                    {item.q}
+                  </span>
+                  <Plus className="size-5 shrink-0 text-mp-primary transition-transform duration-200 group-open:rotate-45" />
+                </summary>
+                <p className="mt-3 text-sm leading-[1.65] text-mp-text-mut">
+                  {item.a}
+                </p>
+              </details>
+            ))}
           </div>
+        </MpSection>
+      ))}
+
+      <MpSection>
+        <div className="flex flex-col items-start gap-4 rounded-2xl border border-mp-border bg-mp-surface p-8 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-base text-mp-text">
+            Can&apos;t find what you&apos;re looking for?
+          </p>
+          <MpButton href="/contact" variant="secondary">
+            Contact our team
+            <ArrowRight className="size-4" />
+          </MpButton>
         </div>
-      </section>
+      </MpSection>
     </>
   );
 }

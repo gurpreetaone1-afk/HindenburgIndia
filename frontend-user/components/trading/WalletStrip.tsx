@@ -101,6 +101,11 @@ export function WalletStrip({
         value={`${openUnrl >= 0 ? "+" : ""}${formatINR(openUnrl)}`}
         valueClass={pnlColor(openUnrl)}
       />
+      {/* Settlement pill removed on operator request — settlement is
+          an informational broker-side metric, not something the
+          trader needs to see while placing orders. The amount is
+          still tracked on Wallet.settlement_outstanding and surfaces
+          on the wallet/profile pages for transparency. */}
     </div>
   );
 }
