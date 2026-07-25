@@ -68,6 +68,23 @@ _LABELS: dict[TransactionType, str] = {
 }
 
 
+# Admin wallet-adjust (POST /{user_id}/wallet-adjust) writes one of these
+# types depending on the operator's chosen reason (defaults to ADJUSTMENT,
+# with BONUS / PENALTY / PROMO options). To the user these are simply a
+# manual credit or debit by the desk, so we relabel them by the amount
+# sign as "Deposit by admin" / "Withdrawal by admin" instead of the raw
+# accounting label. Regular DEPOSIT / WITHDRAWAL approval rows are NOT in
+# this set and keep their existing labels.
+_ADMIN_MANUAL_TYPES = frozenset(
+    {
+        TransactionType.ADJUSTMENT,
+        TransactionType.BONUS,
+        TransactionType.PENALTY,
+        TransactionType.PROMO,
+    }
+)
+
+
 # Words / patterns that leak internal admin actions into the user's
 # ledger. When any of these appears in a row's narration on a sensitive
 # transaction type (REVERSAL / ADJUSTMENT / SETTLEMENT_OUTSTANDING_*),
@@ -168,6 +185,12 @@ async def ledger(
             total_settlement_booked += abs(d)
 
         label = _LABELS.get(t.transaction_type, t.transaction_type.value)
+        # Admin-manual wallet adjustments read to the user as a plain
+        # credit/debit by the desk — override by amount sign. `d` is the
+        # signed amount already derived above (float only at this JSON
+        # boundary; the sign is faithful to the Decimal amount).
+        if t.transaction_type in _ADMIN_MANUAL_TYPES:
+            label = "Deposit by admin" if d > 0 else "Withdrawal by admin"
         particulars = _sanitize_narration(t)
 
         out.append(
