@@ -113,6 +113,90 @@ async def _get_or_create_segment_watchlist(
     return wl
 
 
+async def _drop_items_beyond_expiry_cap(user_id: Any, items: list) -> list:
+    """Read-time trim: hide FUT watchlist/favourite items whose expiry is
+    beyond the effective per-underlying "Show expiry month" cap — so the
+    same cap that limits the option chain also limits FUT favourites.
+
+    FUT-only: option rows enter via the already-capped option chain, so
+    they're never over-added here. No deletion — purely a read-time filter.
+
+    Allowed expiries for an underlying are the nearest-N distinct expiries
+    from the FULL FUT calendar (Instrument collection), NOT just the user's
+    picks, so N=2 always means "the 2 nearest real contracts".
+
+    FAIL-OPEN everywhere: any missing instrument / underlying_token, or an
+    empty allowed set, keeps the row — we never blank a user's watchlist
+    because of a lookup gap.
+    """
+    if not items:
+        return items
+
+    from app.models.instrument import Instrument
+    from app.models._base import InstrumentType
+    from app.api.v1.user.option_chain import (
+        _effective_max_expiries,
+        _resolve_expiry_settings_for_user,
+    )
+    from app.utils.time_utils import now_ist
+
+    tokens = [it.instrument_token for it in items]
+    insts = await Instrument.find({"token": {"$in": tokens}}).to_list()
+    inst_by_token = {inst.token: inst for inst in insts}
+
+    # Only FUT items are subject to the cap — bail early if none.
+    has_fut = any(
+        (inst := inst_by_token.get(it.instrument_token)) is not None
+        and inst.instrument_type == InstrumentType.FUT
+        for it in items
+    )
+    if not has_fut:
+        return items
+
+    resolved = await _resolve_expiry_settings_for_user(user_id)
+    today = now_ist().date()
+
+    # Cache the allowed-expiry set per underlying_token so a watchlist with
+    # several contracts on the same underlying only scans the calendar once.
+    allowed_by_ut: dict[str, set] = {}
+
+    async def _allowed_for(ut: str, sample_inst) -> set:
+        cached = allowed_by_ut.get(ut)
+        if cached is not None:
+            return cached
+        n = _effective_max_expiries(
+            resolved, sample_inst.name, str(sample_inst.exchange)
+        )
+        cal = await Instrument.find(
+            {"underlying_token": ut, "instrument_type": InstrumentType.FUT.value}
+        ).to_list()
+        exps = sorted(
+            {c.expiry for c in cal if c.expiry is not None and c.expiry >= today}
+        )
+        allowed = set(exps[:n])
+        allowed_by_ut[ut] = allowed
+        return allowed
+
+    keep = []
+    for it in items:
+        inst = inst_by_token.get(it.instrument_token)
+        if inst is None or inst.instrument_type != InstrumentType.FUT:
+            keep.append(it)  # non-FUT (or unknown) — untouched
+            continue
+        ut = inst.underlying_token
+        if not ut:
+            keep.append(it)  # fail-open — can't group without underlying
+            continue
+        allowed = await _allowed_for(ut, inst)
+        if not allowed:
+            keep.append(it)  # fail-open — empty calendar
+            continue
+        if inst.expiry in allowed:
+            keep.append(it)
+        # else: expiry beyond the cap → dropped from this read
+    return keep
+
+
 @router.get("/segment/{segment_name}/items", response_model=APIResponse[list])
 async def list_segment_items(segment_name: str, user: CurrentUser):
     """Return only the instruments THIS user has explicitly added under
@@ -166,6 +250,11 @@ async def list_segment_items(segment_name: str, user: CurrentUser):
             for it in items
             if token_row.get(it.instrument_token, "") not in inactive_admin
         ]
+
+    # Expiry-cap trim (read-time, FUT-only): hide FUT favourites whose
+    # expiry is beyond the user's effective "Show expiry month" cap, so the
+    # watchlist matches the (already-capped) option chain. Fail-open.
+    items = await _drop_items_beyond_expiry_cap(user.id, items)
 
     return APIResponse(
         data=[
