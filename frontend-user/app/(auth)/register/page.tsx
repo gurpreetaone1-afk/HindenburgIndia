@@ -10,6 +10,7 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { Check, Eye, EyeOff, X, User, Mail, Phone, Lock } from "lucide-react";
 import { AuthAPI, ApiError } from "@/lib/api";
+import { useAuthStore } from "@/stores/authStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -92,6 +93,7 @@ function RegisterPageInner() {
   // alongside the backend's Origin/Referer detection — covers the case
   // where a proxy strips the Origin header.
   const { branding } = useBranding();
+  const login = useAuthStore((s) => s.login);
   const [showPwd, setShowPwd] = useState(false);
   const [pwdFocused, setPwdFocused] = useState(false);
 
@@ -114,9 +116,31 @@ function RegisterPageInner() {
   const showRules = pwdFocused || pwd.length > 0;
 
   // Step 1 — validate details, then email an OTP to the entered address.
+  // If the owning admin has turned registration-OTP OFF, the backend
+  // signals `otp_required === false`; we then create the account directly
+  // (no code step) and log the user straight into the dashboard.
   async function onRequestOtp(values: FormValues) {
+    const ref = refCode || branding?.user_code || undefined;
     try {
-      await AuthAPI.requestOtp(values.email, "register");
+      const res = await AuthAPI.requestOtp(values.email, "register", ref);
+      if (res && res.otp_required === false) {
+        setVerifying(true);
+        try {
+          await AuthAPI.register({
+            full_name: values.full_name,
+            email: values.email,
+            mobile: values.mobile,
+            password: values.password,
+            referral_code: ref,
+          });
+          await login(values.email, values.password);
+          toast.success("Account created — welcome to Hindenburg India!");
+          router.push("/dashboard");
+        } finally {
+          setVerifying(false);
+        }
+        return;
+      }
       setPending(values);
       setOtp("");
       setStep("otp");
@@ -145,8 +169,12 @@ function RegisterPageInner() {
         otp: otp.trim(),
         referral_code: refCode || branding?.user_code || undefined,
       });
-      toast.success("Account created. Please sign in.");
-      router.push(refCode ? `/login?ref=${encodeURIComponent(refCode)}` : "/login");
+      // Verify-first signup already validated the OTP server-side, so log
+      // the new user straight in and drop them on the dashboard — no
+      // separate "please sign in" hop.
+      await login(pending.email, pending.password);
+      toast.success("Account created — welcome to Hindenburg India!");
+      router.push("/dashboard");
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : "Registration failed";
       toast.error(msg);

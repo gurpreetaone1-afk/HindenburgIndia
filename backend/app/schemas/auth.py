@@ -69,7 +69,9 @@ class RegisterRequest(BaseModel):
     # Email OTP proving ownership of `email`. Obtained via
     # POST /auth/otp/request {identifier: <email>, purpose: "register"} and
     # verified here at account-creation time (verify-first signup).
-    otp: str = Field(min_length=4, max_length=8)
+    # Optional: when the resolved owning admin has register_otp_enabled=False,
+    # the server skips OTP verification and this may be omitted.
+    otp: str | None = Field(default=None, max_length=8)
     pan: str | None = None
     referral_code: str | None = None
 
@@ -108,6 +110,11 @@ class RegisterRequest(BaseModel):
 class OtpRequest(BaseModel):
     identifier: str = Field(description="email or mobile")
     purpose: str = Field(description="register / login / reset_password / withdrawal")
+    # Owning admin's user_code (from /register?ref=<CODE> or the tenant
+    # custom domain). For purpose="register" the server resolves this admin
+    # and, if their register_otp_enabled is False, skips sending an OTP and
+    # signals otp_required=False so the client registers directly.
+    referral_code: str | None = None
 
 
 class OtpVerifyRequest(BaseModel):

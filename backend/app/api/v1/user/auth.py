@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Request, status
 
 from app.core.dependencies import CurrentUser
@@ -14,7 +16,7 @@ from app.core.exceptions import (
 from app.core.config import settings
 from app.core.rate_limit import rate_limit
 from app.models.audit_log import AuditAction
-from app.models.user import UserRole, UserStatus
+from app.models.user import User, UserRole, UserStatus
 from app.schemas.auth import (
     AuthUserOut,
     ChangePasswordRequest,
@@ -38,6 +40,31 @@ from app.services.email_service import send_otp_email
 from app.utils.otp import issue_otp, verify_otp
 
 router = APIRouter(prefix="/auth", tags=["user-auth"])
+logger = logging.getLogger(__name__)
+
+
+async def _register_otp_enabled_for(referral_code: str | None) -> bool:
+    """Resolve the owning ADMIN from a referral code (an admin OR broker
+    user_code) and return their ``register_otp_enabled`` flag.
+
+    Defaults to True (OTP required) when nothing resolves — the platform /
+    super-admin pool always verifies. Super-admin toggles this per admin
+    from the sub-admins page; when False, that admin's referred signups
+    skip the email-OTP step.
+    """
+    if not referral_code:
+        return True
+    try:
+        admin = await branding_service.find_admin_by_user_code(referral_code)
+        if admin is None:
+            broker = await branding_service.find_broker_by_user_code(referral_code)
+            if broker is not None and broker.assigned_admin_id:
+                admin = await User.get(broker.assigned_admin_id)
+        if admin is not None:
+            return bool(getattr(admin, "register_otp_enabled", True))
+    except Exception:  # pragma: no cover - never block signup on a lookup hiccup
+        logger.exception("register_otp_flag_resolve_failed ref=%s", referral_code)
+    return True
 
 
 def _client_ip(request: Request) -> str:
@@ -82,13 +109,7 @@ def _signup_host(request: Request) -> str:
     dependencies=[rate_limit("auth")],
 )
 async def register(payload: RegisterRequest, request: Request):
-    # Verify-first signup: the email OTP (issued via /auth/otp/request with
-    # purpose="register") must be valid before we create anything. verify_otp
-    # is single-use and consumes the code on success, so no unverified /
-    # duplicate account can be created without a fresh mailbox round-trip.
     email = str(payload.email).lower().strip()
-    if not await verify_otp("register", email, payload.otp):
-        raise InvalidCredentialsError("Invalid or expired verification code")
 
     # White-label attribution. Resolves the requesting host (custom
     # domain) and/or `referral_code` (admin's user_code) to an admin
@@ -105,6 +126,21 @@ async def register(payload: RegisterRequest, request: Request):
             referral_code=payload.referral_code,
         )
     )
+
+    # Verify-first signup: the email OTP (issued via /auth/otp/request with
+    # purpose="register") must be valid before we create anything — UNLESS
+    # the owning admin has turned OTP verification OFF for their signups
+    # (super-admin controlled). verify_otp is single-use and consumes the
+    # code on success, so no unverified/duplicate account can be created
+    # without a fresh mailbox round-trip when OTP is required.
+    otp_required = True
+    if assigned_admin_id:
+        owner_admin = await User.get(assigned_admin_id)
+        if owner_admin is not None:
+            otp_required = bool(getattr(owner_admin, "register_otp_enabled", True))
+    if otp_required:
+        if not payload.otp or not await verify_otp("register", email, payload.otp):
+            raise InvalidCredentialsError("Invalid or expired verification code")
 
     user = await user_service.create_user(
         email=payload.email,
@@ -198,7 +234,7 @@ async def logout(payload: LogoutRequest, user: CurrentUser, request: Request):
 # ── OTP (used by register, forgot-password) ──────────────────────────
 @router.post(
     "/otp/request",
-    response_model=APIResponse[OkResponse],
+    response_model=APIResponse[dict],
     dependencies=[rate_limit("auth")],
 )
 async def request_otp(payload: OtpRequest):
@@ -215,6 +251,17 @@ async def request_otp(payload: OtpRequest):
         if await user_service.find_by_identifier(ident):
             raise ConflictError("An account with this email already exists. Please log in.")
 
+        # Per-admin OTP toggle: if the owning admin (resolved from the
+        # referral code) has disabled register-OTP, DON'T issue/send a code —
+        # tell the client it can register directly (otp_required=False).
+        if not await _register_otp_enabled_for(payload.referral_code):
+            return APIResponse(
+                data={
+                    "otp_required": False,
+                    "message": "No verification needed — you can create your account directly.",
+                }
+            )
+
     code = await issue_otp(payload.purpose, ident)  # type: ignore[arg-type]
 
     # Deliver by email when the identifier is an email address. (SMS delivery
@@ -227,7 +274,7 @@ async def request_otp(payload: OtpRequest):
         msg = f"OTP sent (dev only: {code})"
     else:
         msg = "A verification code has been sent to your email"
-    return APIResponse(data=OkResponse(message=msg))
+    return APIResponse(data={"otp_required": True, "message": msg})
 
 
 @router.post(
