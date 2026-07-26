@@ -23,6 +23,7 @@ from app.schemas.admin.management import (
     MarkPaidRequest,
     RecomputeSettlementRequest,
     ResetPasswordRequest,
+    SetLoginOtpRequest,
     SettlementDTO,
     SubAdminDTO,
     UpdatePermissionsRequest,
@@ -48,6 +49,7 @@ async def _ser_sub_admin(sa: User) -> SubAdminDTO:
         status=sa.status.value,
         permissions=sa.admin_permissions,
         pnl_share_pct=str(sa.pnl_share_pct) if sa.pnl_share_pct is not None else "0",
+        login_otp_enabled=getattr(sa, "login_otp_enabled", True),
         user_count=await mgmt.count_assigned_users(sa.id),
         broker_count=await mgmt.count_assigned_brokers(sa.id),
         created_at=sa.created_at,
@@ -166,6 +168,19 @@ async def block_sub_admin(sub_admin_id: str, admin: SuperAdmin):
 )
 async def unblock_sub_admin(sub_admin_id: str, admin: SuperAdmin):
     sa = await mgmt.unblock_sub_admin(sub_admin_id, admin.id)
+    return APIResponse(data=await _ser_sub_admin(sa))
+
+
+@router.post(
+    "/sub-admins/{sub_admin_id}/otp", response_model=APIResponse[SubAdminDTO]
+)
+async def set_sub_admin_login_otp(
+    sub_admin_id: str, payload: SetLoginOtpRequest, admin: SuperAdmin
+):
+    """Turn the email login-OTP requirement on/off for one sub-admin
+    (super-admin only). When off, that sub-admin logs in with just
+    email/password (+ their own TOTP if they enabled it)."""
+    sa = await mgmt.set_login_otp(sub_admin_id, payload.enabled, admin.id)
     return APIResponse(data=await _ser_sub_admin(sa))
 
 

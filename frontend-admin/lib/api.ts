@@ -206,8 +206,12 @@ export async function unwrap<T>(p: Promise<{ data: ApiResponse<T> }>): Promise<T
 }
 
 export const AdminAuthAPI = {
-  login: (body: { identifier: string; password: string; two_fa_code?: string }) =>
-    unwrap<AdminTokenPair>(api.post("/admin/auth/login", body)),
+  login: (body: {
+    identifier: string;
+    password: string;
+    two_fa_code?: string;
+    login_otp_code?: string;
+  }) => unwrap<AdminTokenPair>(api.post("/admin/auth/login", body)),
   refresh: (refresh_token: string) => unwrap<AdminTokenPair>(api.post("/admin/auth/refresh", { refresh_token })),
   logout: (refresh_token?: string) => unwrap<any>(api.post("/admin/auth/logout", { refresh_token })),
   me: () => unwrap<any>(api.get("/admin/auth/me")),
@@ -815,6 +819,8 @@ export const ManagementAPI = {
     unwrap<any>(api.post(`/admin/management/sub-admins/${id}/block`)),
   unblockSubAdmin: (id: string) =>
     unwrap<any>(api.post(`/admin/management/sub-admins/${id}/unblock`)),
+  setSubAdminOtp: (id: string, enabled: boolean) =>
+    unwrap<any>(api.post(`/admin/management/sub-admins/${id}/otp`, { enabled })),
   deleteSubAdmin: (id: string) =>
     unwrap<any>(api.delete(`/admin/management/sub-admins/${id}`)),
   resetSubAdminPassword: (id: string, new_password: string) =>

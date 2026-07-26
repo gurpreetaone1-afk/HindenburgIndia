@@ -96,12 +96,27 @@ async def _resolve_symbol(token: str) -> str | None:
     if cached is not None:
         return cached
     instr = await Instrument.find_one(Instrument.token == token)
-    if instr is None or not instr.symbol:
-        _token_symbol_cache[token] = None  # type: ignore[assignment]
-        return None
-    sym = instr.symbol.upper()
-    _token_symbol_cache[token] = sym
-    return sym
+    if instr is not None and instr.symbol:
+        sym = instr.symbol.upper()
+        _token_symbol_cache[token] = sym
+        return sym
+
+    # Fallback for feed-prefixed shim tokens (e.g. "FX_EURUSD", "CRYPTO_BTCUSD")
+    # whose Instrument row was removed by the Infoway dedupe migration once the
+    # live "<CODE>" row appeared. Without this, watchlists seeded with the shim
+    # token (the app's DEFAULT_FAVOURITES) resolve to None and the tile freezes
+    # at 0.00 even though the pair IS streaming on infoway:tick:<CODE>. Strip the
+    # known feed prefix to recover the raw Infoway symbol.
+    up = token.upper()
+    for prefix in ("FX_", "FOREX_", "CRYPTO_"):
+        if up.startswith(prefix):
+            sym = up[len(prefix):]
+            if sym:
+                _token_symbol_cache[token] = sym
+                return sym
+
+    _token_symbol_cache[token] = None  # type: ignore[assignment]
+    return None
 
 
 def _empty_quote(token: str) -> dict[str, Any]:

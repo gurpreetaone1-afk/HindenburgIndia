@@ -205,10 +205,18 @@ class User(TimestampMixin):
     # Brokerage plan (FK to brokerage_plans, optional → uses default)
     brokerage_plan_id: PydanticObjectId | None = None
 
-    # 2FA
+    # 2FA (TOTP authenticator app — opt-in per account)
     two_fa_enabled: bool = False
     two_fa_secret: str | None = None
     two_fa_backup_codes: list[str] = Field(default_factory=list)
+
+    # Email-OTP on login. Independent of TOTP. Enforced only for sub-admin
+    # (role == ADMIN) logins: when True, the admin must enter a code emailed
+    # to them at login. SUPER_ADMIN is always exempt (never email-gated, so a
+    # mail outage can't lock the platform owner out). Defaults True so
+    # sub-admins created via the super-admin flow get OTP by default; the
+    # super-admin can turn it off per sub-admin from the sub-admins page.
+    login_otp_enabled: bool = True
 
     # Login telemetry
     last_login_at: datetime | None = None

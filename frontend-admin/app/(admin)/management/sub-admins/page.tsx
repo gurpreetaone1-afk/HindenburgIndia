@@ -15,6 +15,8 @@ import {
   EyeOff,
   KeyRound,
   Trash2,
+  MailCheck,
+  MailX,
 } from "lucide-react";
 
 import { BrokerMgmtAPI, ManagementAPI, setTokens } from "@/lib/api";
@@ -168,6 +170,17 @@ export default function SubAdminsPage() {
     },
     onError: (e: any) => toast.error(e.message),
   });
+  const otpMut = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      ManagementAPI.setSubAdminOtp(id, enabled),
+    onSuccess: (_d, vars) => {
+      toast.success(
+        vars.enabled ? "Login OTP enabled" : "Login OTP disabled",
+      );
+      qc.invalidateQueries({ queryKey: ["admin", "sub-admins"] });
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Could not update OTP setting"),
+  });
   const resetPwMut = useMutation({
     mutationFn: ({ id, pw }: { id: string; pw: string }) =>
       ManagementAPI.resetSubAdminPassword(id, pw),
@@ -278,6 +291,17 @@ export default function SubAdminsPage() {
                   Unblock
                 </DropdownMenuItem>
               )}
+              {r.login_otp_enabled === false ? (
+                <DropdownMenuItem onSelect={() => otpMut.mutate({ id: r.id, enabled: true })}>
+                  <MailCheck className="size-4 text-emerald-500" />
+                  Turn ON login OTP
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onSelect={() => otpMut.mutate({ id: r.id, enabled: false })}>
+                  <MailX className="size-4 text-amber-500" />
+                  Turn OFF login OTP
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem
                 onSelect={() =>
                   setResetPwTarget({
@@ -368,6 +392,9 @@ export default function SubAdminsPage() {
                 onEdit={() => setEditing(r)}
                 onBlock={() => blockMut.mutate(r.id)}
                 onUnblock={() => unblockMut.mutate(r.id)}
+                onToggleOtp={() =>
+                  otpMut.mutate({ id: r.id, enabled: r.login_otp_enabled === false })
+                }
                 onResetPw={() =>
                   setResetPwTarget({
                     id: r.id,
@@ -500,6 +527,7 @@ function SubAdminMobileCard({
   onEdit,
   onBlock,
   onUnblock,
+  onToggleOtp,
   onResetPw,
   onDelete,
   loginAsBusy,
@@ -511,6 +539,7 @@ function SubAdminMobileCard({
   onEdit: () => void;
   onBlock: () => void;
   onUnblock: () => void;
+  onToggleOtp: () => void;
   onResetPw: () => void;
   onDelete: () => void;
   loginAsBusy: boolean;
@@ -591,6 +620,17 @@ function SubAdminMobileCard({
                 <DropdownMenuItem onSelect={onUnblock}>
                   <ShieldCheck className="size-4 text-emerald-500" />
                   Unblock
+                </DropdownMenuItem>
+              )}
+              {row.login_otp_enabled === false ? (
+                <DropdownMenuItem onSelect={onToggleOtp}>
+                  <MailCheck className="size-4 text-emerald-500" />
+                  Turn ON login OTP
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onSelect={onToggleOtp}>
+                  <MailX className="size-4 text-amber-500" />
+                  Turn OFF login OTP
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem onSelect={onResetPw}>

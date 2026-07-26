@@ -53,6 +53,10 @@ class ResetPasswordRequest(BaseModel):
     new_password: str = Field(min_length=8, max_length=128)
 
 
+class SetLoginOtpRequest(BaseModel):
+    enabled: bool  # True → require email OTP on this sub-admin's login
+
+
 class SubAdminDTO(BaseModel):
     id: str
     user_code: str
@@ -62,6 +66,7 @@ class SubAdminDTO(BaseModel):
     status: str
     permissions: AdminPermissions | None = None
     pnl_share_pct: str
+    login_otp_enabled: bool = True  # email OTP required on this sub-admin's login
     user_count: int = 0  # active trading clients (CLOSED + broker rows excluded)
     broker_count: int = 0  # broker + sub-broker login accounts under this admin
     created_at: datetime | None = None

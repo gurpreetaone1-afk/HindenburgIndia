@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request, status
 
 from app.core.dependencies import CurrentUser
 from app.core.exceptions import (
+    ConflictError,
     InvalidCredentialsError,
     NotFoundError,
     ValidationFailedError,
@@ -33,6 +34,7 @@ from app.schemas.auth import (
 from app.schemas.common import APIResponse, OkResponse
 from app.services import auth_service, branding_service, user_service
 from app.services.audit_service import log_event
+from app.services.email_service import send_otp_email
 from app.utils.otp import issue_otp, verify_otp
 
 router = APIRouter(prefix="/auth", tags=["user-auth"])
@@ -80,6 +82,14 @@ def _signup_host(request: Request) -> str:
     dependencies=[rate_limit("auth")],
 )
 async def register(payload: RegisterRequest, request: Request):
+    # Verify-first signup: the email OTP (issued via /auth/otp/request with
+    # purpose="register") must be valid before we create anything. verify_otp
+    # is single-use and consumes the code on success, so no unverified /
+    # duplicate account can be created without a fresh mailbox round-trip.
+    email = str(payload.email).lower().strip()
+    if not await verify_otp("register", email, payload.otp):
+        raise InvalidCredentialsError("Invalid or expired verification code")
+
     # White-label attribution. Resolves the requesting host (custom
     # domain) and/or `referral_code` (admin's user_code) to an admin
     # owner. When BRANDING_ENABLED is False or neither matches, this
@@ -194,13 +204,29 @@ async def logout(payload: LogoutRequest, user: CurrentUser, request: Request):
 async def request_otp(payload: OtpRequest):
     if payload.purpose not in {"register", "login", "reset_password", "withdrawal"}:
         raise ValidationFailedError("Invalid OTP purpose")
-    code = await issue_otp(payload.purpose, payload.identifier.lower().strip())  # type: ignore[arg-type]
-    # TODO: wire SMS/email delivery here (SMTP_HOST / SMS_PROVIDER in .env)
+    ident = payload.identifier.lower().strip()
+
+    # Registration OTPs go to a brand-new email — the client sends the email as
+    # the identifier. Reject up front if that email/mobile is already taken so
+    # the user isn't sent a code for an account they can never create.
+    if payload.purpose == "register":
+        if "@" not in ident:
+            raise ValidationFailedError("A valid email is required to register")
+        if await user_service.find_by_identifier(ident):
+            raise ConflictError("An account with this email already exists. Please log in.")
+
+    code = await issue_otp(payload.purpose, ident)  # type: ignore[arg-type]
+
+    # Deliver by email when the identifier is an email address. (SMS delivery
+    # for mobile identifiers is still a TODO — SMS_PROVIDER in .env.)
+    if "@" in ident:
+        await send_otp_email(to=ident, code=code, purpose=payload.purpose)  # type: ignore[arg-type]
+
     # NEVER expose the code in the response outside local development.
     if settings.APP_ENV == "development":
         msg = f"OTP sent (dev only: {code})"
     else:
-        msg = "If a matching account exists, a code has been sent"
+        msg = "A verification code has been sent to your email"
     return APIResponse(data=OkResponse(message=msg))
 
 
@@ -226,7 +252,8 @@ async def forgot_password(payload: ForgotPasswordRequest):
     user = await user_service.find_by_identifier(payload.identifier)
     # Don't reveal whether the account exists
     if user:
-        await issue_otp("reset_password", user.email)
+        code = await issue_otp("reset_password", user.email)
+        await send_otp_email(to=user.email, code=code, purpose="reset_password")
     return APIResponse(data=OkResponse(message="If an account exists, a reset code has been sent"))
 
 

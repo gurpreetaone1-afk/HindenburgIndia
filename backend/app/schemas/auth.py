@@ -66,6 +66,10 @@ class RegisterRequest(BaseModel):
     mobile: str
     password: str = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=2, max_length=128)
+    # Email OTP proving ownership of `email`. Obtained via
+    # POST /auth/otp/request {identifier: <email>, purpose: "register"} and
+    # verified here at account-creation time (verify-first signup).
+    otp: str = Field(min_length=4, max_length=8)
     pan: str | None = None
     referral_code: str | None = None
 

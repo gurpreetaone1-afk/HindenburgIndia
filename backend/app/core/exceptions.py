@@ -77,6 +77,17 @@ class TwoFAInvalidError(AuthError):
     message = "Invalid two-factor authentication code"
 
 
+class LoginOtpRequiredError(AuthError):
+    code = "LOGIN_OTP_REQUIRED"
+    status_code = status.HTTP_401_UNAUTHORIZED
+    message = "A verification code has been sent to your email"
+
+
+class LoginOtpInvalidError(AuthError):
+    code = "LOGIN_OTP_INVALID"
+    message = "Invalid or expired verification code"
+
+
 class AccountBlockedError(AuthError):
     code = "ACCOUNT_BLOCKED"
     status_code = status.HTTP_403_FORBIDDEN

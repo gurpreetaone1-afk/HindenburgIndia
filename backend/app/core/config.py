@@ -208,7 +208,7 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: SecretStr = Field(default=SecretStr(""))
-    SMTP_FROM: str = "no-reply@hindenburgindia.live"
+    SMTP_FROM: str = "support@hindenburgindia.live"
     SMTP_TLS: bool = True
     SMS_PROVIDER: Literal["mock", "twilio", "msg91"] = "mock"
     SMS_API_KEY: SecretStr = Field(default=SecretStr(""))

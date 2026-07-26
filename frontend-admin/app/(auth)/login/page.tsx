@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -25,6 +26,13 @@ export default function AdminLoginPage() {
   const router = useRouter();
   const login = useAdminAuthStore((s) => s.login);
 
+  // Step-up challenges. `needOtp` = email login-OTP (sub-admins with the
+  // toggle on). `need2fa` = TOTP authenticator (accounts that enabled it).
+  const [needOtp, setNeedOtp] = useState(false);
+  const [need2fa, setNeed2fa] = useState(false);
+  const [otpCode, setOtpCode] = useState("");
+  const [twoFaCode, setTwoFaCode] = useState("");
+
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: { identifier: "", password: "" },
@@ -32,10 +40,28 @@ export default function AdminLoginPage() {
 
   async function onSubmit(values: FormValues) {
     try {
-      await login(values.identifier, values.password);
+      await login(
+        values.identifier,
+        values.password,
+        need2fa ? twoFaCode.trim() || undefined : undefined,
+        needOtp ? otpCode.trim() || undefined : undefined,
+      );
       toast.success("Authenticated");
       router.push("/dashboard");
     } catch (err) {
+      const code = err instanceof ApiError ? err.code : undefined;
+      if (code === "LOGIN_OTP_REQUIRED") {
+        setNeedOtp(true);
+        toast.message("Check your email", {
+          description: "We sent a 6-digit verification code to your admin email.",
+        });
+        return;
+      }
+      if (code === "TWO_FA_REQUIRED") {
+        setNeed2fa(true);
+        toast.message("Enter your authenticator code");
+        return;
+      }
       toast.error(err instanceof ApiError ? err.message : "Login failed");
     }
   }
@@ -70,8 +96,40 @@ export default function AdminLoginPage() {
                 <p className="text-xs text-destructive">{form.formState.errors.password.message}</p>
               )}
             </div>
+            {needOtp && (
+              <div className="space-y-2">
+                <Label htmlFor="login_otp">Email verification code</Label>
+                <Input
+                  id="login_otp"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  placeholder="6-digit code"
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
+                  autoFocus
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Sent to your admin email. Expires in 5 minutes.
+                </p>
+              </div>
+            )}
+            {need2fa && (
+              <div className="space-y-2">
+                <Label htmlFor="two_fa">Authenticator code</Label>
+                <Input
+                  id="two_fa"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  placeholder="6-digit TOTP code"
+                  value={twoFaCode}
+                  onChange={(e) => setTwoFaCode(e.target.value.replace(/\D/g, ""))}
+                />
+              </div>
+            )}
             <Button type="submit" className="w-full" loading={form.formState.isSubmitting}>
-              Sign in
+              {needOtp || need2fa ? "Verify & sign in" : "Sign in"}
             </Button>
             <p className="text-xs text-muted-foreground">
               Activity is logged. IP allow-listing and rate-limiting are enforced server-side.

@@ -95,6 +95,14 @@ function RegisterPageInner() {
   const [showPwd, setShowPwd] = useState(false);
   const [pwdFocused, setPwdFocused] = useState(false);
 
+  // Verify-first signup: step "form" collects details + sends an email OTP;
+  // step "otp" verifies the code and actually creates the account.
+  const [step, setStep] = useState<"form" | "otp">("form");
+  const [pending, setPending] = useState<FormValues | null>(null);
+  const [otp, setOtp] = useState("");
+  const [verifying, setVerifying] = useState(false);
+  const [resending, setResending] = useState(false);
+
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: { full_name: "", email: "", mobile: "", password: "" },
@@ -105,13 +113,36 @@ function RegisterPageInner() {
   const strength = passwordStrength(pwd);
   const showRules = pwdFocused || pwd.length > 0;
 
-  async function onSubmit(values: FormValues) {
+  // Step 1 — validate details, then email an OTP to the entered address.
+  async function onRequestOtp(values: FormValues) {
+    try {
+      await AuthAPI.requestOtp(values.email, "register");
+      setPending(values);
+      setOtp("");
+      setStep("otp");
+      toast.success(`We sent a 6-digit code to ${values.email}`);
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : "Could not send verification code";
+      toast.error(msg);
+    }
+  }
+
+  // Step 2 — verify the OTP by creating the account with it.
+  async function onVerify(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pending) return;
+    if (otp.trim().length < 4) {
+      toast.error("Enter the 6-digit code from your email");
+      return;
+    }
+    setVerifying(true);
     try {
       await AuthAPI.register({
-        full_name: values.full_name,
-        email: values.email,
-        mobile: values.mobile,
-        password: values.password,
+        full_name: pending.full_name,
+        email: pending.email,
+        mobile: pending.mobile,
+        password: pending.password,
+        otp: otp.trim(),
         referral_code: refCode || branding?.user_code || undefined,
       });
       toast.success("Account created. Please sign in.");
@@ -119,6 +150,22 @@ function RegisterPageInner() {
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : "Registration failed";
       toast.error(msg);
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  async function onResend() {
+    if (!pending) return;
+    setResending(true);
+    try {
+      await AuthAPI.requestOtp(pending.email, "register");
+      toast.success("A new code has been sent");
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : "Could not resend code";
+      toast.error(msg);
+    } finally {
+      setResending(false);
     }
   }
 
@@ -134,7 +181,8 @@ function RegisterPageInner() {
       </div>
 
       {/* Form */}
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3.5 sm:space-y-5">
+      {step === "form" && (
+      <form onSubmit={form.handleSubmit(onRequestOtp)} className="space-y-3.5 sm:space-y-5">
         {/* Full name */}
         <div className="space-y-1.5">
           <Label htmlFor="full_name" className="text-sm font-medium">Full name</Label>
@@ -291,17 +339,74 @@ function RegisterPageInner() {
           className="h-10 w-full rounded-xl border-0 bg-gradient-to-r from-[#16A34A] to-[#22C55E] text-sm font-semibold text-white shadow-lg shadow-green-500/30 transition-opacity hover:opacity-95 sm:h-12"
           loading={form.formState.isSubmitting}
         >
-          Create account
+          Continue
         </Button>
       </form>
+      )}
+
+      {/* OTP verification step */}
+      {step === "otp" && (
+        <form onSubmit={onVerify} className="space-y-4 sm:space-y-5">
+          <div className="space-y-1.5">
+            <h2 className="text-xl font-bold tracking-tight sm:text-2xl">Verify your email</h2>
+            <p className="text-sm text-muted-foreground">
+              Enter the 6-digit code we sent to{" "}
+              <span className="font-medium text-foreground">{pending?.email}</span>.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="otp" className="text-sm font-medium">Verification code</Label>
+            <Input
+              id="otp"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              placeholder="••••••"
+              value={otp}
+              onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
+              className="h-12 rounded-xl border-border/60 bg-muted/40 text-center text-lg font-semibold tracking-[0.5em] transition-colors focus:border-primary/50 focus:bg-background"
+              autoFocus
+            />
+          </div>
+
+          <Button
+            type="submit"
+            className="h-10 w-full rounded-xl border-0 bg-gradient-to-r from-[#16A34A] to-[#22C55E] text-sm font-semibold text-white shadow-lg shadow-green-500/30 transition-opacity hover:opacity-95 sm:h-12"
+            loading={verifying}
+          >
+            Verify &amp; create account
+          </Button>
+
+          <div className="flex items-center justify-between text-sm">
+            <button
+              type="button"
+              onClick={() => setStep("form")}
+              className="font-medium text-muted-foreground hover:text-foreground"
+            >
+              ← Edit details
+            </button>
+            <button
+              type="button"
+              onClick={onResend}
+              disabled={resending}
+              className="font-semibold text-primary hover:text-primary/80 disabled:opacity-50"
+            >
+              {resending ? "Sending…" : "Resend code"}
+            </button>
+          </div>
+        </form>
+      )}
 
       {/* Footer */}
+      {step === "form" && (
       <p className="text-center text-sm text-muted-foreground">
         Already have an account?{" "}
         <Link href="/login" className="font-semibold text-primary hover:text-primary/80">
           Sign in
         </Link>
       </p>
+      )}
     </div>
   );
 }

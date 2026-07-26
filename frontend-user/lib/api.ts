@@ -305,11 +305,18 @@ export async function unwrapPage<T>(
 export const AuthAPI = {
   login: (body: { identifier: string; password: string; two_fa_code?: string }) =>
     unwrap<TokenPair>(api.post("/user/auth/login", body)),
+  // Send an email OTP. purpose "register" verifies a NEW email before signup;
+  // the backend rejects already-registered emails here.
+  requestOtp: (identifier: string, purpose: "register" | "reset_password" = "register") =>
+    unwrap(api.post("/user/auth/otp/request", { identifier, purpose })),
   register: (body: {
     email: string;
     mobile: string;
     password: string;
     full_name: string;
+    // Email OTP (from requestOtp with purpose "register"). Verified server-side
+    // at account creation — verify-first signup.
+    otp: string;
     pan?: string;
     // White-label attribution. When the user landed on /register?ref=<ADM…>
     // (or on a tenant's custom domain), the BrandingProvider plumbs the

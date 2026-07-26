@@ -167,6 +167,29 @@ async def set_pnl_share(
     return sa
 
 
+async def set_login_otp(
+    sub_admin_id: str | PydanticObjectId,
+    enabled: bool,
+    actor_id: PydanticObjectId,
+) -> User:
+    """Enable/disable the email login-OTP requirement for one sub-admin."""
+    sa = await _get_sub_admin_or_404(sub_admin_id)
+    old = getattr(sa, "login_otp_enabled", True)
+    sa.login_otp_enabled = bool(enabled)
+    await sa.save()
+    await log_event(
+        action=AuditAction.SUB_ADMIN_UPDATE,
+        entity_type="User",
+        entity_id=sa.id,
+        actor_id=actor_id,
+        target_user_id=sa.id,
+        old_values={"login_otp_enabled": old},
+        new_values={"login_otp_enabled": bool(enabled)},
+        metadata={"kind": "SUB_ADMIN_LOGIN_OTP"},
+    )
+    return sa
+
+
 async def block_sub_admin(
     sub_admin_id: str | PydanticObjectId, actor_id: PydanticObjectId
 ) -> User:

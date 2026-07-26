@@ -16,6 +16,13 @@ class AdminLoginRequest(BaseModel):
         max_length=6,
         description="TOTP code — only required if the admin has 2FA enabled on their account",
     )
+    login_otp_code: str | None = Field(
+        default=None,
+        min_length=4,
+        max_length=8,
+        description="Email OTP — only required if login-OTP is enabled for this sub-admin "
+        "(server responds LOGIN_OTP_REQUIRED and emails a code on the first attempt)",
+    )
 
 
 class AdminTokenPair(BaseModel):

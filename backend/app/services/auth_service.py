@@ -18,6 +18,8 @@ from app.core.exceptions import (
     AccountInactiveError,
     AppError,
     InvalidCredentialsError,
+    LoginOtpInvalidError,
+    LoginOtpRequiredError,
     TokenInvalidError,
     TwoFAInvalidError,
     TwoFARequiredError,
@@ -39,6 +41,8 @@ from app.core.security import (
 from app.models.user import User, UserRole, UserStatus
 from app.schemas.auth import AuthUserOut, TokenPair
 from app.services import user_service
+from app.services.email_service import send_otp_email
+from app.utils.otp import issue_otp, verify_otp
 from app.utils.time_utils import now_utc
 
 logger = logging.getLogger(__name__)
@@ -78,6 +82,7 @@ async def authenticate(
     audience: LoginAudience,
     ip: str,
     user_agent: str | None,
+    login_otp_code: str | None = None,
 ) -> TokenPair:
     user = await user_service.find_by_identifier(identifier)
     if user is None:
@@ -114,6 +119,23 @@ async def authenticate(
         if not user.two_fa_secret or not verify_totp(user.two_fa_secret, two_fa_code):
             await _register_failed_attempt(user)
             raise TwoFAInvalidError()
+
+    # Email OTP on login — sub-admins only (role == ADMIN). SUPER_ADMIN is
+    # deliberately exempt so a mail outage can never lock the platform owner
+    # out. The super-admin can toggle this per sub-admin from the sub-admins
+    # page (login_otp_enabled). First attempt (no code) issues + emails a code
+    # and raises LOGIN_OTP_REQUIRED; the client then resubmits with the code.
+    if (
+        user.role == UserRole.ADMIN
+        and getattr(user, "login_otp_enabled", True)
+    ):
+        if not login_otp_code:
+            code = await issue_otp("login", user.email)
+            await send_otp_email(to=user.email, code=code, purpose="login")
+            raise LoginOtpRequiredError()
+        if not await verify_otp("login", user.email, login_otp_code):
+            await _register_failed_attempt(user)
+            raise LoginOtpInvalidError()
 
     # Mint tokens — stamp the user's current session epoch into the access
     # token so an admin block / password reset (which bumps token_version)

@@ -94,6 +94,7 @@ async def admin_login(payload: AdminLoginRequest, request: Request):
         audience="admin",
         ip=_client_ip(request),
         user_agent=request.headers.get("user-agent"),
+        login_otp_code=payload.login_otp_code,
     )
     if pair.user.role not in {
         UserRole.SUPER_ADMIN.value,
