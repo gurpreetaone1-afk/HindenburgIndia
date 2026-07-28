@@ -36,7 +36,7 @@ from app.schemas.auth import (
 from app.schemas.common import APIResponse, OkResponse
 from app.services import auth_service, branding_service, user_service
 from app.services.audit_service import log_event
-from app.services.email_service import send_otp_email
+from app.services.email_service import is_configured as email_configured, send_otp_email
 from app.utils.otp import issue_otp, verify_otp
 
 router = APIRouter(prefix="/auth", tags=["user-auth"])
@@ -138,6 +138,11 @@ async def register(payload: RegisterRequest, request: Request):
         owner_admin = await User.get(assigned_admin_id)
         if owner_admin is not None:
             otp_required = bool(getattr(owner_admin, "register_otp_enabled", True))
+    # Never enforce an email OTP we can't deliver: with no SMTP provider wired
+    # up, signup proceeds without verification (the /otp/request response
+    # reports otp_required=false in the same case, so client and server agree).
+    if not email_configured():
+        otp_required = False
     if otp_required:
         if not payload.otp or not await verify_otp("register", email, payload.otp):
             # Use a validation error (NOT InvalidCredentialsError) — the latter's
@@ -255,10 +260,13 @@ async def request_otp(payload: OtpRequest):
         if await user_service.find_by_identifier(ident):
             raise ConflictError("An account with this email already exists. Please log in.")
 
-        # Per-admin OTP toggle: if the owning admin (resolved from the
-        # referral code) has disabled register-OTP, DON'T issue/send a code —
-        # tell the client it can register directly (otp_required=False).
-        if not await _register_otp_enabled_for(payload.referral_code):
+        # Skip OTP (register directly) when EITHER the owning admin disabled
+        # register-OTP, OR no SMTP provider is configured — we must never ask
+        # for a code we can't deliver. The register endpoint mirrors this exact
+        # condition, so client and server always agree on otp_required.
+        if not email_configured() or not await _register_otp_enabled_for(
+            payload.referral_code
+        ):
             return APIResponse(
                 data={
                     "otp_required": False,

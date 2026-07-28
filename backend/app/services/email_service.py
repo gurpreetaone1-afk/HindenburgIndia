@@ -34,6 +34,12 @@ def _is_configured() -> bool:
     return bool(settings.SMTP_HOST and settings.SMTP_FROM)
 
 
+def is_configured() -> bool:
+    """True when an SMTP provider is set up (SMTP_HOST + SMTP_FROM). Callers
+    use this to avoid requiring an email OTP we could never deliver."""
+    return _is_configured()
+
+
 def _send_sync(msg: EmailMessage) -> None:
     """Blocking SMTP send — always called via ``asyncio.to_thread``."""
     host = settings.SMTP_HOST
