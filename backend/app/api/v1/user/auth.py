@@ -140,7 +140,11 @@ async def register(payload: RegisterRequest, request: Request):
             otp_required = bool(getattr(owner_admin, "register_otp_enabled", True))
     if otp_required:
         if not payload.otp or not await verify_otp("register", email, payload.otp):
-            raise InvalidCredentialsError("Invalid or expired verification code")
+            # Use a validation error (NOT InvalidCredentialsError) — the latter's
+            # code INVALID_CREDENTIALS is rendered by clients as "Invalid email or
+            # password", which on the SIGNUP screen wrongly reads as wrong login
+            # details. VALIDATION_FAILED surfaces this message verbatim.
+            raise ValidationFailedError("Invalid or expired verification code. Please request a new code.")
 
     user = await user_service.create_user(
         email=payload.email,
@@ -319,7 +323,8 @@ async def reset_password(payload: ResetPasswordRequest, request: Request):
         raise NotFoundError("Account not found")
     ok = await verify_otp("reset_password", user.email, payload.otp)
     if not ok:
-        raise InvalidCredentialsError("Invalid or expired reset code")
+        # Validation error, not InvalidCredentialsError — see register() note.
+        raise ValidationFailedError("Invalid or expired reset code. Please request a new code.")
     await auth_service.reset_password(user, new_password=payload.new_password)
     await log_event(
         action=AuditAction.PASSWORD_RESET,
