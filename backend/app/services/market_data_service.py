@@ -1190,71 +1190,44 @@ def subscribe(tokens: list[str]) -> None:
         if t and t not in _state:
             _state[t] = _empty_quote(t)
 
-    # Multi-worker cross-worker propagation: when THIS worker doesn't own the
-    # upstream feed (non-leader), announce the tokens on `feed:subscribe` so
-    # the leader's `feed_subscribe_listener` subscribes them on the real
-    # Zerodha/Infoway feeds. Gated on `not _is_feed_leader` so a single worker
-    # (always its own leader) never publishes → behaviour identical to before.
-    if not _is_feed_leader and tokens:
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(
-                publish(FEED_SUBSCRIBE_CHANNEL, {"tokens": [str(t) for t in tokens]}),
-                name="feed_subscribe_publish",
-            )
-        except RuntimeError:
-            pass
-        except Exception:  # pragma: no cover
-            logger.debug("feed_subscribe_publish_failed", exc_info=True)
-
-    # Propagate Infoway-class tokens (forex / crypto / metals / energy) to
-    # the Infoway WS ON DEMAND. Without this, only the symbols listed in
-    # INFOWAY_DEFAULT_* (subscribed once at startup) ever received ticks —
-    # opening ANY other forex chart showed a perpetual "loading" because
-    # Infoway was never told to stream that symbol, and (unlike Zerodha)
-    # Infoway has no REST snapshot fallback to bridge the gap.
+    # Push the tokens to the REAL upstream feeds so on-demand watchlist /
+    # position tokens actually stream — NOT just the ones in the startup
+    # default set. Two paths:
     #
-    # Infoway instrument tokens ARE the symbol string (token == symbol, see
-    # infoway_service.mirror_subscribed_to_instruments). Zerodha tokens are
-    # always pure integers and are handled by the Kite on-demand path
-    # elsewhere — so we forward only the non-numeric (symbol-style) tokens.
-    infoway_codes = [
-        t for t in tokens if t and not str(t).lstrip("-").isdigit()
-    ]
-    if infoway_codes:
-        try:
-            from app.services.infoway_service import infoway
-
-            loop = asyncio.get_running_loop()
-            loop.create_task(
-                infoway.subscribe(infoway_codes),
-                name="infoway_on_demand_subscribe",
-            )
-        except RuntimeError:
-            # No running event loop (called from a sync context) — skip;
-            # the WS subscribe path always runs inside the loop so this
-            # only guards rare non-async callers.
-            pass
-        except Exception:
-            logger.debug("infoway_on_demand_subscribe_failed", exc_info=True)
-
-        # MetaAPI is the PRIMARY feed for forex/metals/indices/commodities. On
-        # the feed leader, ensure the symbol is streamed by the MT terminal so
-        # `get_tick` returns a live price (no-ops on non-leaders where MetaAPI
-        # isn't connected — those forward via `feed:subscribe` above).
-        try:
-            from app.services.metaapi_service import metaapi
-
-            if metaapi.is_enabled():
-                loop = asyncio.get_running_loop()
-                loop.create_task(
-                    metaapi.subscribe(infoway_codes),
-                    name="metaapi_on_demand_subscribe",
-                )
-        except RuntimeError:
-            pass
-        except Exception:
-            logger.debug("metaapi_on_demand_subscribe_failed", exc_info=True)
+    #  • Feed leader (incl. every single-worker deployment): subscribe the
+    #    upstream feeds DIRECTLY via `_forward_feed_subscription` — numeric
+    #    tokens → Zerodha Kite ticker, symbol-style tokens → Infoway / MetaAPI.
+    #    Previously this branch forwarded ONLY the symbol-style (Infoway)
+    #    tokens; a WS-subscribed *numeric* Zerodha token (a watchlist row or
+    #    open position the user never opened via a chart / `/instruments`
+    #    fetch) was never put on the Kite ticker, so it sat at its REST
+    #    snapshot and showed FROZEN prices on the mobile app (the web hid the
+    #    bug because opening a chart / option-chain triggers the Kite
+    #    on-demand subscribe elsewhere). `_forward_feed_subscription` is
+    #    idempotent — already-subscribed Kite tokens are skipped.
+    #
+    #  • Non-leader worker: hand the tokens to the leader over Redis
+    #    (`feed:subscribe`); its `feed_subscribe_listener` runs the same
+    #    `_forward_feed_subscription`.
+    if not tokens:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No running event loop (rare sync caller) — the WS subscribe path
+        # always runs inside the loop, so this only guards odd callers.
+        return
+    tok_strs = [str(t) for t in tokens if t]
+    if _is_feed_leader:
+        loop.create_task(
+            _forward_feed_subscription(tok_strs),
+            name="feed_subscribe_direct",
+        )
+    else:
+        loop.create_task(
+            publish(FEED_SUBSCRIBE_CHANNEL, {"tokens": tok_strs}),
+            name="feed_subscribe_publish",
+        )
 
 
 def unsubscribe(tokens: list[str]) -> None:
