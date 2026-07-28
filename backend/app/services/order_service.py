@@ -231,6 +231,13 @@ async def place_order(
     trigger = to_decimal(payload.get("trigger_price") or 0)
     is_amo = bool(payload.get("is_amo") or False)
     is_squareoff = bool(payload.get("is_squareoff") or False)
+    # Optional specific-lot Exit hint (display only — see Order.cost_basis_override).
+    # Stamped by the per-fill Active-tab close so the blotter attributes this
+    # close to the exact lot the user tapped. None on every normal order.
+    _cbo_raw = payload.get("cost_basis_override")
+    cost_basis_override = (
+        Decimal128(str(to_decimal(_cbo_raw))) if _cbo_raw not in (None, "") else None
+    )
     # Optional system close tag (risk_enforcer SL/TP/stop-out, admin force-
     # close) — stamped on the Order so the Orders monitor can show WHY it
     # closed. None for ordinary opens; order_reason_code derives those.
@@ -282,6 +289,7 @@ async def place_order(
             quantity=quantity,
             price=price,
             trigger_price=trigger,
+            cost_basis_override=cost_basis_override,
             is_amo=is_amo,
             is_squareoff=is_squareoff,
             placed_from=str(payload.get("placed_from") or "WEB"),
@@ -399,6 +407,7 @@ async def place_order(
         limit_wait_up=_limit_wait_up,
         margin_blocked=Decimal128(str(margin)),
         status=OrderStatus.PENDING,
+        cost_basis_override=cost_basis_override,
         is_amo=is_amo,
         is_squareoff=is_squareoff,
         is_demo=bool(getattr(user, "is_demo", False)),

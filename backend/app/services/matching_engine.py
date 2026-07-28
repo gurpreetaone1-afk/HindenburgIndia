@@ -384,6 +384,10 @@ async def execute_market_order(
             str(quantize_money(notional + (charges.total if order.action == OrderAction.SELL else -charges.total)))
         ),
         pnl_inr=Decimal128(str(pnl_inr_dec)) if pnl_inr_dec is not None else None,
+        # Carry the specific-lot Exit hint through to the fill so the Active /
+        # Closed per-fill reconstructions can attribute this close to the exact
+        # lot the user tapped. Display only — pnl_inr above is unchanged.
+        cost_basis_override=getattr(order, "cost_basis_override", None),
     )
     order.filled_quantity += order.quantity
     order.pending_quantity = max(0, order.quantity - order.filled_quantity)

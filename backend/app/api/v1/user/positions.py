@@ -964,8 +964,35 @@ async def list_active_trades(user: CurrentUser):
             if is_same:
                 same_side_fifo.append((t, tq))
             else:
-                # Consume from oldest same-side fills
+                # Consume same-side fills. If this closing fill carries a
+                # cost_basis_override the user closed a SPECIFIC lot — consume
+                # the fill whose entry price MATCHES the override first, so the
+                # exited lot (not the FIFO-front) is the one that leaves the
+                # Active tab. Any remainder, and every ordinary close (override
+                # is None → this block is skipped entirely, no regression),
+                # falls back to oldest-first FIFO below.
                 remain = tq
+                _co = getattr(t, "cost_basis_override", None)
+                if _co is not None:
+                    try:
+                        _cop = float(str(_co))
+                    except Exception:
+                        _cop = None
+                    if _cop is not None:
+                        for i, (st, sq) in enumerate(same_side_fifo):
+                            if remain <= 0:
+                                break
+                            if sq <= 1e-9:
+                                continue
+                            try:
+                                _stp = float(str(st.price))
+                            except Exception:
+                                continue
+                            if abs(_stp - _cop) < 1e-4:
+                                consume = min(sq, remain)
+                                same_side_fifo[i] = (st, sq - consume)
+                                remain -= consume
+                # Oldest-first FIFO for any remainder (and all normal closes).
                 for i, (st, sq) in enumerate(same_side_fifo):
                     if remain <= 0:
                         break
@@ -1007,14 +1034,57 @@ async def list_active_trades(user: CurrentUser):
                      (not is_long and t.action == OrderAction.SELL))
             ]
             all_same.sort(key=lambda tr: tr.executed_at or _datetime.min, reverse=True)
+
+            # Specific-lot Exit awareness: an opposite-side closing trade that
+            # carries a cost_basis_override was the user closing ONE particular
+            # lot (identified by its entry price). Collect those closed lots so
+            # we can peel their qty off the matching-price opening fill below —
+            # otherwise this override-BLIND recency pass re-surfaces a lot the
+            # user just exited (the "exited lot keeps coming back → duplicate
+            # Exit" cascade). Books that never used specific-lot Exit produce an
+            # empty list, so this is a no-op for them (no regression).
+            cbo_remaining: list[list[float]] = []  # [override_price, qty]
+            for ct in trades:
+                if (
+                    ct.instrument.token == p.instrument.token
+                    and str(ct.product_type.value) == str(p.product_type.value)
+                    and ((is_long and ct.action == OrderAction.SELL)
+                         or (not is_long and ct.action == OrderAction.BUY))
+                ):
+                    _c = getattr(ct, "cost_basis_override", None)
+                    if _c is not None:
+                        try:
+                            cbo_remaining.append([float(str(_c)), float(ct.quantity)])
+                        except Exception:
+                            pass
+
             accum = 0.0
             for t in all_same:
                 if accum >= need:
                     break
-                tq = min(float(t.quantity), need - accum)
+                tq = float(t.quantity)
+                try:
+                    pr = float(str(t.price))
+                except Exception:
+                    pr = None
+                # Peel off qty a specific-lot Exit already closed at this fill's
+                # price, so the exited lot doesn't re-surface as active.
+                if pr is not None and cbo_remaining:
+                    for cb in cbo_remaining:
+                        if cb[1] <= 1e-9:
+                            continue
+                        if abs(cb[0] - pr) < 1e-4:
+                            take = min(cb[1], tq)
+                            cb[1] -= take
+                            tq -= take
+                            if tq <= 1e-9:
+                                break
+                if tq <= 1e-9:
+                    continue
+                show = min(tq, need - accum)
                 trade_owner[str(t.id)] = p
-                remaining_qty[str(t.id)] = tq
-                accum += tq
+                remaining_qty[str(t.id)] = show
+                accum += show
 
     rows: list[dict[str, Any]] = []
     for t in trades:
@@ -1510,6 +1580,12 @@ async def close_active_trade(trade_id: str, user: CurrentUser):
             "force_quantity": close_qty,
             "placed_from": "WEB",
             "is_squareoff": True,
+            # Specific-lot Exit: tell the blotter WHICH lot this close belongs
+            # to (the tapped fill's own entry price). Display only — the wallet
+            # still books realized P&L against the position avg. Without this
+            # the Active/Closed reconstructions fall back to FIFO-front and the
+            # exited lot re-surfaces / the Closed row shows the wrong basis.
+            "cost_basis_override": str(t.price),
         },
     )
 

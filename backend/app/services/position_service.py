@@ -1276,15 +1276,30 @@ async def list_closed_trade_events_fifo(
         remaining = qty
         sub_idx = 0
 
+        # Specific-lot Exit: when the closing fill carries a cost_basis_override
+        # the user tapped ONE lot to close — show THAT lot's entry price and
+        # price the gross off it, instead of the FIFO-front queue price they'd
+        # otherwise fall back to (the wrong-basis / wrong-P&L symptom). Qty is
+        # still consumed FIFO from `q` below, so the queue accounting is
+        # unchanged; only the displayed basis + gross change.
+        _basis = None
+        _cbo = getattr(t, "cost_basis_override", None)
+        if _cbo is not None:
+            try:
+                _basis = float(str(_cbo))
+            except Exception:
+                _basis = None
+
         while remaining > 1e-9 and q:
             front = q[0]
             consume = min(front["qty"], remaining)
+            eff_basis = _basis if _basis is not None else front["price"]
 
             # Gross P&L for this (opening-fill × closing-fill) pairing
             if front["side"] == "BUY":
-                gross = (price - front["price"]) * consume   # long close
+                gross = (price - eff_basis) * consume   # long close
             else:
-                gross = (front["price"] - price) * consume   # short close
+                gross = (eff_basis - price) * consume   # short close
 
             # Total brokerage = pro-rata open-leg + pro-rata close-leg
             orig_qty = front.get("original_qty") or consume
@@ -1299,7 +1314,7 @@ async def list_closed_trade_events_fifo(
                 "instrument": t.instrument,
                 "product_type": t.product_type,
                 "opened_side": front["side"],
-                "entry_price": front["price"],
+                "entry_price": eff_basis,
                 "close_price": price,
                 "qty": consume,
                 "gross_pnl": gross,

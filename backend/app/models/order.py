@@ -123,6 +123,14 @@ class Order(TimestampMixin):
     # `settlement_outstanding`) only when this is True; voluntary closes still
     # respect `InsufficientFundsError`.
     is_squareoff: bool = False
+    # Specific-lot Exit hint (DISPLAY ONLY — never changes realized P&L, which
+    # the matching engine always books against the netted position avg). When
+    # the user taps "Exit" on ONE per-fill row in the Active tab, the close
+    # endpoint stamps that fill's entry price here so the Active/Closed per-fill
+    # reconstructions attribute the close to the RIGHT lot (instead of silently
+    # falling back to FIFO-front), which stops the exited lot re-surfacing and
+    # makes the Closed row show the lot the user actually closed.
+    cost_basis_override: Money | None = None
     parent_order_id: PydanticObjectId | None = None  # for bracket / GTT children
     bracket_target: Money | None = None
     bracket_stop_loss: Money | None = None
