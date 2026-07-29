@@ -178,7 +178,11 @@ class Settings(BaseSettings):
     # chart users see and giving a smoother/faster tick. Forex / metals /
     # energy stay on Infoway regardless. If empty, BINANCE_CRYPTO_SYMBOLS
     # falls back to the INFOWAY_DEFAULT_CRYPTO list (same USDT-pair names).
-    BINANCE_CRYPTO_FEED: bool = False
+    # Default ON: Binance's public crypto WS is FREE (no API key) and is the
+    # platform's crypto source, so crypto works out of the box without Infoway.
+    # If Binance has no tick for a symbol the overlay still falls back to
+    # Infoway/Zerodha, so enabling this can't make crypto worse.
+    BINANCE_CRYPTO_FEED: bool = True
     BINANCE_CRYPTO_SYMBOLS: str = ""
     # ── MetaAPI (MetaTrader) feed for forex / metals / indices / commodities ──
     # When True, those segments get their live price from a connected MT4/MT5
