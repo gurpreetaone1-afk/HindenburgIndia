@@ -412,9 +412,20 @@ async def open_positions(user: CurrentUser):
         # the explicit overnight fields, otherwise an MCX FUT row with
         # 500× intraday / 70× overnight reports holding = intraday and
         # the user has no warning before the EOD rollover force-closes.
-        holding_margin = float(d.get("margin_used") or 0.0)
-        if not isinstance(resolved, BaseException) and resolved is not None:
-            s = (resolved.get("settings") if isinstance(resolved, dict) else None) or {}
+        # Default estimate for when the overnight resolver errored OR returned
+        # no usable settings. Falling back to `== margin_used` (the old
+        # behaviour) made "CF Required" read 0.00 for EVERY MIS position —
+        # and worse, it MASKED the client's own 0.4× fallback, which only
+        # fires when holding_margin is ABSENT, not when it equals margin_used.
+        # For an intraday (MIS) leg, carry-forward needs MORE than the locked
+        # intraday margin, so estimate it at 1.4× (the legacy heuristic the
+        # frontend used before the resolver existed). An NRML leg is already
+        # an overnight position, so holding == intraday → CF 0 (correct).
+        _intraday_used = float(d.get("margin_used") or 0.0)
+        _is_mis = str(r.product_type.value).upper() == "MIS"
+        holding_margin = round(_intraday_used * 1.4, 2) if _is_mis else _intraday_used
+        s = (resolved.get("settings") if isinstance(resolved, dict) else None) or {}
+        if not isinstance(resolved, BaseException) and resolved is not None and s:
             try:
                 avg_native = float(str(r.avg_price))
                 qty_abs = abs(float(r.quantity))

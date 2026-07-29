@@ -333,7 +333,13 @@ export default function TradingTerminalPage() {
       const liveLtp = Number(live.ltp ?? 0) || Number(p.ltp) || 0;
       const bid = Number(live.bid ?? 0);
       const ask = Number(live.ask ?? 0);
-      const closePrice = (isLong ? bid : ask) || liveLtp;
+      // Trust the depth side only within 25% of LTP — illiquid / expired
+      // option books carry a stale junk best level that otherwise flipped
+      // P&L ×100 tick-to-tick. Real spreads never span a quarter of price.
+      const raw = isLong ? bid : ask;
+      const near =
+        raw > 0 && (!(liveLtp > 0) || Math.abs(raw - liveLtp) / liveLtp <= 0.25);
+      const closePrice = near ? raw : liveLtp;
       if (!closePrice) return p;
       const avg = Number(p.avg_price);
       const pnl =

@@ -415,14 +415,21 @@ export default function PositionsPage() {
     const tok = String(row?.instrument_token ?? row?.token ?? "");
     if (tok) {
       const tick = liveQuotes.get(tok);
+      const liveLtp = Number(tick?.ltp ?? 0);
+      // Trust the depth side only when it sits within 25% of LTP. Illiquid /
+      // expired option books carry a stale or junk best level far from the
+      // last trade, which made the card's P&L jump ×100 tick-to-tick; a real
+      // spread is never a quarter of price, so 25% rejects the junk without
+      // touching a legitimate quote and falls back to the fast-moving LTP.
+      const near = (raw: number) =>
+        raw > 0 && (!(liveLtp > 0) || Math.abs(raw - liveLtp) / liveLtp <= 0.25);
       if (side === "BUY") {
         const liveBid = Number(tick?.bid ?? 0);
-        if (liveBid > 0) return liveBid;
+        if (near(liveBid)) return liveBid;
       } else if (side === "SELL") {
         const liveAsk = Number(tick?.ask ?? 0);
-        if (liveAsk > 0) return liveAsk;
+        if (near(liveAsk)) return liveAsk;
       }
-      const liveLtp = Number(tick?.ltp ?? 0);
       if (liveLtp > 0) return liveLtp;
     }
     return Number(row?.ltp ?? 0);
