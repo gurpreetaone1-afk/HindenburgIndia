@@ -185,8 +185,16 @@ export function PositionsTabs({ positions, pendingOrders, history, cancelled, to
     const bid = Number(q.bid ?? 0);
     const ask = Number(q.ask ?? 0);
     const ltp = Number(q.ltp ?? 0);
-    if (side === "BUY" && bid > 0) return bid;
-    if (side === "SELL" && ask > 0) return ask;
+    // Trust the depth side only when it sits within 25% of LTP. Illiquid /
+    // expired option books carry a stale or junk best level far from the
+    // last trade; using it made the card's P&L jump ×100 tick-to-tick (and
+    // the shown price freeze on the rarely-refreshed depth level). A real
+    // spread is never a quarter of price, so 25% rejects the junk without
+    // touching any legitimate quote, falling back to the fast-moving LTP.
+    const near = (raw: number) =>
+      raw > 0 && (!(ltp > 0) || Math.abs(raw - ltp) / ltp <= 0.25);
+    if (side === "BUY" && near(bid)) return bid;
+    if (side === "SELL" && near(ask)) return ask;
     if (ltp > 0) return ltp;
     return Number(row?.ltp ?? 0);
   }
