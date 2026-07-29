@@ -340,11 +340,23 @@ async def search(
 
     if seg_list or it_list:
         try:
-            # Ensure cache is warm before scanning.
-            if not _zerodha._instruments_cache:
+            import asyncio as _aio
+
+            # Warm the Zerodha CSV cache only when the query targets Indian
+            # (Zerodha) segments/types AND the cache is cold. For crypto /
+            # forex (Mongo-backed, non-Zerodha) this warm is useless — and
+            # when Zerodha isn't connected each fetch_instruments stalls a
+            # few seconds, so 5 exchanges hung the whole search ~25s and the
+            # browser cancelled it (crypto/forex never loaded). Each fetch is
+            # also hard-capped so a slow Kite CSV can't freeze search.
+            _INDIAN_SEG = ("NSE", "BSE", "NFO", "BFO", "MCX", "CDS", "BCD")
+            _needs_zerodha = bool(it_list) or any(
+                (s or "").upper().startswith(_INDIAN_SEG) for s in seg_list
+            )
+            if _needs_zerodha and not _zerodha._instruments_cache:
                 for ex in ("NSE", "NFO", "MCX", "BFO", "BSE"):
                     try:
-                        await _zerodha.fetch_instruments(ex)
+                        await _aio.wait_for(_zerodha.fetch_instruments(ex), timeout=3.0)
                     except Exception:
                         pass
 

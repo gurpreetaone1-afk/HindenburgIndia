@@ -44,11 +44,42 @@ from app.utils.time_utils import now_utc
 router = APIRouter(tags=["admin-payin-out"])
 
 
+async def _payment_user_filter(admin, search: str | None):
+    """Combine the admin's scope with an optional client-wise search into a
+    single `user_id` allow-list for the deposit / withdrawal inboxes.
+
+    `search` matches a user's code / name / email / mobile (case-insensitive
+    substring). Returns None (no filter) or a list of user ids (possibly
+    empty → caller returns an empty page)."""
+    scope = await scoped_user_ids(admin)  # None = super-admin (all users)
+    search = (search or "").strip()
+    search_ids = None
+    if search:
+        import re
+
+        from app.models.user import User
+
+        rx = re.compile(re.escape(search), re.IGNORECASE)
+        matched = await User.find(
+            {"$or": [{"user_code": rx}, {"full_name": rx}, {"email": rx}, {"mobile": rx}]}
+        ).to_list()
+        search_ids = [u.id for u in matched]
+
+    if scope is not None and search_ids is not None:
+        return list(set(scope) & set(search_ids))
+    if scope is not None:
+        return scope
+    if search_ids is not None:
+        return search_ids
+    return None
+
+
 # ── Deposits ────────────────────────────────────────────────────────
 @router.get("/deposits", response_model=APIResponse[dict])
 async def list_deposits(
     admin: CurrentAdmin,
     status: str | None = None,
+    search: str | None = None,
     page: int = 1,
     page_size: int = 15,
     _: None = Depends(require_perm("deposits", "read")),
@@ -70,21 +101,16 @@ async def list_deposits(
     q: dict[str, Any] = {}
     if status:
         q["status"] = status
-    scope = await scoped_user_ids(admin)
-    if scope is not None:
-        if not scope:
+    allow = await _payment_user_filter(admin, search)
+    if allow is not None:
+        if not allow:
             return APIResponse(
                 data={
                     "items": [],
-                    "meta": {
-                        "page": page,
-                        "page_size": page_size,
-                        "total": 0,
-                        "total_pages": 0,
-                    },
+                    "meta": {"page": page, "page_size": page_size, "total": 0, "total_pages": 0},
                 }
             )
-        q["user_id"] = {"$in": scope}
+        q["user_id"] = {"$in": allow}
 
     total = await DepositRequest.find(q).count()
     rows = (
@@ -479,6 +505,7 @@ async def reject_settlement(
 async def list_withdrawals(
     admin: CurrentAdmin,
     status: str | None = None,
+    search: str | None = None,
     page: int = 1,
     page_size: int = 15,
     _: None = Depends(require_perm("withdrawals", "read")),
@@ -493,21 +520,16 @@ async def list_withdrawals(
     q: dict[str, Any] = {}
     if status:
         q["status"] = status
-    scope = await scoped_user_ids(admin)
-    if scope is not None:
-        if not scope:
+    allow = await _payment_user_filter(admin, search)
+    if allow is not None:
+        if not allow:
             return APIResponse(
                 data={
                     "items": [],
-                    "meta": {
-                        "page": page,
-                        "page_size": page_size,
-                        "total": 0,
-                        "total_pages": 0,
-                    },
+                    "meta": {"page": page, "page_size": page_size, "total": 0, "total_pages": 0},
                 }
             )
-        q["user_id"] = {"$in": scope}
+        q["user_id"] = {"$in": allow}
 
     total = await WithdrawalRequest.find(q).count()
     rows = (

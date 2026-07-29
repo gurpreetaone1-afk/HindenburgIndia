@@ -90,6 +90,7 @@ export function WithdrawalsPanel() {
   // flagged 21-May that landing on an empty PENDING list looked
   // like the queue was broken).
   const [status, setStatus] = useState("");
+  const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const pageSize = 15;
   const [approving, setApproving] = useState<{ id: string; utr: string } | null>(null);
@@ -104,10 +105,11 @@ export function WithdrawalsPanel() {
   }
 
   const { data, isFetching } = useQuery({
-    queryKey: ["admin", "withdrawals", status, page],
+    queryKey: ["admin", "withdrawals", status, search, page],
     queryFn: () =>
       PayinOutAPI.withdrawals({
         status: status || undefined,
+        search: search.trim() || undefined,
         page,
         page_size: pageSize,
       }),
@@ -293,21 +295,32 @@ export function WithdrawalsPanel() {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-xs text-muted-foreground">
           {meta?.total ?? 0} {status.toLowerCase() || "all"}
           {meta?.total ? ` · page ${meta.page} of ${totalPages}` : ""}
         </div>
-        <select
-          value={status}
-          onChange={(e) => changeStatus(e.target.value)}
-          className="h-9 rounded-md border border-border bg-background px-3 text-sm"
-        >
-          <option value="">All</option>
-          <option value="PENDING">Pending</option>
-          <option value="COMPLETED">Completed</option>
-          <option value="REJECTED">Rejected</option>
-        </select>
+        <div className="flex items-center gap-2">
+          <input
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
+            placeholder="Search client — code / name / email / mobile"
+            className="h-9 w-56 rounded-md border border-border bg-background px-3 text-sm"
+          />
+          <select
+            value={status}
+            onChange={(e) => changeStatus(e.target.value)}
+            className="h-9 rounded-md border border-border bg-background px-3 text-sm"
+          >
+            <option value="">All</option>
+            <option value="PENDING">Pending</option>
+            <option value="COMPLETED">Completed</option>
+            <option value="REJECTED">Rejected</option>
+          </select>
+        </div>
       </div>
       {/* Desktop: full table with destination columns */}
       <div className="hidden md:block">

@@ -307,16 +307,23 @@ export const AuthAPI = {
     unwrap<TokenPair>(api.post("/user/auth/login", body)),
   // Send an email OTP. purpose "register" verifies a NEW email before signup;
   // the backend rejects already-registered emails here.
-  requestOtp: (identifier: string, purpose: "register" | "reset_password" = "register") =>
-    unwrap(api.post("/user/auth/otp/request", { identifier, purpose })),
+  requestOtp: (
+    identifier: string,
+    purpose: "register" | "reset_password" = "register",
+    referral_code?: string,
+  ) =>
+    unwrap<{ otp_required?: boolean; message?: string }>(
+      api.post("/user/auth/otp/request", { identifier, purpose, referral_code }),
+    ),
   register: (body: {
     email: string;
     mobile: string;
     password: string;
     full_name: string;
     // Email OTP (from requestOtp with purpose "register"). Verified server-side
-    // at account creation — verify-first signup.
-    otp: string;
+    // at account creation — verify-first signup. Optional: when the owning
+    // admin has register_otp_enabled=false the client registers directly.
+    otp?: string;
     pan?: string;
     // White-label attribution. When the user landed on /register?ref=<ADM…>
     // (or on a tenant's custom domain), the BrandingProvider plumbs the
@@ -367,6 +374,8 @@ export const WalletAPI = {
   myDeposits: () => unwrap<any[]>(api.get("/user/wallet/deposits")),
   createWithdrawal: (body: any) => unwrap<any>(api.post("/user/wallet/withdrawals", body)),
   myWithdrawals: () => unwrap<any[]>(api.get("/user/wallet/withdrawals")),
+  deleteDeposit: (id: string) => unwrap<any>(api.delete(`/user/wallet/deposits/${id}`)),
+  deleteWithdrawal: (id: string) => unwrap<any>(api.delete(`/user/wallet/withdrawals/${id}`)),
   // Effective deposit + withdrawal rules for this user — already resolved
   // through the broker → admin → super-admin → global cascade by the
   // backend. Used by the deposit/withdraw dialogs to render the inline

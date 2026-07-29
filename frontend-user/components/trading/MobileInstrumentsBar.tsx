@@ -112,6 +112,10 @@ export function MobileInstrumentsBar({ activeToken, onSelect }: Props) {
   const visibleBuckets = useMemo(
     () =>
       BUCKETS.filter((b) => {
+        // Hide Infoway-fed international segments (Forex / Stocks / Indices
+        // / Commodities) — no live feed configured (crypto = free Binance).
+        // Definitions kept intact; only visibility gated here.
+        if (["forex", "stocks", "indices", "commodities"].includes(b.key)) return false;
         const rows = b.adminRows ?? [];
         if (rows.length === 0) return true;
         return rows.some((r) => !inactiveSet.has(r));

@@ -17,6 +17,7 @@ import {
   MessageCircle,
   Plus,
   QrCode,
+  Trash2,
   Upload,
   Wallet as WalletIcon,
   X,
@@ -791,6 +792,8 @@ type FeedRow = {
   status: "completed" | "pending" | "rejected";
   narration: string;
   balance_after?: number | null;
+  reqId?: string;
+  reqType?: "deposit" | "withdrawal";
 };
 
 function TransactionsFeed({
@@ -855,6 +858,8 @@ function TransactionsFeed({
             ? `Deposit rejected${d.admin_remark ? ` — ${d.admin_remark}` : ""}`
             : `Deposit request · ${d.payment_mode ?? "manual"}`,
         balance_after: null,
+        reqId: status === "PENDING" ? String(d.id) : undefined,
+        reqType: status === "PENDING" ? "deposit" : undefined,
       });
     }
 
@@ -873,6 +878,8 @@ function TransactionsFeed({
             ? `Withdrawal rejected${w.admin_remark ? ` — ${w.admin_remark}` : ""}`
             : `Withdrawal request · ${w.mode ?? "bank"}`,
         balance_after: null,
+        reqId: status === "PENDING" ? String(w.id) : undefined,
+        reqType: status === "PENDING" ? "withdrawal" : undefined,
       });
     }
 
@@ -946,6 +953,26 @@ function FeedRowItem({ row }: { row: FeedRow }) {
   const isIn = row.kind === "deposit" || row.kind === "admin_add";
   const Icon = isIn ? ArrowDownToLine : ArrowUpToLine;
 
+  const qc = useQueryClient();
+  const [deleting, setDeleting] = useState(false);
+  const canDelete = row.status === "pending" && !!row.reqId && !!row.reqType;
+  async function handleDelete() {
+    if (!row.reqId || !row.reqType) return;
+    if (typeof window !== "undefined" && !window.confirm("Delete this pending request?")) return;
+    setDeleting(true);
+    try {
+      if (row.reqType === "deposit") await WalletAPI.deleteDeposit(row.reqId);
+      else await WalletAPI.deleteWithdrawal(row.reqId);
+      toast.success("Request deleted");
+      qc.invalidateQueries({ queryKey: ["my-deposits"] });
+      qc.invalidateQueries({ queryKey: ["my-withdrawals"] });
+    } catch (e: any) {
+      toast.error(e?.message || "Could not delete request");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   const iconBg = isIn
     ? "bg-emerald-500/15 text-emerald-500 ring-emerald-500/20"
     : "bg-rose-500/15 text-rose-500 ring-rose-500/20";
@@ -1013,6 +1040,19 @@ function FeedRowItem({ row }: { row: FeedRow }) {
           </div>
         )}
       </div>
+
+      {canDelete && (
+        <button
+          type="button"
+          onClick={handleDelete}
+          disabled={deleting}
+          aria-label="Delete pending request"
+          title="Delete this pending request"
+          className="ml-1 grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-rose-500/10 hover:text-rose-500 disabled:opacity-50"
+        >
+          {deleting ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+        </button>
+      )}
     </li>
   );
 }

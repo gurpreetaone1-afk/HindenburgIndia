@@ -600,6 +600,42 @@ async def my_withdrawals(user: CurrentUser):
     )
 
 
+@router.delete("/deposits/{deposit_id}", response_model=APIResponse[dict])
+async def delete_deposit(deposit_id: str, user: CurrentUser):
+    """Delete a still-PENDING deposit request the user raised. Approved /
+    rejected rows are immutable history. No wallet impact (a pending deposit
+    reserves nothing; credit only happens on admin approval)."""
+    try:
+        oid = PydanticObjectId(deposit_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Deposit request not found")
+    r = await DepositRequest.get(oid)
+    if r is None or r.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Deposit request not found")
+    if r.status != DepositStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Only a pending request can be deleted; this one is already processed.")
+    await r.delete()
+    return APIResponse(data={"deleted": True, "id": deposit_id})
+
+
+@router.delete("/withdrawals/{withdrawal_id}", response_model=APIResponse[dict])
+async def delete_withdrawal(withdrawal_id: str, user: CurrentUser):
+    """Delete a still-PENDING withdrawal request the user raised. No wallet
+    impact (a pending withdrawal does NOT hold funds; debit only happens on
+    admin approval)."""
+    try:
+        oid = PydanticObjectId(withdrawal_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Withdrawal request not found")
+    r = await WithdrawalRequest.get(oid)
+    if r is None or r.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Withdrawal request not found")
+    if r.status != WithdrawalStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Only a pending request can be deleted; this one is already processed.")
+    await r.delete()
+    return APIResponse(data={"deleted": True, "id": withdrawal_id})
+
+
 @router.get("/wd-rules", response_model=APIResponse[dict])
 async def my_wd_rules(user: CurrentUser):
     """Effective deposit + withdrawal rules for the calling user — resolved

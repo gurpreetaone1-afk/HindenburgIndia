@@ -297,6 +297,9 @@ async def list_segment_items(segment_name: str, user: CurrentUser):
     # expiry is beyond the user's effective "Show expiry month" cap, so the
     # watchlist matches the (already-capped) option chain. Fail-open.
     items = await _drop_items_beyond_expiry_cap(user.id, items)
+    # Drop already-EXPIRED contracts from per-segment favourites too — same
+    # guard the main watchlist + quotes feed use.
+    items = await _drop_expired_items(items)
 
     return APIResponse(
         data=[
