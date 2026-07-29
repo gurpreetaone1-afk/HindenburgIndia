@@ -428,3 +428,13 @@ async def sliding_window_check(
 async def idempotency_check_and_set(key: str, ttl_sec: int = 3600) -> bool:
     """Return True if key was newly set (caller should proceed); False if duplicate."""
     return bool(await get_redis().set(key, "1", ex=ttl_sec, nx=True))
+
+
+async def idempotency_release(key: str) -> None:
+    """Release a single-flight lock early so a FAILED operation can be retried
+    immediately instead of waiting out the TTL. Safe to call unconditionally;
+    a missing key is a no-op."""
+    try:
+        await get_redis().delete(key)
+    except Exception:  # pragma: no cover — never let cleanup mask the real error
+        pass

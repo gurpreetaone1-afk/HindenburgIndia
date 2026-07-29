@@ -289,7 +289,6 @@ async def place_order(
             quantity=quantity,
             price=price,
             trigger_price=trigger,
-            cost_basis_override=cost_basis_override,
             is_amo=is_amo,
             is_squareoff=is_squareoff,
             placed_from=str(payload.get("placed_from") or "WEB"),

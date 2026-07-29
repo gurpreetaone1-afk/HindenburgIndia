@@ -540,19 +540,6 @@ async def squareoff(
     if p.status != PositionStatus.OPEN or p.quantity == 0:
         raise HTTPException(status_code=400, detail="Position already closed")
 
-    # ── Single-flight lock ─────────────────────────────────────────────
-    # Prevents rapid double-tap or concurrent API calls from firing two
-    # market orders for the same position. Keyed by the RESOLVED position id
-    # so a by-token and a by-id close for the SAME position still collide.
-    from app.core.redis_client import idempotency_check_and_set as _idem
-
-    _lock_key = f"squareoff_position:{user.id}:{p.id}"
-    if not await _idem(_lock_key, ttl_sec=10):
-        raise HTTPException(
-            status_code=409,
-            detail="A close for this position is already in flight — try again in a moment.",
-        )
-
     # ── Market-hours gate ──────────────────────────────────────────────
     # Block a USER-initiated close when the segment's market is closed and
     # return a clear "market is closed" message the client renders as a
@@ -626,19 +613,48 @@ async def squareoff(
     # force-qty by the requested lots / full-lots ratio so partial closes
     # still work proportionally.
     close_qty = full_qty if close_lots >= full_lots else full_qty * (close_lots / full_lots)
-    o = await order_service.place_order(
-        user=user,
-        payload={
-            "token": p.instrument.token,
-            "action": action.value,
-            "order_type": OrderType.MARKET.value,
-            "product_type": p.product_type.value,
-            "lots": close_lots,
-            "force_quantity": close_qty,
-            "placed_from": "WEB",
-            "is_squareoff": True,
-        },
+
+    # ── Single-flight lock ─────────────────────────────────────────────
+    # Prevents rapid double-tap or concurrent API calls from firing two
+    # market orders for the same position. Keyed by the RESOLVED position id
+    # so a by-token and a by-id close for the SAME position still collide.
+    # Acquired HERE — after every pre-check (position-open, market-hours,
+    # hold-time) — so a guard rejection never leaves the lock held: earlier
+    # the lock sat at the top of the handler, so tapping Close while the
+    # market was shut (or during the hold-time window, or when the very
+    # order placement errored) blocked EVERY retry for the full 10 s TTL
+    # with "a close is already in flight". Released on failure below.
+    from app.core.redis_client import (
+        idempotency_check_and_set as _idem,
+        idempotency_release as _idem_release,
     )
+
+    _lock_key = f"squareoff_position:{user.id}:{p.id}"
+    if not await _idem(_lock_key, ttl_sec=10):
+        raise HTTPException(
+            status_code=409,
+            detail="A close for this position is already in flight — try again in a moment.",
+        )
+    try:
+        o = await order_service.place_order(
+            user=user,
+            payload={
+                "token": p.instrument.token,
+                "action": action.value,
+                "order_type": OrderType.MARKET.value,
+                "product_type": p.product_type.value,
+                "lots": close_lots,
+                "force_quantity": close_qty,
+                "placed_from": "WEB",
+                "is_squareoff": True,
+            },
+        )
+    except Exception:
+        # The close never went through — free the lock so the user can retry
+        # at once instead of waiting out the 10 s TTL, then re-raise so the
+        # API still returns the real error.
+        await _idem_release(_lock_key)
+        raise
 
     # Post-close bookkeeping — close_reason stamp + audit — runs AFTER the
     # response. The close itself is already done & persisted by place_order;
@@ -1395,19 +1411,6 @@ async def close_active_trade(trade_id: str, user: CurrentUser):
     if t is None or t.user_id != user.id:
         raise HTTPException(status_code=404, detail="Trade not found")
 
-    # ── Single-flight lock ────────────────────────────────────────────
-    # 10 s TTL covers a slow market round-trip; key includes user + trade
-    # so different users / different trades never collide. Released on
-    # exception by the TTL — no manual cleanup needed.
-    from app.core.redis_client import idempotency_check_and_set
-
-    lock_key = f"close_active_trade:{user.id}:{trade_id}"
-    if not await idempotency_check_and_set(lock_key, ttl_sec=10):
-        raise HTTPException(
-            status_code=409,
-            detail="A close for this trade is already in flight — try again in a moment.",
-        )
-
     # Find the matching open position. Match by (user, token, product_type)
     # first; if that misses (e.g. product_type enum vs string casing drift
     # between when the trade vs the position was written), fall back to
@@ -1569,25 +1572,46 @@ async def close_active_trade(trade_id: str, user: CurrentUser):
         },
     )
 
-    o = await order_service.place_order(
-        user=user,
-        payload={
-            "token": p.instrument.token,
-            "action": action.value,
-            "order_type": OrderType.MARKET.value,
-            "product_type": p.product_type.value,
-            "lots": close_lots,
-            "force_quantity": close_qty,
-            "placed_from": "WEB",
-            "is_squareoff": True,
-            # Specific-lot Exit: tell the blotter WHICH lot this close belongs
-            # to (the tapped fill's own entry price). Display only — the wallet
-            # still books realized P&L against the position avg. Without this
-            # the Active/Closed reconstructions fall back to FIFO-front and the
-            # exited lot re-surfaces / the Closed row shows the wrong basis.
-            "cost_basis_override": str(t.price),
-        },
+    # ── Single-flight lock ────────────────────────────────────────────
+    # Acquired HERE — after the trade + position lookups and FIFO scoping —
+    # so a "trade not found" / "no open position" guard rejection never holds
+    # the lock. Key includes user + trade so different users / trades never
+    # collide. Released on failure below so a failed close can retry at once
+    # instead of getting "already in flight" for the whole 10 s TTL.
+    from app.core.redis_client import (
+        idempotency_check_and_set,
+        idempotency_release,
     )
+
+    lock_key = f"close_active_trade:{user.id}:{trade_id}"
+    if not await idempotency_check_and_set(lock_key, ttl_sec=10):
+        raise HTTPException(
+            status_code=409,
+            detail="A close for this trade is already in flight — try again in a moment.",
+        )
+    try:
+        o = await order_service.place_order(
+            user=user,
+            payload={
+                "token": p.instrument.token,
+                "action": action.value,
+                "order_type": OrderType.MARKET.value,
+                "product_type": p.product_type.value,
+                "lots": close_lots,
+                "force_quantity": close_qty,
+                "placed_from": "WEB",
+                "is_squareoff": True,
+                # Specific-lot Exit: tell the blotter WHICH lot this close belongs
+                # to (the tapped fill's own entry price). Display only — the wallet
+                # still books realized P&L against the position avg. Without this
+                # the Active/Closed reconstructions fall back to FIFO-front and the
+                # exited lot re-surfaces / the Closed row shows the wrong basis.
+                "cost_basis_override": str(t.price),
+            },
+        )
+    except Exception:
+        await idempotency_release(lock_key)
+        raise
 
     # Stamp USER close_reason if the trade close actually flattened the
     # parent position. Same pattern as the /squareoff endpoint — deferred to
