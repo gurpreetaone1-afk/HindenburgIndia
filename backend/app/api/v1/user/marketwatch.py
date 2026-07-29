@@ -113,6 +113,28 @@ async def _get_or_create_segment_watchlist(
     return wl
 
 
+async def _drop_expired_items(items: list) -> list:
+    """Drop watchlist / quote items whose derivative expiry is in the PAST.
+    Expired contracts (e.g. NIFTY26JUL…PE after 26 Jul) don't trade — they'd
+    show frozen with a "Market is closed for this instrument" toast — so they
+    must never appear in any list. Equities carry expiry=None and unknown
+    tokens are kept (fail-open, never blank a list on a lookup gap)."""
+    if not items:
+        return items
+    from app.models.instrument import Instrument
+    from app.utils.time_utils import now_ist
+
+    today = now_ist().date()
+    tokens = [it.instrument_token for it in items]
+    insts = await Instrument.find({"token": {"$in": tokens}}).to_list()
+    expired = {
+        inst.token
+        for inst in insts
+        if inst.expiry is not None and inst.expiry < today
+    }
+    return [it for it in items if it.instrument_token not in expired]
+
+
 async def _drop_items_beyond_expiry_cap(user_id: Any, items: list) -> list:
     """Read-time trim: hide FUT watchlist/favourite items whose expiry is
     beyond the effective per-underlying "Show expiry month" cap — so the
@@ -143,8 +165,29 @@ async def _drop_items_beyond_expiry_cap(user_id: Any, items: list) -> list:
     tokens = [it.instrument_token for it in items]
     insts = await Instrument.find({"token": {"$in": tokens}}).to_list()
     inst_by_token = {inst.token: inst for inst in insts}
+    today = now_ist().date()
 
-    # Only FUT items are subject to the cap — bail early if none.
+    # PASS 1 — universal EXPIRED drop (FUT **and** OPT). Any derivative whose
+    # expiry is in the PAST no longer trades, so it must never show in a
+    # watchlist / segment list — otherwise it sits frozen with a "Market is
+    # closed for this instrument" toast (e.g. NIFTY26JUL…PE lingering after
+    # 26 Jul). Equities carry expiry=None and are always kept. FAIL-OPEN:
+    # an unknown token (not in the Instrument collection) is kept.
+    items = [
+        it
+        for it in items
+        if not (
+            (inst := inst_by_token.get(it.instrument_token)) is not None
+            and inst.expiry is not None
+            and inst.expiry < today
+        )
+    ]
+    if not items:
+        return items
+
+    # PASS 2 — FUT "Show expiry month" cap (option rows enter via the already-
+    # capped option chain). Only FUT items are subject to the cap — bail early
+    # if none survived pass 1.
     has_fut = any(
         (inst := inst_by_token.get(it.instrument_token)) is not None
         and inst.instrument_type == InstrumentType.FUT
@@ -154,7 +197,6 @@ async def _drop_items_beyond_expiry_cap(user_id: Any, items: list) -> list:
         return items
 
     resolved = await _resolve_expiry_settings_for_user(user_id)
-    today = now_ist().date()
 
     # Cache the allowed-expiry set per underlying_token so a watchlist with
     # several contracts on the same underlying only scans the calendar once.
@@ -342,6 +384,8 @@ async def list_watchlists(user: CurrentUser):
     out = []
     for wl in wls:
         items = await WatchlistItem.find(WatchlistItem.watchlist_id == wl.id).sort("sort_order").to_list()
+        # Drop expired derivatives so a dead contract never renders in a list.
+        items = await _drop_expired_items(items)
         out.append(
             {
                 "id": str(wl.id),
@@ -466,6 +510,10 @@ async def quotes(watchlist_id: str, user: CurrentUser):
 
     blocked = await get_user_blocked_symbols(user.id)
     items = [it for it in items if not is_symbol_blocked_for(it.symbol or "", blocked)]
+
+    # Hide EXPIRED derivatives — an expired NIFTY…PE quotes frozen and pops
+    # "Market is closed for this instrument"; it must not linger in favourites.
+    items = await _drop_expired_items(items)
 
     quotes = await market_data_service.get_quotes([it.instrument_token for it in items])
     return APIResponse(
