@@ -745,12 +745,12 @@ async def _enforce_for_user(
             _zc_reason = f"stop_out_zero_capital_loss={floating_loss:.2f}"
             _zc_tasks = []
             for p in open_positions:
-                seg = getattr(p, "segment_type", None) or getattr(
-                    p.instrument, "segment", None
-                )
-                if _segment_closed(str(seg) if seg else None):
-                    continue
-                if not _ltp_ok(p.instrument.token):
+                # Forced liquidation — flatten every position regardless of
+                # market hours (see the main stop-out loop below for the full
+                # rationale). Guard on the fill price p.ltp so a closed-market
+                # NIFTY/NFO leg still closes at its last mark and its margin is
+                # released, while a genuinely priceless (0) feed is skipped.
+                if p.ltp is None or to_decimal(p.ltp) <= 0:
                     continue
                 # Same trigger-price pin as the main stop-out below — book
                 # at the close-side mark the breach saw, not a later tick.
@@ -882,12 +882,24 @@ async def _enforce_for_user(
         _so_reason = f"stop_out_loss_{loss_pct:.2f}>={stop_pct}"
         _so_tasks = []
         for p in open_positions:
-            seg = getattr(p, "segment_type", None) or getattr(
-                p.instrument, "segment", None
-            )
-            if _segment_closed(str(seg) if seg else None):
-                continue
-            if not _ltp_ok(p.instrument.token):
+            # A stop-out is a FORCED liquidation — unlike a USER close it must
+            # flatten EVERY open position, INCLUDING ones whose market is
+            # currently closed (NFO/NSE after 15:30, MCX after 23:30, weekends).
+            # The old `_segment_closed` skip left a closed-segment leg (e.g. a
+            # NIFTY option after 15:30) OPEN with its margin still LOCKED while
+            # the rest of the book was squared off — the reported "stop-out ke
+            # baad bhi NIFTY position + uska margin band nahi hua". We book the
+            # close at the position's last mark `p.ltp`; the matching engine
+            # fills a squareoff carrying expected_price EXACTLY (see
+            # matching_engine.py execute_market_order), so a closed-market close
+            # settles at that mark and never at 0.
+            #
+            # Guard on the FILL price itself (p.ltp > 0), not `_ltp_ok`'s live
+            # cache: a just-closed NFO token is often absent from this tick's
+            # ltp_map yet still carries a valid last `p.ltp`. A 0/None p.ltp is
+            # the genuinely-priceless STALE_FEED case — skipping it avoids the
+            # 250 ms squareoff respam that guard was originally added for.
+            if p.ltp is None or to_decimal(p.ltp) <= 0:
                 continue
             # Book the stop-out close at the SAME close-side mark the breach
             # was computed against (`p.ltp` was just set by
