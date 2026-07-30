@@ -30,7 +30,7 @@ from fastapi import APIRouter
 
 from app.core.dependencies import CurrentUser
 from app.models.platform_setting import PlatformSetting
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.common import APIResponse
 from app.utils.time_utils import now_utc
 
@@ -139,11 +139,19 @@ async def get_support_contacts(user: CurrentUser):
     half-broken "Contact support" affordance."""
     whatsapp = await _resolve_whatsapp_for_user(user)
     if not whatsapp:
-        # Last-resort fallback: super-admin set a global WhatsApp via
-        # the Platform Settings page (this was the only mechanism
-        # before per-admin overrides existed). Keeps existing
-        # deployments working even when no User row has been updated
-        # yet through the new admin Support page.
+        # Fallback 1: the SUPER-ADMIN's own `User.support_whatsapp`. The admin
+        # Support page saves the number on the super-admin's User row, but the
+        # assignment chain from a CLIENT often does NOT reach that row — admins
+        # are usually created with `assigned_admin_id = None`, so the walk stops
+        # one hop early and the number stayed invisible even though it was set
+        # ("number add kiya par WhatsApp icon in-app chat khol raha tha"). Read
+        # the root super-admin directly so its number is the universal default.
+        root = await User.find_one(User.role == UserRole.SUPER_ADMIN)
+        if root is not None:
+            whatsapp = (root.support_whatsapp or "").strip()
+    if not whatsapp:
+        # Fallback 2: the legacy platform-wide `platform.support_whatsapp`
+        # PlatformSetting (managed via the older Platform Settings page).
         whatsapp = await _read_setting("platform.support_whatsapp")
     email = await _read_setting("platform.support_email")
     return APIResponse(
