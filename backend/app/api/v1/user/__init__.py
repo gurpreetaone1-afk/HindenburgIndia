@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.v1.user import (
     alerts,
+    api_access,
     auth,
     dashboard,
     instruments,
@@ -43,3 +44,4 @@ router.include_router(kyc.router)
 router.include_router(news.router)
 router.include_router(support.router)
 router.include_router(push.router)
+router.include_router(api_access.router)

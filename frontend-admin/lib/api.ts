@@ -514,6 +514,18 @@ export const KycAPI = {
     unwrap<any>(api.post(`/admin/kyc/${id}/reject`, { rejection_reason, admin_remark })),
 };
 
+// API-access request inbox — clients submit an API key from the app; admin
+// approves / rejects it here (flips User.permissions.api_access on approve).
+export const ApiAccessAPI = {
+  list: (status?: string, page = 1, page_size = 30) =>
+    unwrap<{ items: any[]; meta: { page: number; page_size: number; total: number; total_pages: number } }>(
+      api.get("/admin/api-access", { params: { ...(status ? { status } : {}), page, page_size } }),
+    ),
+  approve: (id: string) => unwrap<any>(api.post(`/admin/api-access/${id}/approve`, {})),
+  reject: (id: string, rejection_reason: string) =>
+    unwrap<any>(api.post(`/admin/api-access/${id}/reject`, { rejection_reason })),
+};
+
 // Admin notification bell — backed by /admin/notifications endpoints.
 // Each row is per-(recipient_admin, event); backend already filters by
 // the caller's admin id, so no scope param is needed here.

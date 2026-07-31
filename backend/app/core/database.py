@@ -86,6 +86,7 @@ def _document_models() -> list[type["Document"]]:
         WdRule,
         WithdrawalRequest,
     )
+    from app.models.api_access import ApiAccessRequest
     from app.models.user import User, UserSegment
     from app.models.wallet import Wallet
     from app.models.push_subscription import PushSubscription
@@ -119,6 +120,7 @@ def _document_models() -> list[type["Document"]]:
         DepositRequest,
         WithdrawalRequest,
         SettlementRequest,
+        ApiAccessRequest,
         WdRule,
         SuperAdminWdRule,
         SubAdminWdRule,

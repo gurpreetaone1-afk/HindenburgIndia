@@ -252,6 +252,11 @@ export function AdminWsBridge() {
             qc.invalidateQueries({ queryKey: ["admin", "users"] });
             qc.invalidateQueries({ queryKey: ["admin", "dashboard"] });
             break;
+          case "api_access_update":
+            // API Access inbox — new client submissions + approve/reject
+            // echoes. Refetch the queue so it updates without a manual poll.
+            qc.invalidateQueries({ queryKey: ["admin", "api-access"] });
+            break;
           case "pnl_sharing_update":
             // Refetch all P&L sharing data (list, agreement detail, report
             // rows, settlement history, me/agreement) so the live SharingCard

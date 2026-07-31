@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.v1.admin import (
     accounts,
+    api_access,
     auth,
     branding,
     brokerage,
@@ -60,3 +61,4 @@ router.include_router(notifications.router)
 router.include_router(support.router)
 router.include_router(branding.router)
 router.include_router(push.router)
+router.include_router(api_access.router)
