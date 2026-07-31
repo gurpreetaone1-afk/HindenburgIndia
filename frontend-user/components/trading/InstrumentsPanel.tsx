@@ -139,7 +139,6 @@ export function InstrumentsPanel({ onClose }: Props) {
         // for them (crypto runs on the free Binance feed instead). The
         // bucket definitions above are kept intact so re-enabling later is
         // a one-line change; only their visibility is gated here.
-        if (["forex", "stocks", "indices", "commodities"].includes(b.key)) return false;
         const rows = b.adminRows ?? [];
         // Core (Favorites / All) buckets have no `adminRows` — always visible.
         if (rows.length === 0) return true;
