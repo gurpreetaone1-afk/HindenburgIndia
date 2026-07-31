@@ -12,7 +12,11 @@ import { BrandingProvider } from "@/lib/branding-context";
 // logout flow can wipe it (a shared device must not show the previous user's
 // balance / positions). Bump the version suffix to bust every client's cache
 // after a breaking schema change.
-export const RQ_CACHE_KEY = "mp-rq-cache-v1";
+// v2: one-time bust so every client drops a stale persisted `segment-settings/
+// inactive` list (the INDICES/STOCKS/COMMODITIES/FOREX chips were cached as
+// blocked before those segments were activated, and the persisted copy kept
+// hiding them). Next load refetches fresh → the chips reappear.
+export const RQ_CACHE_KEY = "mp-rq-cache-v2";
 
 function ThemedToaster() {
   const { resolvedTheme } = useTheme();
