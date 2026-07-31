@@ -241,10 +241,4 @@ async def list_inactive_admin_rows(user: CurrentUser):
     to the user-side chip filter.
     """
     rows = await netting_service.inactive_admin_rows(user_id=user.id)
-    import logging as _dbglog
-    _dbglog.getLogger("app").warning(
-        "DBG_INACTIVE user=%s code=%s admin=%s brokers=%s result=%s",
-        user.id, getattr(user, "user_code", None), getattr(user, "assigned_admin_id", None),
-        getattr(user, "broker_ancestry", None), sorted(rows),
-    )
     return APIResponse(data=sorted(rows))
