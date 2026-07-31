@@ -798,14 +798,29 @@ def _yahoo_symbol_for(token: str) -> str | None:
         if t.startswith(pref):
             t = t[len(pref):]
             break
+    # Metals / energy — Yahoo's forex-style "XAUUSD=X" returns ZERO candles,
+    # so map to its continuous-futures symbols (GC=F etc.) which DO serve
+    # history. Checked BEFORE the 6-alpha forex branch, which would otherwise
+    # grab "XAUUSD" and hand back the empty "=X" symbol.
+    if t in _COMMODITY_YF:
+        return _COMMODITY_YF[t]
     # Yahoo forex symbols are 6 alpha chars + "=X".
     if len(t) == 6 and t.isalpha():
         if t in _YAHOO_FX_PAIRS or t.endswith("USD") or t.startswith("USD") or t.endswith("INR"):
             return f"{t}=X"
-    # Spot metals: XAUUSD / XAGUSD / XPTUSD / XPDUSD.
-    if t in {"XAUUSD", "XAGUSD", "XPTUSD", "XPDUSD"}:
-        return f"{t}=X"
     return None
+
+
+_COMMODITY_YF = {
+    "XAUUSD": "GC=F", "GOLD": "GC=F",
+    "XAGUSD": "SI=F", "SILVER": "SI=F",
+    "XPTUSD": "PL=F", "PLATINUM": "PL=F",
+    "XPDUSD": "PA=F", "PALLADIUM": "PA=F",
+    "XCUUSD": "HG=F", "COPPER": "HG=F",
+    "USOIL": "CL=F", "WTI": "CL=F", "CRUDE": "CL=F", "CRUDEOIL": "CL=F",
+    "UKOIL": "BZ=F", "BRENT": "BZ=F",
+    "NATGAS": "NG=F", "NATURALGAS": "NG=F",
+}
 
 
 # Yahoo's chart endpoint accepts interval=1m/2m/5m/15m/30m/60m/90m/1h/1d/...
