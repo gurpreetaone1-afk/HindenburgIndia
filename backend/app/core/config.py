@@ -197,6 +197,7 @@ class Settings(BaseSettings):
     METAAPI_REGION: str = ""            # optional MetaAPI region (e.g. "new-york")
     METAAPI_SYMBOLS: str = ""           # blank → forex+metals+energy+indices defaults
     METAAPI_SYMBOL_MAP: str = ""        # "PLATFORM:MT,..." per-broker symbol aliases
+    METAAPI_MAX_SYMBOLS: int = 24       # per-account subscription cap (raise for stocks)
     # International equities subscribe through Infoway's dedicated `stock`
     # WebSocket business channel (US / HK / A-share coverage). Indices
     # share the `common` channel with forex/metals/energy. Both are
