@@ -57,7 +57,7 @@ export default function TwoFAEnrollPage() {
         <div className="mb-4 grid size-12 place-items-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/15">
           <ShieldCheck className="size-5" />
         </div>
-        <h2 className="text-3xl font-bold tracking-tight">
+        <h2 className="text-[1.75rem] font-semibold leading-tight tracking-tight lg:text-[2rem]">
           Enable two-factor authentication
         </h2>
         <p className="text-sm text-muted-foreground">
@@ -117,14 +117,14 @@ export default function TwoFAEnrollPage() {
                 placeholder="000000"
                 value={code}
                 onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
-                className="h-12 rounded-xl border-border/60 bg-muted/30 pl-10 text-center font-mono text-lg tracking-[0.5em] transition-colors focus:border-primary/50 focus:bg-background"
+                className="auth-input pl-10 text-center font-mono text-lg tracking-[0.5em]"
               />
             </div>
           </div>
 
           <Button
             onClick={enable}
-            className="h-12 w-full rounded-xl text-sm font-semibold shadow-lg shadow-primary/20"
+            className="auth-submit"
             loading={busy}
             disabled={code.length !== 6}
           >

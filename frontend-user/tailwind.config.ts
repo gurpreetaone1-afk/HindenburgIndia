@@ -34,6 +34,25 @@ const config: Config = {
         info: { DEFAULT: "hsl(var(--info))", foreground: "hsl(var(--info-foreground))" },
         atm: { DEFAULT: "hsl(var(--atm))", foreground: "hsl(var(--atm-foreground))" },
 
+        // ── Brand gold ramp ────────────────────────────────────────────────────
+        // The landing page has always *used* `gold-50/100/…/400` (eyebrow pills,
+        // hairline borders, decorative blurs) but the scale itself was never
+        // declared, so every one of those utilities compiled to nothing and the
+        // accents rendered invisible. Declared here around the brand gold
+        // (#E6B839 = gold-400) so the existing markup finally paints.
+        gold: {
+          50: "#fdf9ed",
+          100: "#f9f0d2",
+          200: "#f3e1a5",
+          300: "#eccd6e",
+          400: "#E6B839",
+          500: "#d9a521",
+          600: "#b9821b",
+          700: "#935f19",
+          800: "#7a4e1b",
+          900: "#674118",
+        },
+
         // ── Hindenburg India marketing palette (LOCKED design system) ──────────
         // Scoped to the marketing pages via `.mp-scope` (light default) and
         // flipped to the dark palette inside `.mp-dark` sections. Stored as

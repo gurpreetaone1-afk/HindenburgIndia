@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Hindenburg India — India's Modern Multi-Segment Trading Platform",
+  title: "Hindenburg India — Trade Every Indian Market",
   description:
-    "Trade NSE, BSE, MCX, currency, crypto and global forex on one fast terminal. Flat ₹20 brokerage, real-time risk controls, transparent statutory breakdown.",
+    "Equity, F&O, commodities and currency on one account. Flat ₹20 per order, zero brokerage on delivery, transparent margin and sub-50ms fills.",
 };
 
 export default function LandingLayout({ children }: { children: React.ReactNode }) {

@@ -8,7 +8,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Check, Eye, EyeOff, X, User, Mail, Phone, Lock } from "lucide-react";
+import { Check, Eye, EyeOff, X } from "lucide-react";
 import { AuthAPI, ApiError } from "@/lib/api";
 import { useAuthStore } from "@/stores/authStore";
 import { Button } from "@/components/ui/button";
@@ -198,80 +198,71 @@ function RegisterPageInner() {
   }
 
   return (
-    <div className="space-y-4 sm:space-y-6">
-      {/* Header — hidden on mobile (tab bar already says "Register"),
-          visible on desktop where the tab bar is absent. */}
-      <div className="hidden space-y-1.5 lg:block">
-        <h2 className="text-3xl font-bold tracking-tight">Create account</h2>
+    <div className="space-y-6">
+      <div className="space-y-2">
+        <h2 className="text-[1.75rem] font-semibold leading-tight tracking-tight lg:text-[2rem]">
+          Open your account
+        </h2>
         <p className="text-sm text-muted-foreground">
-          Open your trading account in 60 seconds.
+          PAN and Aadhaar, fully online — most accounts are approved the same day.
         </p>
       </div>
 
       {/* Form */}
       {step === "form" && (
-      <form onSubmit={form.handleSubmit(onRequestOtp)} className="space-y-3.5 sm:space-y-5">
+      <form onSubmit={form.handleSubmit(onRequestOtp)} className="space-y-4">
         {/* Full name */}
-        <div className="space-y-1.5">
-          <Label htmlFor="full_name" className="text-sm font-medium">Full name</Label>
-          <div className="relative">
-            <User className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              id="full_name"
-              placeholder="Rohan Sharma"
-              autoComplete="name"
-              className="h-10 rounded-xl border-border/60 bg-muted/40 pl-10 text-sm transition-colors focus:border-primary/50 focus:bg-background sm:h-12"
-              {...form.register("full_name")}
-            />
-          </div>
+        <div className="space-y-2">
+          <Label htmlFor="full_name" className="text-sm font-medium text-foreground">Your name</Label>
+          <Input
+            id="full_name"
+            placeholder="Rohan Sharma"
+            autoComplete="name"
+            className="auth-input"
+            {...form.register("full_name")}
+          />
           {form.formState.errors.full_name && (
             <p className="text-xs text-destructive">{form.formState.errors.full_name.message}</p>
           )}
         </div>
 
-        {/* Email + Mobile */}
-        <div className="grid grid-cols-2 gap-3 sm:gap-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="email" className="text-sm font-medium">Email</Label>
-            <div className="relative">
-              <Mail className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground sm:left-3.5 sm:size-4" />
-              <Input
-                id="email"
-                type="email"
-                placeholder="you@example.com"
-                autoComplete="email"
-                className="h-10 rounded-xl border-border/60 bg-muted/40 pl-9 text-sm transition-colors focus:border-primary/50 focus:bg-background sm:h-12 sm:pl-10"
-                {...form.register("email")}
-              />
-            </div>
-            {form.formState.errors.email && (
-              <p className="text-xs text-destructive">{form.formState.errors.email.message}</p>
-            )}
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="mobile" className="text-sm font-medium">Mobile</Label>
-            <div className="relative">
-              <Phone className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground sm:left-3.5 sm:size-4" />
-              <Input
-                id="mobile"
-                inputMode="numeric"
-                maxLength={10}
-                autoComplete="tel"
-                placeholder="9999900000"
-                className="h-10 rounded-xl border-border/60 bg-muted/40 pl-9 text-sm transition-colors focus:border-primary/50 focus:bg-background sm:h-12 sm:pl-10"
-                {...form.register("mobile")}
-              />
-            </div>
-            {form.formState.errors.mobile && (
-              <p className="text-xs text-destructive">{form.formState.errors.mobile.message}</p>
-            )}
-          </div>
+        {/* Email */}
+        <div className="space-y-2">
+          <Label htmlFor="email" className="text-sm font-medium text-foreground">Your email</Label>
+          <Input
+            id="email"
+            type="email"
+            placeholder="you@example.com"
+            autoComplete="email"
+            className="auth-input"
+            {...form.register("email")}
+          />
+          {form.formState.errors.email && (
+            <p className="text-xs text-destructive">{form.formState.errors.email.message}</p>
+          )}
+        </div>
+
+        {/* Mobile */}
+        <div className="space-y-2">
+          <Label htmlFor="mobile" className="text-sm font-medium text-foreground">Mobile</Label>
+          <Input
+            id="mobile"
+            inputMode="numeric"
+            maxLength={10}
+            autoComplete="tel"
+            placeholder="9999900000"
+            className="auth-input"
+            {...form.register("mobile")}
+          />
+          {form.formState.errors.mobile && (
+            <p className="text-xs text-destructive">{form.formState.errors.mobile.message}</p>
+          )}
         </div>
 
         {/* Password */}
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <Label htmlFor="password" className="text-sm font-medium">Password</Label>
+            <Label htmlFor="password" className="text-sm font-medium text-foreground">Password</Label>
             {pwd && (
               <span
                 className={cn(
@@ -285,13 +276,12 @@ function RegisterPageInner() {
           </div>
 
           <div className="relative">
-            <Lock className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               id="password"
               type={showPwd ? "text" : "password"}
               placeholder="e.g. Abc@1234"
               autoComplete="new-password"
-              className="h-10 rounded-xl border-border/60 bg-muted/40 pl-10 pr-12 text-sm transition-colors focus:border-primary/50 focus:bg-background sm:h-12"
+              className="auth-input pr-11"
               {...form.register("password", {
                 onBlur: () => setPwdFocused(false),
               })}
@@ -362,29 +352,29 @@ function RegisterPageInner() {
           )}
         </div>
 
-        <Button
-          type="submit"
-          className="h-10 w-full rounded-xl border-0 bg-gradient-to-r from-[#16A34A] to-[#22C55E] text-sm font-semibold text-white shadow-lg shadow-green-500/30 transition-opacity hover:opacity-95 sm:h-12"
-          loading={form.formState.isSubmitting}
-        >
-          Continue
+        <Button type="submit" className="auth-submit" loading={form.formState.isSubmitting}>
+          Get started
         </Button>
       </form>
       )}
 
       {/* OTP verification step */}
       {step === "otp" && (
-        <form onSubmit={onVerify} className="space-y-4 sm:space-y-5">
-          <div className="space-y-1.5">
-            <h2 className="text-xl font-bold tracking-tight sm:text-2xl">Verify your email</h2>
+        <form onSubmit={onVerify} className="space-y-4">
+          <div className="space-y-2">
+            <h2 className="text-[1.75rem] font-semibold leading-tight tracking-tight">
+              Verify your email
+            </h2>
             <p className="text-sm text-muted-foreground">
               Enter the 6-digit code we sent to{" "}
               <span className="font-medium text-foreground">{pending?.email}</span>.
             </p>
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="otp" className="text-sm font-medium">Verification code</Label>
+          <div className="space-y-2">
+            <Label htmlFor="otp" className="text-sm font-medium text-foreground">
+              Verification code
+            </Label>
             <Input
               id="otp"
               inputMode="numeric"
@@ -393,16 +383,12 @@ function RegisterPageInner() {
               placeholder="••••••"
               value={otp}
               onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
-              className="h-12 rounded-xl border-border/60 bg-muted/40 text-center text-lg font-semibold tracking-[0.5em] transition-colors focus:border-primary/50 focus:bg-background"
+              className="auth-input text-center text-lg font-semibold tracking-[0.5em]"
               autoFocus
             />
           </div>
 
-          <Button
-            type="submit"
-            className="h-10 w-full rounded-xl border-0 bg-gradient-to-r from-[#16A34A] to-[#22C55E] text-sm font-semibold text-white shadow-lg shadow-green-500/30 transition-opacity hover:opacity-95 sm:h-12"
-            loading={verifying}
-          >
+          <Button type="submit" className="auth-submit" loading={verifying}>
             Verify &amp; create account
           </Button>
 
@@ -430,7 +416,7 @@ function RegisterPageInner() {
       {step === "form" && (
       <p className="text-center text-sm text-muted-foreground">
         Already have an account?{" "}
-        <Link href="/login" className="font-semibold text-primary hover:text-primary/80">
+        <Link href="/login" className="font-semibold text-foreground underline-offset-4 hover:underline">
           Sign in
         </Link>
       </p>
