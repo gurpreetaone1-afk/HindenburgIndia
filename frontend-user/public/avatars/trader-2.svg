@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80" role="img" aria-label="Illustrated trader avatar">
+  <defs>
+    <clipPath id="a2"><circle cx="40" cy="40" r="40"/></clipPath>
+  </defs>
+  <g clip-path="url(#a2)">
+    <rect width="80" height="80" fill="#e7edf8"/>
+    <!-- shoulders / kurta -->
+    <path d="M40 50c-15 0-27 10-29 24h58c-2-14-14-24-29-24z" fill="#0b6e97"/>
+    <path d="M33 52l7 6 7-6" stroke="#e8eef7" stroke-width="2" fill="none" stroke-linecap="round"/>
+    <!-- neck -->
+    <path d="M34 42h12v10a6 6 0 0 1-12 0z" fill="#c98a52"/>
+    <!-- head -->
+    <ellipse cx="40" cy="31" rx="13.5" ry="15.5" fill="#dda06a"/>
+    <!-- hair: centre part + bun -->
+    <circle cx="55" cy="24" r="6" fill="#1c1710"/>
+    <path d="M26.5 31c0-10 6-16 13.5-16S53.5 21 53.5 31c0-6-3-9-6-10-2 4-5 5-7.5 5s-5.5-1-7.5-5c-3 1-6 4-6 10z" fill="#1c1710"/>
+    <!-- bindi -->
+    <circle cx="40" cy="22.5" r="1.4" fill="#b4232a"/>
+    <!-- eyes + smile -->
+    <circle cx="35" cy="31" r="1.5" fill="#1c1710"/>
+    <circle cx="45" cy="31" r="1.5" fill="#1c1710"/>
+    <path d="M36 37q4 3 8 0" stroke="#8d5a2f" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+    <!-- earrings -->
+    <circle cx="26.5" cy="33" r="1.3" fill="#e0b04a"/>
+    <circle cx="53.5" cy="33" r="1.3" fill="#e0b04a"/>
+  </g>
+</svg>

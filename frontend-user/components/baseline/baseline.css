@@ -1,0 +1,928 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Hindenburg India — marketing site design system.
+
+   The `bl-` prefix is historical (the layout started from a template called
+   Baseline); it is just a namespace now. Everything is scoped under `.bl-root`
+   (or `.bl-portal` for the overlays that render at body level) so this cannot
+   leak into the trading app's styles.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@import url("https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600&display=swap");
+
+/* ── Adaptive rem grid (16 * 100 / baseWidth vw) ─────────────────────────── */
+/* The marker class is `bl-scale`, NOT `bl-grid`. It used to be `bl-grid`, which
+   collided with the `.bl-grid` card-grid component below — so the card grid's
+   `display:grid` and `margin-top:4.5rem` were being applied to <html> itself.
+   That produced a phantom 72px gap above the page and made <body> a grid item
+   sized to max-content (the mobile horizontal-scroll bug). Keep these names
+   distinct. */
+html.bl-scale { font-size: 16px; }
+@media (max-width: 1920px) { html.bl-scale { font-size: 0.833333vw; } }
+@media (max-width: 1440px) { html.bl-scale { font-size: 1.111111vw; } }
+@media (max-width: 1024px) { html.bl-scale { font-size: 1.5625vw; } }
+/* Phone band (≤768). The raw template ratio is 4.4444vw — 16px at its 360px
+   base — but left unbounded it renders 28px base type on a 640px phone and
+   only 14px on a 320px one. Clamped, so the type stays in a readable 14–17px
+   band across every phone and the layout gains content per row as the screen
+   grows, instead of just zooming. Everything else here is rem, so this one
+   line sets the scale for the entire mobile design. */
+@media (max-width: 768px)  { html.bl-scale { font-size: clamp(14px, 4.444444vw, 17px); } }
+
+.bl-root,
+.bl-portal {
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  --brand: #2563c9;
+  --brand-deep: #0f2f63;
+  --brand-light: #5790e6;
+  --accent-teal: #0b6e97;
+  --surface: #f4f4f4;
+  --surface-card: #ffffff;
+  --ink: #0a0a0a;
+  --ink-soft: #565d6d;
+  --ghost: #d7dae1;
+  --hairline: #e6e8ec;
+  --on-brand: #ffffff;
+  --radius-card: 1.5rem;
+  --radius-card-lg: 2rem;
+  --radius-pill: 62.5rem;
+
+  /* Max line of content. Sections keep their side padding on narrow screens
+     and centre inside this measure once the viewport is wider. Sized so the
+     text starts close to the card edge rather than sitting far inside it —
+     the outer breathing room comes from --shell, not from here. */
+  --container: 91.5rem;
+  --gutter: 1.5rem;
+  --gutter-lg: 2.5rem;
+
+  /* Outer page width — caps the rounded bands themselves. */
+  --shell: 111.5rem;
+
+  font-family: "Onest", system-ui, sans-serif;
+  font-weight: 400;
+  font-size: 1rem;
+  line-height: 1.6;
+  letter-spacing: -0.005em;
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Element resets are wrapped in :where() so they carry ZERO specificity from
+   the scope class. The previous form (`.bl-root button`, 0-1-1) outranked every
+   component class (`.bl-pill`, 0-1-0), so `font: inherit` and `padding: 0`
+   silently flattened every button — pills lost their padding and type size,
+   and the FAQ rows collapsed to 24px. Components must always win here. */
+:where(.bl-root, .bl-portal) *,
+:where(.bl-root, .bl-portal) *::before,
+:where(.bl-root, .bl-portal) *::after { box-sizing: border-box; }
+
+.bl-root, .bl-portal { box-sizing: border-box; }
+:where(.bl-root, .bl-portal) :where(h1,h2,h3,p,ul,ol,figure,blockquote,dl,dd) { margin: 0; }
+:where(.bl-root, .bl-portal) :where(ul,ol) { list-style: none; padding: 0; }
+:where(.bl-root, .bl-portal) img { display: block; max-width: 100%; }
+:where(.bl-root, .bl-portal) a { color: inherit; text-decoration: none; }
+:where(.bl-root, .bl-portal) button {
+  cursor: pointer; font: inherit; color: inherit; background: none; border: none; padding: 0;
+}
+:where(.bl-root, .bl-portal) :where(input, textarea) { font: inherit; }
+.bl-root :focus-visible, .bl-portal :focus-visible {
+  outline: 2px solid var(--brand-light); outline-offset: 2px;
+}
+.bl-sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* Page frame — the inset is what gives sections their rounded card framing.
+   `--shell` caps the whole page (every rounded band, including the hero), so on
+   a wide monitor the cards sit inside a clear margin instead of running to the
+   window edge. 111.5rem, i.e. ~80px of breathing room at 1920. Below
+   that width the shell is full-bleed and only the small inset remains. */
+.bl-root {
+  display: block; width: 100%; max-width: var(--shell); margin-inline: auto;
+  overflow-x: clip; padding: 0.5rem; background: var(--background);
+}
+@media (min-width: 769px) { .bl-root { padding: 0.75rem; } }
+
+/* Every band uses the same rule: at least a gutter of side padding, and more
+   than that once the viewport exceeds --container, which centres the content. */
+.bl-hero-title-wrap,
+.bl-hero-bottom,
+.bl-trust,
+.bl-programs,
+.bl-facilities,
+.bl-stats,
+.bl-testimonials,
+.bl-footer,
+.bl-section,
+.bl-page-hero {
+  padding-inline: max(var(--gutter), (100% - var(--container)) / 2);
+}
+@media (min-width: 769px) {
+  .bl-hero-title-wrap,
+  .bl-hero-bottom,
+  .bl-trust,
+  .bl-programs,
+  .bl-facilities,
+  .bl-stats,
+  .bl-testimonials,
+  .bl-footer,
+  .bl-section,
+  .bl-page-hero {
+    padding-inline: max(var(--gutter-lg), (100% - var(--container)) / 2);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   REVEAL PRIMITIVES
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-clip { display: inline-block; overflow: hidden; vertical-align: bottom; padding-bottom: 0.14em; }
+.bl-clip > span { display: inline-block; transform: translateY(115%); opacity: 0; will-change: transform, opacity; }
+.bl-clip.is-in > span { transform: translateY(0); opacity: 1; }
+
+.bl-line { display: block; overflow: hidden; padding-bottom: 0.14em; }
+.bl-line > span { display: block; transform: translateY(115%); opacity: 0; will-change: transform, opacity; }
+.bl-line.is-in > span { transform: translateY(0); opacity: 1; }
+
+.bl-fade-word { display: inline-block; transform: translateY(18px); opacity: 0; will-change: transform, opacity; }
+.bl-fade-word.is-in { transform: translateY(0); opacity: 1; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SHARED COMPONENTS
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-eyebrow {
+  display: inline-flex; align-items: center; gap: 0.625rem; font-size: 0.875rem; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-soft);
+}
+.bl-eyebrow::before {
+  content: ""; width: 0.375rem; height: 0.375rem; border-radius: var(--radius-pill);
+  background: var(--brand); flex: none;
+}
+.bl-eyebrow.light { color: rgba(255, 255, 255, 0.82); }
+.bl-eyebrow.light::before { background: var(--brand-light); }
+
+.bl-pill {
+  display: inline-flex; align-items: center; gap: 0.5rem; border-radius: var(--radius-pill);
+  padding: 1rem 2rem; font-size: 1rem; font-weight: 500; text-transform: uppercase;
+  letter-spacing: 0.05em; transition: background-color 0.3s, color 0.3s, border-color 0.3s;
+}
+.bl-pill svg { width: 1.125rem; height: 1.125rem; will-change: transform; }
+.bl-pill.light { background: #fff; color: var(--brand-deep); }
+.bl-pill.light:hover { background: var(--brand-light); color: #fff; }
+.bl-pill.solid { background: var(--ink); color: #fff; }
+.bl-pill.solid:hover { background: var(--brand-deep); }
+.bl-pill.outline { border: 1px solid currentColor; color: var(--ink); }
+.bl-pill.outline:hover { background: var(--ink); color: #fff; }
+.bl-pill:disabled { opacity: 0.55; cursor: default; }
+
+.bl-arrow-btn {
+  width: 3rem; height: 3rem; display: grid; place-items: center; border-radius: var(--radius-pill);
+  border: 1px solid transparent; transition: background-color 0.3s, border-color 0.3s, color 0.3s;
+}
+.bl-arrow-btn svg { width: 1.25rem; height: 1.25rem; will-change: transform; }
+.bl-arrow-btn.outline { border-color: var(--hairline); background: transparent; color: var(--ink); }
+.bl-arrow-btn.outline:hover { border-color: var(--ink); }
+.bl-arrow-btn.solid { background: var(--ink); border-color: var(--ink); color: #fff; }
+.bl-arrow-btn.solid:hover { background: var(--brand-deep); }
+@media (min-width: 769px) { .bl-arrow-btn { width: 3.5rem; height: 3.5rem; } }
+
+.bl-dots { display: flex; align-items: center; gap: 0.5rem; }
+.bl-dots button { padding: 0.375rem; display: block; }
+.bl-dots button > span {
+  display: block; height: 0.375rem; width: 0.375rem; border-radius: var(--radius-pill);
+  transition: width 0.35s ease, background-color 0.35s ease;
+}
+.bl-dots.dark button > span { background: var(--ghost); }
+.bl-dots.dark button[aria-current] > span { width: 1.25rem; background: var(--ink); }
+.bl-dots.light button > span { background: rgba(255, 255, 255, 0.4); }
+.bl-dots.light button[aria-current] > span { width: 1.25rem; background: #fff; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SITE HEADER — the real page header. It sits in the white page margin above
+   the hero card, so it reads in ink rather than white-on-navy. Brand + nav on
+   the left, Login / Sign up on the right.
+   ══════════════════════════════════════════════════════════════════════════ */
+/* Deliberately NOT on the --container measure the sections use. The header
+   spans the full page shell so the brand starts on the hero card's left edge
+   and Open Account ends on its right edge, instead of being inset by ~180px. */
+.bl-site-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 1.5rem;
+  padding-inline: var(--gutter); padding-block: 1.25rem;
+  font-size: 1rem; color: var(--ink); position: relative; z-index: 6;
+}
+@media (min-width: 769px) { .bl-site-header { padding-block: 1.5rem 1.75rem; } }
+/* Once the shell is wide enough to show the card's rounded corners, drop the
+   gutter entirely so the header lines up flush with those edges. */
+@media (min-width: 1024px) { .bl-site-header { padding-inline: 0; } }
+
+.bl-sh-left { display: flex; align-items: center; gap: 2.75rem; min-width: 0; }
+.bl-sh-brand { flex: none; }
+.bl-sh-brand .bl-brand { font-size: 1.25rem; }
+.bl-sh-brand .bl-brand svg { width: 1.625rem; height: 1.625rem; }
+/* These two beat the shared `.bl-brand` mobile rule on specificity, so the
+   small-screen size has to be restated here or the wordmark crowds the burger. */
+@media (max-width: 768px) {
+  .bl-sh-brand .bl-brand { font-size: 0.9375rem; }
+  .bl-sh-brand .bl-brand svg { width: 1.125rem; height: 1.125rem; }
+}
+
+.bl-sh-nav { display: none; align-items: center; gap: 0.25rem; }
+/* Items are chips now (padded, pill-shaped) rather than bare text, so the row
+   gap is small — the breathing room comes from each link's own padding. */
+.bl-sh-navlink {
+  display: inline-flex; align-items: center; gap: 0.375rem;
+  padding: 0.625rem 1rem; border-radius: var(--radius-pill);
+  color: var(--ink-soft); font-size: 1.1875rem; font-weight: 500;
+  white-space: nowrap; transition: color 0.25s, background-color 0.25s;
+}
+.bl-sh-navlink:hover { color: var(--ink); background: var(--surface); }
+.bl-sh-navlink.is-active { color: var(--brand-deep); background: rgba(37, 99, 201, 0.1); }
+.bl-sh-trigger svg { width: 0.75rem; height: 0.75rem; transition: transform 0.25s; }
+.bl-sh-group.is-open .bl-sh-trigger svg { transform: rotate(180deg); }
+.bl-sh-group.is-open .bl-sh-trigger { color: var(--ink); background: var(--surface); }
+/* Same breakpoint as the burger below — one swaps in as the other swaps out. */
+@media (min-width: 1024px) { .bl-sh-nav { display: flex; } }
+
+/* ── Dropdown ───────────────────────────────────────────────────────────── */
+/* The panel is padded away from the trigger but the wrapper keeps hover, so
+   the pointer can cross the gap without the menu closing under it. */
+.bl-sh-group { position: relative; }
+.bl-sh-dropdown {
+  position: absolute; top: 100%; left: 0; margin-top: 0.5rem; z-index: 20;
+  min-width: 20rem; padding: 0.625rem; display: flex; flex-direction: column;
+  background: var(--surface-card); border: 1px solid var(--hairline);
+  border-radius: 1.125rem; box-shadow: 0 24px 48px -24px rgba(10, 10, 10, 0.28);
+  opacity: 0; visibility: hidden; transform: translateY(-0.375rem);
+  transition: opacity 0.22s, transform 0.22s, visibility 0.22s;
+}
+.bl-sh-group.is-open .bl-sh-dropdown { opacity: 1; visibility: visible; transform: translateY(0); }
+.bl-sh-dropdown a {
+  display: flex; flex-direction: column; gap: 0.125rem;
+  padding: 0.625rem 0.75rem; border-radius: 0.75rem; transition: background-color 0.2s;
+}
+.bl-sh-dropdown a:hover { background: var(--surface); }
+.bl-sh-dd-label { font-size: 1.0625rem; font-weight: 500; color: var(--ink); }
+.bl-sh-dd-desc { font-size: 0.875rem; line-height: 1.4; color: var(--ink-soft); }
+
+.bl-sh-right { display: flex; align-items: center; gap: 1.25rem; flex: none; }
+.bl-sh-login {
+  display: none; text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: 1.0625rem; font-weight: 500; color: var(--ink); transition: color 0.25s;
+}
+.bl-sh-login:hover { color: var(--brand); }
+.bl-sh-signup {
+  display: none; align-items: center; border-radius: var(--radius-pill);
+  background: var(--brand-deep); color: #fff; padding: 0.9375rem 2rem;
+  font-size: 1rem; font-weight: 500; text-transform: uppercase;
+  letter-spacing: 0.05em; white-space: nowrap; transition: background-color 0.3s;
+}
+.bl-sh-signup:hover { background: var(--brand); }
+@media (min-width: 769px) { .bl-sh-login, .bl-sh-signup { display: inline-flex; } }
+
+.bl-sh-burger {
+  width: 3rem; height: 3rem; display: grid; place-items: center; gap: 6px;
+  border-radius: var(--radius-pill); border: 1px solid var(--hairline);
+  transition: background-color 0.3s, border-color 0.3s;
+}
+.bl-sh-burger:hover { background: var(--surface); border-color: var(--ghost); }
+.bl-sh-burger i { display: block; width: 1.25rem; height: 1px; background: var(--ink); }
+@media (min-width: 1024px) { .bl-sh-burger { display: none; } }
+
+/* Seven nav items plus both actions is a wide row. Below 1440 the adaptive rem
+   grid shrinks everything with the viewport, but the row still runs close to
+   the shell edge — tighten the chips and the CTA so it never clips. Under
+   1024 the whole nav is the burger, so nothing here has to survive further. */
+@media (max-width: 1440px) {
+  .bl-sh-left { gap: 1.75rem; }
+  .bl-sh-navlink { padding: 0.5rem 0.75rem; font-size: 1.0625rem; }
+  .bl-sh-right { gap: 0.875rem; }
+  .bl-sh-login { font-size: 1rem; }
+  .bl-sh-signup { padding: 0.8125rem 1.5rem; font-size: 0.9375rem; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   BRAND — shared by the site header, the menu overlay and the footer.
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-brand {
+  display: inline-flex; align-items: center; gap: 0.5rem; font-size: 1rem; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.2em;
+}
+.bl-brand svg { width: 1.25rem; height: 1.25rem; }
+/* At 0.2em tracking the wordmark is ~204px wide, which crowds the burger on a
+   small screen. Tighten it rather than let the header overflow. */
+@media (max-width: 768px) {
+  .bl-brand { font-size: 0.875rem; letter-spacing: 0.14em; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   HERO
+   ══════════════════════════════════════════════════════════════════════════ */
+/* `min-height`, not `height`. The template's hero holds only a headline and a
+   tagline; ours adds a kicker and two CTAs, which on a short viewport made the
+   buttons overflow the fixed height and get clipped by `overflow:hidden`.
+   With min-height the hero fills the screen but grows when the content needs it. */
+.bl-hero {
+  position: relative; isolation: isolate; overflow: hidden; border-radius: var(--radius-card-lg);
+  background: var(--brand-deep); color: #fff; display: flex; flex-direction: column;
+  min-height: max(36rem, calc(100svh - 1rem));
+}
+@media (min-width: 769px) { .bl-hero { min-height: max(36rem, calc(100svh - 1.5rem)); } }
+/* The source design puts this plate at z-index:-10 and relies on the hero's
+   `isolation:isolate` to keep it above the hero's own navy background. That
+   holds in a bare document but not inside the app shell — the plate escaped
+   the hero's stacking context and the navy painted straight over the photo.
+   An explicit 0 / 1 / 2 stack (plate → veil → content) is equivalent and
+   doesn't depend on where this section is mounted. */
+.bl-hero-plate { position: absolute; inset: 0; z-index: 0; }
+.bl-hero-plate-inner {
+  position: absolute; left: 0; right: 0; top: -16%; height: 132%; width: 100%; will-change: transform;
+}
+.bl-hero-plate-inner img { width: 100%; height: 100%; object-fit: cover; }
+.bl-hero-veil {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: linear-gradient(to bottom, rgba(15,47,99,0.65), rgba(15,47,99,0.35), rgba(15,47,99,0.75));
+}
+/* The in-card header used to sit above this and supply the top spacing. It now
+   lives outside the hero (.bl-site-header), so the wrap carries that space
+   itself — otherwise the headline hugs the top edge of the navy card. */
+.bl-hero-title-wrap { padding-block: 3.5rem 0; position: relative; z-index: 2; }
+@media (min-width: 769px) { .bl-hero-title-wrap { padding-block: 4.5rem 0; } }
+
+/* The template hard-codes 12.5vw, which was already ~10% too wide for its own
+   13-character headline; "Trade Every Market" is longer still.
+   Two values are needed rather than one: the side padding is in rem, and the
+   rem-to-viewport ratio changes at each breakpoint, so a single vw size that
+   fits at 1440 overflows at 390. These are sized to the tightest case in each
+   band (1024 for the upper, 390 for the lower). */
+/* Sized in rem, not vw. The headline now lives inside the --container measure
+   (so it lines up with the nav and every section below it), and that measure is
+   itself in rem — a vw size would ignore it and clip. "Trade Every Market" is
+   10.72em wide, so: 76rem content / 10.72 = 7.09rem max once the container is
+   engaged, and 57.5rem / 10.72 = 5.36rem below that. */
+.bl-hero-title {
+  font-size: 5.2rem; font-weight: 500; text-transform: uppercase; line-height: 0.92;
+  letter-spacing: -0.02em; white-space: nowrap;
+}
+/* "Trade Every Market" measures 10.72em. Three bands because the available
+   width is card-bound below ~1800 and container-bound above it:
+   1440 -> 83.5rem/10.72 = 7.79 max; 1920 -> 91.5rem/10.72 = 8.53 max. */
+@media (min-width: 1320px) { .bl-hero-title { font-size: 7.6rem; } }
+@media (min-width: 1800px) { .bl-hero-title { font-size: 8.4rem; } }
+/* Below 640 the root font-size jumps to 4.444vw, so the 1.5rem side padding
+   takes a much larger share of the line and no single-line size both reads as
+   a headline and fits. Let it wrap instead — the per-word clip spans are
+   inline-block, so the reveal still staggers correctly across lines. */
+@media (max-width: 768px) {
+  .bl-hero-title { font-size: 2.4rem; white-space: normal; line-height: 0.95; }
+}
+/* The bottom padding is what holds this row off the card's lower edge — the
+   row is pinned there by `margin-top: auto`, so raising the padding lifts both
+   columns (lead + ticker cluster) together. */
+.bl-hero-bottom {
+  margin-top: auto; padding-block: 0 4rem; position: relative; z-index: 2;
+  display: flex; flex-direction: column; gap: 1.5rem;
+}
+@media (min-width: 769px) {
+  .bl-hero-bottom { flex-direction: row; justify-content: space-between; align-items: flex-end; padding-block: 0 5.5rem; }
+}
+.bl-hero-tagline {
+  font-size: 2.6rem; font-weight: 500; text-transform: uppercase; line-height: 0.95;
+  letter-spacing: -0.02em; color: rgba(255, 255, 255, 0.85);
+}
+/* Both columns bottom-align at >=640, so this lifts the tagline/CTA column off
+   the card's bottom edge without moving the ticker cards with it. Left at 0
+   below 640, where the row becomes a stack and this would just add a gap. */
+@media (min-width: 769px) { .bl-hero-lead { margin-bottom: 3rem; } }
+
+.bl-hero-cluster { display: flex; align-items: flex-end; gap: 1rem; }
+
+.bl-glass {
+  border: 1px solid rgba(255, 255, 255, 0.15); background: rgba(255, 255, 255, 0.1);
+  padding: 0.75rem; border-radius: var(--radius-card);
+  box-shadow: 0 18px 40px -20px rgba(15, 47, 99, 0.2);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+}
+
+.bl-collection { display: none; width: 16rem; flex-direction: column; gap: 0.75rem; }
+@media (min-width: 769px) { .bl-collection { display: flex; } }
+.bl-coll-card { display: flex; gap: 0.75rem; will-change: transform, opacity; }
+.bl-coll-card img { width: 3.5rem; height: 3.5rem; border-radius: 0.75rem; object-fit: cover; flex: none; }
+.bl-coll-brand { font-size: 0.7rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
+.bl-coll-title { font-size: 0.7rem; text-transform: uppercase; opacity: 0.8; margin-top: 0.125rem; }
+.bl-coll-cta { font-size: 0.65rem; text-decoration: underline; margin-top: 0.375rem; display: inline-block; }
+
+/* Hero social-proof card — "5,000+ traders on the platform". */
+.bl-traders { width: 100%; max-width: 20rem; display: flex; gap: 0.75rem; align-items: stretch; }
+@media (min-width: 769px) { .bl-traders { width: 15rem; } }
+/* The cluster bottom-aligns both columns, but the ticker column ends in its
+   dots row — so the proof card used to sit a dots-height lower than the ticker
+   card. Lift it by exactly that (0.75rem gap + 1.125rem dots row) and the two
+   cards read as one line. Only from 768px, where the ticker column exists. */
+@media (min-width: 769px) { .bl-traders { margin-bottom: 1.875rem; } }
+.bl-traders-left { display: flex; flex-direction: column; justify-content: space-between; flex: 1; }
+.bl-traders-value { font-size: 2.25rem; font-weight: 500; line-height: 1; }
+.bl-traders-avatars { display: flex; }
+/* 1.25rem was too small to read a face at all — these are portraits now, so
+   they need a little more room and a light ring to separate the overlap. */
+.bl-traders-avatars img {
+  width: 1.875rem; height: 1.875rem; border-radius: var(--radius-pill);
+  border: 2px solid rgba(255, 255, 255, 0.9); display: block;
+  object-fit: cover; background: #dce6f5; flex: none;
+}
+.bl-traders-avatars img + img { margin-left: -0.625rem; }
+.bl-traders-caption { font-size: 0.8125rem; opacity: 0.85; }
+.bl-traders > img { width: 4rem; aspect-ratio: 3 / 4; border-radius: 0.75rem; object-fit: cover; flex: none; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   TRUST
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-trust {
+  position: relative; isolation: isolate; overflow: hidden;
+  background: var(--background); padding-block: 4rem;
+}
+@media (min-width: 769px) { .bl-trust { padding-block: 5rem; } }
+.bl-trust-badges { position: relative; z-index: 20; display: flex; flex-direction: column; gap: 1.5rem; }
+@media (min-width: 769px) {
+  .bl-trust-badges { flex-direction: row; justify-content: space-between; align-items: flex-start; }
+}
+.bl-pct-badge {
+  width: 7rem; height: 7rem; border-radius: var(--radius-pill); background: var(--surface);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; flex: none;
+}
+.bl-pct-badge b { font-size: 1.5rem; font-weight: 500; }
+.bl-pct-badge small {
+  font-size: 0.6rem; color: var(--ink-soft); max-width: 7em; margin-top: 0.25rem; line-height: 1.3;
+}
+@media (min-width: 769px) { .bl-pct-badge { width: 8rem; height: 8rem; } }
+.bl-badge-card {
+  max-width: 28rem; display: flex; gap: 1rem; border-radius: var(--radius-card);
+  background: var(--surface); padding: 1.25rem;
+}
+@media (min-width: 769px) { .bl-badge-card { gap: 1.25rem; padding: 1.5rem; } }
+.bl-badge-chip {
+  border-radius: 0.75rem; background: var(--background); padding: 0.5rem 1rem;
+  font-size: 1.25rem; font-weight: 500; align-self: flex-start; flex: none;
+}
+.bl-badge-card h3 { font-size: 1.125rem; font-weight: 500; }
+.bl-badge-card p { font-size: 0.75rem; color: var(--ink-soft); line-height: 1.7; margin-top: 0.5rem; }
+
+.bl-ghost-heading {
+  pointer-events: none; user-select: none; position: relative; z-index: 0;
+  max-width: 88rem; margin: 3rem auto 0; font-size: 8.2vw; font-weight: 500;
+  text-transform: uppercase; line-height: 1.02; letter-spacing: -0.02em;
+}
+.bl-ghost-row { display: flex; justify-content: space-between; }
+.bl-ghost-word { color: var(--ghost); will-change: transform; }
+.bl-ghost-word.ink { color: var(--ink); }
+.bl-ghost-word .bl-clip { padding-bottom: 0.12em; }
+
+/* `.bl-trust-figure` owns POSITIONING only — the Inview spring writes
+   `transform` on the inner `.bl-trust-figure-anim`. Writing it on the outer
+   node would clobber the centring translate and drop the card low-and-right
+   of the section middle. */
+.bl-trust-figure { position: relative; z-index: 10; width: 13rem; margin: 2rem auto 0; }
+@media (min-width: 769px) {
+  .bl-trust-figure { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 16rem; margin: 0; }
+}
+.bl-trust-figure-anim { will-change: transform, opacity; }
+.bl-trust-figure figure {
+  transform: rotate(6deg); aspect-ratio: 3 / 4; border-radius: var(--radius-card);
+  background: var(--brand); overflow: hidden; position: relative;
+}
+.bl-trust-figure img { width: 100%; height: 100%; object-fit: cover; will-change: opacity; }
+.bl-trust-figure figcaption {
+  position: absolute; left: 0.75rem; right: 0.75rem; bottom: 0.75rem; border-radius: 0.75rem;
+  background: rgba(15, 47, 99, 0.4); color: #fff;
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); padding: 0.5rem 0.75rem;
+}
+.bl-trust-figure figcaption b { font-size: 0.875rem; font-weight: 500; display: block; }
+.bl-trust-figure figcaption small { font-size: 0.65rem; opacity: 0.8; }
+
+.bl-trust-controls {
+  position: relative; z-index: 20; display: flex; align-items: center;
+  justify-content: space-between; margin-top: 3rem;
+}
+@media (min-width: 769px) { .bl-trust-controls { margin-top: 6rem; } }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PROGRAMS
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-programs { background: var(--surface); padding-block: 5.5rem; }
+@media (min-width: 769px) { .bl-programs { padding-block: 7rem; } }
+.bl-h2 {
+  font-size: 3.5rem; font-weight: 500; line-height: 1.05; letter-spacing: -0.025em;
+  margin-top: 1.5rem; max-width: 18ch;
+}
+@media (max-width: 768px) { .bl-h2 { font-size: 2.5rem; } }
+.bl-programs ul { margin-top: 3.5rem; }
+.bl-prog-row { display: block; border-top: 1px solid var(--hairline); }
+.bl-programs li:last-child .bl-prog-row { border-bottom: 1px solid var(--hairline); }
+.bl-prog-row:focus-visible { background: var(--background); }
+.bl-prog-inner { display: flex; align-items: center; gap: 1.75rem; padding: 2.25rem 0; }
+.bl-prog-idx { width: 3rem; font-size: 1rem; font-weight: 500; color: var(--ink-soft); flex: none; }
+.bl-prog-body { flex: 1; }
+.bl-prog-body h3 { font-size: 1.75rem; font-weight: 500; letter-spacing: -0.02em; }
+.bl-prog-body p { font-size: 1.125rem; color: var(--ink-soft); margin-top: 0.625rem; line-height: 1.65; }
+@media (min-width: 769px) { .bl-prog-body h3 { font-size: 2.25rem; } }
+.bl-prog-arrow {
+  width: 2.75rem; height: 2.75rem; border-radius: var(--radius-pill); border: 1px solid var(--hairline);
+  display: grid; place-items: center; flex: none; will-change: transform, opacity;
+}
+.bl-prog-arrow svg { width: 1.25rem; height: 1.25rem; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FACILITIES
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-facilities {
+  background: var(--background); border-radius: var(--radius-card-lg); margin-top: -2.5rem;
+  padding-block: 4rem 5rem; position: relative;
+}
+
+.bl-fac-grid { display: grid; grid-template-columns: 1fr; align-items: end; gap: 2.5rem; }
+/* Two columns only from 1280. Below that the intro sits above the tiles, so the
+   pair gets the full width (~334px each at 768) instead of ~160px, which is
+   what made the caption swell to nearly half the tile. */
+@media (min-width: 1280px) { .bl-fac-grid { grid-template-columns: 1fr 1fr; } }
+.bl-fac-intro { max-width: 24rem; }
+.bl-fac-icon {
+  width: 4rem; height: 4rem; border-radius: var(--radius-card);
+  display: grid; place-items: center; flex: none;
+  background: var(--brand-deep); color: #fff; will-change: transform, opacity;
+}
+.bl-fac-icon svg { width: 2rem; height: 2rem; }
+.bl-fac-body {
+  font-size: 1.125rem; color: var(--ink-soft); max-width: 26rem; margin-top: 1.75rem; line-height: 1.7;
+}
+.bl-fac-cards { display: flex; align-items: flex-end; gap: 1.25rem; }
+/* Below 768 the two tiles share one column, leaving each ~150px wide — the
+   caption then wrapped to six lines, grew taller than the tile itself and
+   spilled out over the image. Stack them so each gets the full width. */
+@media (max-width: 768px) {
+  .bl-fac-cards { flex-direction: column; align-items: stretch; gap: 1.5rem; }
+  .bl-fac-card:nth-child(2) { margin-bottom: 0; }
+}
+.bl-fac-card { flex: 1; will-change: transform, opacity; }
+.bl-fac-card:nth-child(2) { margin-bottom: 2rem; }
+.bl-fac-tile {
+  position: relative; aspect-ratio: 3 / 4; border-radius: var(--radius-card);
+  overflow: hidden; background: var(--surface);
+}
+.bl-fac-tile img { width: 100%; height: 100%; object-fit: cover; will-change: transform; }
+.bl-fac-tile figcaption {
+  position: absolute; left: 0.75rem; right: 0.75rem; bottom: 0.75rem; border-radius: 0.75rem;
+  color: #fff; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); padding: 0.75rem 1rem;
+}
+.bl-fac-tile figcaption b { font-size: 0.875rem; font-weight: 500; display: block; }
+.bl-fac-tile figcaption small { font-size: 0.65rem; opacity: 0.85; }
+.bl-tone-blue figcaption { background: rgba(11, 110, 151, 0.55); }
+.bl-tone-clay figcaption { background: rgba(15, 47, 99, 0.4); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   STATS
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-stats {
+  background: var(--brand-deep); color: #fff; border-radius: var(--radius-card-lg);
+  margin-top: 0.75rem; padding-block: 5.5rem;
+}
+@media (min-width: 769px) { .bl-stats { padding-block: 7rem; } }
+.bl-stats dl {
+  display: grid; grid-template-columns: repeat(2, 1fr); column-gap: 2.5rem; row-gap: 3.5rem; margin-top: 4.5rem;
+}
+@media (min-width: 1024px) { .bl-stats dl { grid-template-columns: repeat(4, 1fr); } }
+.bl-stat { border-top: 1px solid rgba(255, 255, 255, 0.2); padding-top: 1.25rem; will-change: transform, opacity; }
+.bl-stat-v { display: block; font-size: 3.75rem; font-weight: 500; letter-spacing: -0.02em; line-height: 1; }
+.bl-stat-l { display: block; font-size: 1.125rem; color: rgba(255, 255, 255, 0.78); margin-top: 1rem; }
+@media (min-width: 769px) { .bl-stat-v { font-size: 4.5rem; } }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   TESTIMONIALS
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-testimonials { background: var(--background); padding-block: 5rem; }
+@media (min-width: 769px) { .bl-testimonials { padding-block: 6rem; } }
+.bl-testimonials ul { display: grid; grid-template-columns: 1fr; gap: 1.25rem; margin-top: 3.5rem; }
+@media (min-width: 769px) { .bl-testimonials ul { grid-template-columns: repeat(3, 1fr); } }
+.bl-tcard {
+  display: flex; flex-direction: column; justify-content: space-between; height: 100%;
+  border-radius: var(--radius-card); background: var(--surface); padding: 1.75rem;
+  will-change: transform, opacity;
+}
+.bl-tquote { font-size: 2.25rem; color: var(--brand); line-height: 1; }
+.bl-tcard blockquote { font-size: 1.125rem; line-height: 1.7; color: var(--ink); margin-top: 1rem; }
+.bl-tcard figcaption { border-top: 1px solid var(--hairline); padding-top: 1rem; margin-top: 1.5rem; }
+.bl-tcard figcaption b { font-weight: 500; display: block; }
+.bl-tcard figcaption small { font-size: 0.875rem; color: var(--ink-soft); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FOOTER
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-footer {
+  background: var(--brand-deep); color: #fff; border-radius: var(--radius-card-lg);
+  margin-top: 0.75rem; padding-block: 3.5rem;
+}
+@media (min-width: 769px) { .bl-footer { padding-block: 4rem; } }
+.bl-foot-cta {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15); padding-bottom: 3.5rem;
+  display: flex; flex-direction: column; gap: 1.5rem;
+}
+@media (min-width: 769px) {
+  .bl-foot-cta { flex-direction: row; justify-content: space-between; align-items: flex-end; }
+}
+.bl-foot-cta p {
+  font-size: 3.75rem; font-weight: 500; line-height: 0.92; letter-spacing: -0.02em; margin-top: 1rem;
+}
+/* Footer CTA now has two actions; the outline pill needs light ink because the
+   footer is navy. */
+.bl-foot-cta-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+.bl-foot-cta-actions .bl-pill.outline { color: #fff; border-color: rgba(255, 255, 255, 0.4); }
+.bl-foot-cta-actions .bl-pill.outline:hover { background: #fff; color: var(--brand-deep); }
+
+.bl-foot-cols { display: grid; grid-template-columns: 1fr; gap: 3rem; padding: 4rem 0; }
+@media (min-width: 769px) { .bl-foot-cols { grid-template-columns: 1.4fr 1fr 1fr 1fr; } }
+.bl-foot-brand { max-width: 20rem; }
+.bl-foot-brand .bl-brand { font-size: 1.125rem; }
+.bl-foot-blurb { font-size: 1.125rem; color: rgba(255, 255, 255, 0.78); margin-top: 1.25rem; line-height: 1.7; }
+.bl-foot-addr {
+  font-style: normal; margin-top: 1.75rem; color: rgba(255, 255, 255, 0.86); font-size: 1.0625rem;
+  display: flex; flex-direction: column; gap: 0.5rem;
+}
+.bl-foot-addr a:hover { text-decoration: underline; }
+.bl-foot-addr .muted { color: rgba(255, 255, 255, 0.7); }
+.bl-foot-col h3 {
+  font-size: 0.875rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.16em;
+  color: rgba(255, 255, 255, 0.62);
+}
+.bl-foot-col ul {
+  font-size: 1.0625rem; color: rgba(255, 255, 255, 0.86); margin-top: 1.5rem;
+  display: flex; flex-direction: column; gap: 1rem;
+}
+.bl-foot-col a:hover { color: #fff; text-decoration: underline; }
+.bl-foot-bottom {
+  border-top: 1px solid rgba(255, 255, 255, 0.15); padding-top: 2rem; font-size: 1rem;
+  color: rgba(255, 255, 255, 0.74); display: flex; flex-direction: column; gap: 1.25rem;
+}
+@media (min-width: 769px) {
+  .bl-foot-bottom { flex-direction: row; justify-content: space-between; align-items: center; }
+}
+.bl-foot-bottom nav { display: flex; gap: 1.25rem; }
+.bl-foot-bottom a:hover { color: #fff; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   LOADER
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-loader {
+  position: fixed; inset: 0; z-index: 200; background: var(--brand-deep); color: #fff;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2rem;
+  transform: translateY(0%);
+}
+.bl-loader-mark {
+  display: inline-flex; align-items: center; gap: 0.5rem; font-size: 1.5rem; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.2em; will-change: transform, opacity;
+  text-align: center; padding-inline: 1.5rem;
+}
+.bl-loader-mark svg { width: 1.75rem; height: 1.75rem; flex: none; }
+/* "Hindenburg India" is twice the length of the template's wordmark, so the
+   tracking has to come in on small screens or it runs past the viewport. */
+@media (max-width: 768px) {
+  .bl-loader-mark { font-size: 1.125rem; letter-spacing: 0.12em; }
+  .bl-loader-mark svg { width: 1.375rem; height: 1.375rem; }
+}
+.bl-loader-track {
+  width: 10rem; height: 1px; border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.2); overflow: hidden;
+}
+.bl-loader-fill { width: 100%; height: 100%; background: #fff; transform: scaleX(0); transform-origin: left; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MENU OVERLAY
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-menu { position: fixed; inset: 0; z-index: 70; display: flex; flex-direction: column; pointer-events: none; }
+.bl-menu.is-open { pointer-events: auto; }
+.bl-menu-backdrop { position: absolute; inset: 0; background: var(--brand-deep); opacity: 0; }
+.bl-menu-panel {
+  position: relative; flex: 1; display: flex; flex-direction: column; color: #fff;
+  padding: 0.5rem; will-change: transform, opacity;
+}
+@media (min-width: 769px) { .bl-menu-panel { padding: 0.75rem; } }
+.bl-menu-inner { flex: 1; display: flex; flex-direction: column; padding: 1.5rem; }
+@media (min-width: 769px) { .bl-menu-inner { padding: 2rem 2.5rem; } }
+.bl-menu-top { display: flex; align-items: center; justify-content: space-between; }
+.bl-icon-btn {
+  width: 2.5rem; height: 2.5rem; display: grid; place-items: center; border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.15); transition: background-color 0.3s;
+}
+.bl-icon-btn:hover { background: rgba(255, 255, 255, 0.25); }
+.bl-icon-btn svg { width: 1.25rem; height: 1.25rem; will-change: transform; }
+.bl-menu-nav { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 0.25rem; }
+/* Two kinds of top-level row: a plain link, and a trigger that expands its
+   sub-pages in place. They must be the same size or the column looks ragged. */
+.bl-menu-link, .bl-menu-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  width: 100%; text-align: left; padding-block: 0.375rem;
+  font-size: 1.75rem; font-weight: 500; letter-spacing: -0.02em;
+  transition: color 0.3s;
+}
+.bl-menu-link, .bl-menu-group { will-change: transform, opacity; }
+.bl-menu-link:hover, .bl-menu-trigger:hover { color: var(--brand-light); }
+.bl-menu-trigger svg { width: 1rem; height: 1rem; flex: none; opacity: 0.7; transition: transform 0.3s; }
+.bl-menu-group.is-open .bl-menu-trigger svg { transform: rotate(180deg); }
+
+/* 0fr → 1fr animates to the content's own height. A max-height guess would
+   either clip the taller group or lag on the shorter one. */
+.bl-menu-sub {
+  display: grid; grid-template-rows: 0fr;
+  transition: grid-template-rows 0.35s cubic-bezier(0.65, 0, 0.35, 1);
+}
+.bl-menu-group.is-open .bl-menu-sub { grid-template-rows: 1fr; }
+.bl-menu-sub > div { overflow: hidden; display: flex; flex-direction: column; }
+.bl-menu-sub a {
+  font-size: 1rem; color: rgba(255, 255, 255, 0.72); padding: 0.5rem 0 0.5rem 1rem;
+  border-left: 1px solid rgba(255, 255, 255, 0.18); transition: color 0.25s;
+}
+.bl-menu-sub a:hover { color: #fff; }
+@media (min-width: 769px) {
+  .bl-menu-link, .bl-menu-trigger { font-size: 2.75rem; }
+  .bl-menu-sub a { font-size: 1.125rem; padding-left: 1.25rem; }
+}
+.bl-menu-bottom {
+  border-top: 1px solid rgba(255, 255, 255, 0.15); padding-top: 2rem;
+  display: flex; flex-direction: column; gap: 1.25rem;
+}
+@media (min-width: 769px) {
+  .bl-menu-bottom { flex-direction: row; justify-content: space-between; align-items: center; }
+}
+.bl-menu-social { display: flex; gap: 1.25rem; font-size: 0.875rem; color: rgba(255, 255, 255, 0.7); }
+.bl-menu-social a:hover { color: #fff; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CONTACT MODAL
+   ══════════════════════════════════════════════════════════════════════════ */
+.bl-modal {
+  position: fixed; inset: 0; z-index: 90; display: flex; align-items: flex-end;
+  justify-content: center; padding: 0.75rem; pointer-events: none;
+}
+.bl-modal.is-open { pointer-events: auto; }
+@media (min-width: 769px) { .bl-modal { align-items: center; padding: 1.5rem; } }
+.bl-modal-backdrop {
+  position: absolute; inset: 0; background: rgba(15, 47, 99, 0.4);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); opacity: 0;
+}
+.bl-modal-panel {
+  position: relative; width: 100%; max-height: 92svh; overflow-y: auto;
+  border-radius: var(--radius-card-lg); background: var(--surface-card); padding: 1.5rem;
+  color: var(--ink); box-shadow: 0 40px 90px -30px rgba(15, 47, 99, 0.55);
+  will-change: transform, opacity;
+}
+@media (min-width: 769px) { .bl-modal-panel { max-width: 32rem; padding: 2rem; } }
+.bl-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.bl-modal-head h2 {
+  font-size: 2.25rem; font-weight: 500; line-height: 0.95; letter-spacing: -0.02em; margin-top: 0.75rem;
+}
+@media (min-width: 769px) { .bl-modal-head h2 { font-size: 3rem; } }
+.bl-modal-close {
+  width: 2.5rem; height: 2.5rem; display: grid; place-items: center; border-radius: var(--radius-pill);
+  background: var(--surface); flex: none; transition: background-color 0.3s;
+}
+.bl-modal-close:hover { background: var(--hairline); }
+.bl-modal-close svg { width: 1.25rem; height: 1.25rem; will-change: transform; }
+.bl-modal form { margin-top: 1.75rem; display: flex; flex-direction: column; gap: 1rem; }
+.bl-field { display: flex; flex-direction: column; gap: 0.5rem; }
+.bl-field span {
+  font-size: 0.75rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.18em;
+  color: var(--ink-soft);
+}
+.bl-field input, .bl-field textarea {
+  width: 100%; border-radius: 0.75rem; border: 1px solid var(--hairline); background: var(--background);
+  padding: 0.75rem 1rem; font-size: 0.875rem; color: var(--ink); outline: none;
+  transition: border-color 0.25s, box-shadow 0.25s; resize: none;
+}
+.bl-field input:focus, .bl-field textarea:focus {
+  border-color: var(--brand-light); box-shadow: 0 0 0 2px rgba(87, 144, 230, 0.35);
+}
+.bl-modal-success {
+  margin-top: 2rem; border-radius: var(--radius-card); background: var(--surface); padding: 1.5rem;
+  text-align: center; display: flex; flex-direction: column; align-items: center; gap: 0.75rem;
+}
+.bl-modal-success .check {
+  width: 3rem; height: 3rem; border-radius: var(--radius-pill); background: var(--brand);
+  display: grid; place-items: center; color: #fff;
+}
+.bl-modal-success .check svg { width: 1.25rem; height: 1.25rem; }
+.bl-modal-success h3 { font-size: 1.125rem; font-weight: 500; }
+.bl-modal-success p { font-size: 0.875rem; color: var(--ink-soft); }
+.bl-modal-actions { align-self: flex-start; }
+
+/* Account actions in the burger overlay. The header drops Login / Open account
+   below 769, so this row is the mobile home for both. It sits on navy, which
+   the shared outline pill (ink on transparent) can't read against. */
+.bl-menu-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1rem; }
+.bl-menu .bl-pill.outline { color: #fff; border-color: rgba(255, 255, 255, 0.45); }
+.bl-menu .bl-pill.outline:hover { background: #fff; color: var(--brand-deep); }
+.bl-menu-login {
+  font-size: 1rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.85); transition: color 0.25s;
+}
+.bl-menu-login:hover { color: #fff; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MOBILE (≤768) — phone refinements
+   Everything above is written mobile-first, so this block only carries what
+   the phone layout needs BEYOND the base rules: touch-target sizes, the type
+   sizes that are set for a wide card and overflow a 320px column, and the
+   handful of desktop affordances that have to move somewhere reachable.
+   Nothing here can reach ≥769, so the desktop layout is untouched.
+   ══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  /* ── Header ───────────────────────────────────────────────────────────── */
+  /* Login moves into the burger overlay; the primary CTA stays in the bar as
+     long as the brand + pill + burger fit (see the 480 cut below). */
+  .bl-site-header { gap: 0.75rem; padding-block: 1rem; }
+  .bl-sh-right { gap: 0.625rem; }
+  .bl-sh-signup {
+    display: inline-flex; padding: 0.6875rem 1.125rem;
+    font-size: 0.8125rem; letter-spacing: 0.04em;
+  }
+  .bl-sh-burger { width: 2.75rem; height: 2.75rem; }
+
+  /* ── Hero ─────────────────────────────────────────────────────────────── */
+  .bl-hero-title-wrap { padding-block: 2.5rem 0; }
+  .bl-hero-bottom { padding-block: 0 3rem; gap: 2rem; }
+  .bl-hero-tagline { font-size: 2.25rem; }
+  /* Two pills side by side leave ~130px each at 320 — the labels then wrap
+     mid-word. One per row, full width, is the clean phone treatment. */
+  .bl-hero-ctas { gap: 0.625rem; }
+  .bl-hero-ctas > * { flex: 1 1 100%; justify-content: center; }
+  .bl-hero-cluster { width: 100%; }
+  .bl-traders { max-width: none; }
+
+  /* ── Trust ────────────────────────────────────────────────────────────── */
+  /* 8.2vw is sized for the desktop rows, where two words share ~1400px. At
+     320 the same pair shares ~270px, so "Zero Brokerage" ran past the edge and
+     was clipped by the section's overflow. Bigger relative type, but the row
+     wraps and left-aligns instead of being stretched edge to edge. */
+  .bl-ghost-heading { font-size: 11vw; margin-top: 2.5rem; }
+  .bl-ghost-row { flex-wrap: wrap; justify-content: flex-start; column-gap: 0.35em; }
+  .bl-trust-controls { margin-top: 2.5rem; }
+
+  /* ── Stats ────────────────────────────────────────────────────────────── */
+  /* 3.75rem × "5,000+" is wider than a half-width column at 320. */
+  .bl-stat-v { font-size: 2.5rem; }
+  .bl-stat-l { font-size: 1rem; margin-top: 0.75rem; }
+  .bl-stats dl { column-gap: 1.25rem; row-gap: 2.5rem; margin-top: 3rem; }
+
+  /* ── Programs / segment rows ──────────────────────────────────────────── */
+  .bl-prog-inner { gap: 1rem; padding: 1.75rem 0; }
+  .bl-prog-idx { width: 2rem; }
+  .bl-prog-body h3 { font-size: 1.5rem; }
+  .bl-prog-body p { font-size: 1rem; }
+
+  /* ── Footer ───────────────────────────────────────────────────────────── */
+  .bl-foot-cta p { font-size: 2.75rem; }
+  .bl-foot-cols { gap: 2.5rem; padding: 3rem 0; }
+  .bl-foot-bottom nav { flex-wrap: wrap; gap: 0.75rem 1.25rem; }
+
+  /* ── Menu overlay ─────────────────────────────────────────────────────── */
+  /* Seven links plus the action row can exceed a 568px-tall phone, so the
+     panel scrolls instead of pushing the actions off-screen. */
+  .bl-menu-inner { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 1.25rem; }
+  .bl-menu-nav { justify-content: flex-start; gap: 0; padding-block: 1rem; }
+  /* Seven rows plus an expanded group has to fit a 568px screen, so the top
+     level is list-sized rather than display-sized. Each row is still ~44px
+     tall including its padding, which is the minimum comfortable tap target. */
+  .bl-menu-link, .bl-menu-trigger { font-size: 1.375rem; padding-block: 0.5rem; }
+  .bl-menu-sub a { font-size: 0.9375rem; padding-block: 0.4375rem; }
+  .bl-menu-bottom { padding-top: 1.5rem; gap: 1rem; }
+
+  /* ── Carousel controls ────────────────────────────────────────────────── */
+  /* 0.375rem of padding is a ~18px tap target; pad out to ~40px. */
+  .bl-dots button { padding: 0.75rem 0.5rem; }
+
+  /* ── Forms ────────────────────────────────────────────────────────────── */
+  /* iOS zooms the page on focus for any input under 16px — pin the real px
+     size rather than a rem that scales below it. */
+  .bl-field input, .bl-field textarea { font-size: 16px; padding: 0.875rem 1rem; }
+  .bl-modal-head h2 { font-size: 2rem; }
+  .bl-modal-panel { padding: 1.25rem; max-height: 90svh; }
+  /* Submit spans the sheet — a left-aligned pill on a full-width form reads
+     as unfinished on a phone. */
+  .bl-modal-actions .bl-pill { width: 100%; justify-content: center; }
+  /* Primary action gets its own row; Login and Talk to us share the next. */
+  .bl-menu-actions .bl-pill.light { flex: 1 1 100%; justify-content: center; }
+}
+
+/* Under 480 the brand wordmark, the CTA and the burger no longer fit one row.
+   The CTA is the one that has a second home (hero + burger overlay). */
+@media (max-width: 480px) {
+  .bl-sh-signup { display: none; }
+}
+
+/* Short phones in landscape: the overlay's link column has to give way. */
+@media (max-height: 600px) and (max-width: 768px) {
+  .bl-menu-link, .bl-menu-trigger { font-size: 1.1875rem; padding-block: 0.375rem; }
+  .bl-menu-nav { padding-block: 0.5rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bl-root *, .bl-portal * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

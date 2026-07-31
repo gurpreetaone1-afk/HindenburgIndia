@@ -395,6 +395,52 @@
   }
 }
 
+@layer components {
+  /* ── Auth form controls ────────────────────────────────────────────────
+     Login, register, forgot-password and 2FA share one field and one submit
+     treatment: a soft filled input with no visible border until focus, and a
+     solid dark full-width button. Defined once here so the four pages can't
+     drift apart the way four copies of a utility string would. */
+  /* Element-qualified on purpose: <Input>/<Button> ship their own Tailwind
+     utilities (h-10, rounded-md, bg-background…) and a bare class would tie
+     with them on specificity and lose to whichever the build emits last. */
+  input.auth-input {
+    height: 3rem;
+    width: 100%;
+    border-radius: 0.75rem;
+    border: 1px solid transparent;
+    background: hsl(var(--muted) / 0.6);
+    padding-inline: 1rem;
+    font-size: 0.9375rem;
+    color: hsl(var(--foreground));
+    transition: border-color 0.2s, background-color 0.2s, box-shadow 0.2s;
+  }
+  input.auth-input::placeholder { color: hsl(var(--muted-foreground) / 0.7); }
+  input.auth-input:focus,
+  input.auth-input:focus-visible {
+    outline: none;
+    background: hsl(var(--background));
+    border-color: hsl(var(--primary) / 0.55);
+    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.14);
+  }
+
+  button.auth-submit {
+    height: 3rem;
+    width: 100%;
+    border-radius: 0.75rem;
+    border: 0;
+    background: #0f2f63;
+    color: #fff;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    transition: background-color 0.2s, opacity 0.2s;
+  }
+  button.auth-submit:hover { background: #16408a; }
+  button.auth-submit:disabled { opacity: 0.6; }
+  .dark button.auth-submit { background: #1d4ed8; }
+  .dark button.auth-submit:hover { background: #2563eb; }
+}
+
 @layer utilities {
   /* Tabular numerics in the Plex Mono face for prices/stats/payouts. */
   .mp-num {

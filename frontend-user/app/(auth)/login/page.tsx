@@ -7,7 +7,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Eye, EyeOff, Loader2, Mail, Lock, ShieldCheck, Smartphone, Zap } from "lucide-react";
+import { Eye, EyeOff, Loader2, Smartphone, Zap } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
 import { ApiError, AuthAPI, ProfileAPI, setTokens } from "@/lib/api";
 import { STORAGE_KEYS } from "@/lib/constants";
@@ -145,62 +145,55 @@ function LoginPageInner() {
   }
 
   return (
-    <div className="space-y-4 lg:space-y-6">
-      {/* Compact header on mobile — tab bar in layout already labels
-          the page, so headline + sub-line are sized just enough for
-          context. Desktop keeps the larger treatment since there's
-          no tab bar above. */}
-      <div className="space-y-1">
-        <h2 className="text-lg font-bold tracking-tight lg:text-3xl">
+    <div className="space-y-6">
+      <div className="space-y-2">
+        <h2 className="text-[1.75rem] font-semibold leading-tight tracking-tight lg:text-[2rem]">
           Welcome back
         </h2>
-        <p className="text-xs text-muted-foreground lg:text-sm">
+        <p className="text-sm text-muted-foreground">
           Sign in to your trading account to continue.
         </p>
       </div>
 
       {/* Form */}
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3 lg:space-y-5">
-        <div className="space-y-1.5">
-          <Label htmlFor="identifier" className="text-xs font-medium lg:text-sm">
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="identifier" className="text-sm font-medium text-foreground">
             Email or Mobile
           </Label>
-          <div className="relative">
-            <Mail className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              id="identifier"
-              placeholder="you@example.com or 9999900000"
-              autoComplete="username"
-              className="h-10 rounded-lg border-border/60 bg-muted/40 pl-9 text-sm transition-colors focus:border-primary/50 focus:bg-background lg:h-12 lg:rounded-xl lg:pl-10"
-              {...form.register("identifier")}
-            />
-          </div>
+          <Input
+            id="identifier"
+            placeholder="you@example.com or 9999900000"
+            autoComplete="username"
+            className="auth-input"
+            {...form.register("identifier")}
+          />
           {form.formState.errors.identifier && (
             <p className="text-xs text-destructive">{form.formState.errors.identifier.message}</p>
           )}
         </div>
 
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <Label htmlFor="password" className="text-xs font-medium lg:text-sm">
+            <Label htmlFor="password" className="text-sm font-medium text-foreground">
               Password
             </Label>
-            <Link href="/forgot-password" className="text-xs font-medium text-primary hover:text-primary/80">
+            <Link href="/forgot-password" className="text-xs font-medium text-muted-foreground hover:text-foreground">
               Forgot password?
             </Link>
           </div>
           <div className="relative">
-            <Lock className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               id="password"
               type={showPwd ? "text" : "password"}
+              placeholder="••••••••"
               autoComplete="current-password"
-              className="h-10 rounded-lg border-border/60 bg-muted/40 pl-9 pr-10 text-sm transition-colors focus:border-primary/50 focus:bg-background lg:h-12 lg:rounded-xl lg:pl-10 lg:pr-12"
+              className="auth-input pr-11"
               {...form.register("password")}
             />
             <button
               type="button"
-              className="absolute inset-y-0 right-0 flex items-center px-3 text-muted-foreground transition-colors hover:text-foreground"
+              className="absolute inset-y-0 right-0 flex items-center px-3.5 text-muted-foreground transition-colors hover:text-foreground"
               onClick={() => setShowPwd((v) => !v)}
               aria-label={showPwd ? "Hide password" : "Show password"}
             >
@@ -214,47 +207,40 @@ function LoginPageInner() {
 
         {needs2fa && (
           <div className="space-y-2">
-            <Label htmlFor="two_fa_code" className="text-sm font-medium">
+            <Label htmlFor="two_fa_code" className="text-sm font-medium text-foreground">
               2FA Code
             </Label>
-            <div className="relative">
-              <ShieldCheck className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                id="two_fa_code"
-                inputMode="numeric"
-                maxLength={6}
-                placeholder="123456"
-                autoComplete="one-time-code"
-                className="h-12 rounded-xl border-border/60 bg-muted/40 pl-10 text-sm transition-colors focus:border-primary/50 focus:bg-background"
-                {...form.register("two_fa_code")}
-              />
-            </div>
+            <Input
+              id="two_fa_code"
+              inputMode="numeric"
+              maxLength={6}
+              placeholder="123456"
+              autoComplete="one-time-code"
+              className="auth-input"
+              {...form.register("two_fa_code")}
+            />
           </div>
         )}
 
-        <Button
-          type="submit"
-          className="h-11 w-full rounded-lg border-0 bg-gradient-to-r from-[#16A34A] to-[#22C55E] text-sm font-semibold text-white shadow-lg shadow-green-500/30 transition-opacity hover:opacity-95 lg:h-12 lg:rounded-xl"
-          loading={form.formState.isSubmitting}
-        >
+        <Button type="submit" className="auth-submit" loading={form.formState.isSubmitting}>
           Sign in
         </Button>
       </form>
 
-      {/* Demo account CTA — minimalist green */}
-      <div className="space-y-2">
+      {/* Demo account CTA — secondary to the navy submit above it. */}
+      <div className="space-y-3">
         <div className="relative flex items-center">
-          <div className="flex-1 border-t border-border/50" />
-          <span className="mx-3 text-[10px] text-muted-foreground">or try for free</span>
-          <div className="flex-1 border-t border-border/50" />
+          <div className="flex-1 border-t border-border/60" />
+          <span className="mx-3 text-[11px] text-muted-foreground">or try for free</span>
+          <div className="flex-1 border-t border-border/60" />
         </div>
         <button
           type="button"
           onClick={handleDemoLogin}
           disabled={demoLoading}
-          className="flex w-full items-center gap-2.5 rounded-xl border border-mp-primary/25 bg-mp-primary/5 px-3 py-2.5 text-left transition-colors hover:bg-mp-primary/10 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-70"
+          className="flex w-full items-center gap-2.5 rounded-xl border border-border bg-muted/40 px-3 py-2.5 text-left transition-colors hover:bg-muted active:scale-[0.99] disabled:pointer-events-none disabled:opacity-70"
         >
-          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-mp-primary text-white">
+          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#0f2f63] text-white">
             {demoLoading ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
@@ -277,7 +263,7 @@ function LoginPageInner() {
             </span>
           </span>
           {!demoLoading && (
-            <span className="shrink-0 rounded-full bg-mp-primary/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-mp-primary">
+            <span className="shrink-0 rounded-full bg-[#0f2f63]/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[#0f2f63] dark:bg-white/10 dark:text-white/80">
               Free
             </span>
           )}
@@ -286,10 +272,10 @@ function LoginPageInner() {
 
       {/* Footer — "no account?" link + minimalist Install App CTA */}
       <div className="space-y-3">
-        <p className="text-center text-xs text-muted-foreground lg:text-sm">
+        <p className="text-center text-sm text-muted-foreground">
           Don&apos;t have an account?{" "}
-          <Link href="/register" className="font-semibold text-mp-primary hover:text-mp-primary/80">
-            Create one
+          <Link href="/register" className="font-semibold text-foreground underline-offset-4 hover:underline">
+            Open one
           </Link>
         </p>
 
@@ -306,7 +292,7 @@ function LoginPageInner() {
 function InstallAppBanner() {
   return (
     <div className="flex items-center gap-2.5 rounded-xl border border-border/60 bg-muted/30 px-3 py-2.5">
-      <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-mp-primary/10 text-mp-primary">
+      <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#0f2f63]/10 text-[#0f2f63] dark:bg-white/10 dark:text-white/80">
         <Smartphone className="size-4" />
       </div>
       <div className="min-w-0 flex-1">
@@ -317,10 +303,7 @@ function InstallAppBanner() {
           Faster orders, one-tap login.
         </p>
       </div>
-      <InstallPwaButton
-        variant="compact"
-        className="shrink-0 !border-mp-primary/30 !bg-mp-primary/10 !text-mp-primary hover:!bg-mp-primary/20"
-      />
+      <InstallPwaButton variant="compact" className="shrink-0" />
     </div>
   );
 }
