@@ -157,6 +157,11 @@ export function UserWsBridge() {
           case "wallet_update":
             qc.invalidateQueries({ queryKey: ["wallet"] });
             break;
+          case "api_access":
+            // Admin approved / rejected the user's API-access request — refresh
+            // the profile's API Access card so it flips connected / rejected.
+            qc.invalidateQueries({ queryKey: ["api-access"] });
+            break;
           case "wallet":
             // Backend `_publish_wallet_event` uses type="wallet" (not
             // "wallet_update") and ships a {reason, amount, balance_after}
