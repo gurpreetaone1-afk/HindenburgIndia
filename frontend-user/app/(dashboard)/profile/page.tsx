@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -27,7 +27,7 @@ import {
   User as UserIcon,
   Wallet as WalletIcon,
 } from "lucide-react";
-import { ProfileAPI, AuthAPI } from "@/lib/api";
+import { ProfileAPI, AuthAPI, ApiAccessAPI, type ApiAccessState } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -59,7 +59,8 @@ type SubView =
   | "personal"
   | "security"
   | "appearance"
-  | "support";
+  | "support"
+  | "api-access";
 
 export default function ProfilePage() {
   // The persisted login user (zustand `nb.auth`) is our offline-safe seed.
@@ -136,6 +137,7 @@ export default function ProfilePage() {
         {subView === "security" && <SecurityForm me={me} />}
         {subView === "appearance" && <AppearanceForm />}
         {subView === "support" && <SupportLinks />}
+        {subView === "api-access" && <ApiAccessForm />}
       </SubScreen>
     );
   }
@@ -166,6 +168,13 @@ export default function ProfilePage() {
           label="Bank accounts"
           sub="Linked payout accounts"
           href="/wallet#bank"
+        />
+        <ListRow
+          icon={KeyRound}
+          tone="info"
+          label="API Access"
+          sub="Submit your API key for admin approval"
+          onClick={() => setSubView("api-access")}
         />
       </ListGroup>
 
@@ -266,6 +275,8 @@ function subViewTitle(v: SubView): string {
       return "Appearance";
     case "support":
       return "Help & support";
+    case "api-access":
+      return "API Access";
     default:
       return "Profile";
   }
@@ -733,6 +744,125 @@ function SupportLinks() {
           </li>
         )}
       </ul>
+    </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// API Access — submit an API key for admin approval
+// ─────────────────────────────────────────────────────────────────
+function ApiAccessForm() {
+  const qc = useQueryClient();
+  const { data } = useQuery<ApiAccessState>({
+    queryKey: ["api-access"],
+    queryFn: () => ApiAccessAPI.get(),
+    // Flip live on admin approve/reject; the UserWsBridge api_access event
+    // also invalidates this key, this poll is the safety net.
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
+  });
+
+  const status = data?.status ?? "idle";
+  const connected = status === "APPROVED";
+  const pending = status === "PENDING";
+  const rejected = status === "REJECTED";
+
+  const [apiKey, setApiKey] = useState("");
+  const [touched, setTouched] = useState(false);
+  useEffect(() => {
+    if (!touched && data?.api_key) setApiKey(data.api_key);
+  }, [data?.api_key, touched]);
+
+  const submit = useMutation({
+    mutationFn: (k: string) => ApiAccessAPI.submit(k),
+    onSuccess: (res) => {
+      qc.setQueryData(["api-access"], res);
+      setTouched(false);
+      toast.success("API key submitted — pending admin approval");
+    },
+    onError: (e: any) => toast.error(e?.message || "Could not submit API key"),
+  });
+
+  function onConnect() {
+    const k = apiKey.trim();
+    if (k.length < 6) {
+      toast.error("Please enter a valid API key");
+      return;
+    }
+    submit.mutate(k);
+  }
+
+  const statusMeta = connected
+    ? { label: "Connected", cls: "bg-buy/15 text-buy", icon: ShieldCheck }
+    : pending
+      ? { label: "Pending admin approval", cls: "bg-amber-500/15 text-amber-600 dark:text-amber-400", icon: Lock }
+      : rejected
+        ? { label: "Request rejected", cls: "bg-sell/15 text-sell", icon: ShieldOff }
+        : { label: "Not connected", cls: "bg-muted text-muted-foreground", icon: KeyRound };
+  const StatusIcon = statusMeta.icon;
+
+  return (
+    <section className="space-y-4 rounded-xl border border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <div className={cn("grid size-10 shrink-0 place-items-center rounded-xl", statusMeta.cls)}>
+          <StatusIcon className="size-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold">API Access</div>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            Paste your API key and submit it. Your admin reviews the request and
+            connects your account once approved.
+          </p>
+          <span
+            className={cn(
+              "mt-2 inline-block rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+              statusMeta.cls,
+            )}
+          >
+            {statusMeta.label}
+          </span>
+        </div>
+      </div>
+
+      <Field label="API key">
+        <Input
+          value={apiKey}
+          onChange={(e) => {
+            setTouched(true);
+            setApiKey(e.target.value);
+          }}
+          placeholder="Please put API Key in this section"
+          className="h-11 font-mono"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          disabled={connected}
+        />
+      </Field>
+
+      {connected ? (
+        <div className="flex items-center gap-2 text-sm text-buy">
+          <ShieldCheck className="size-4" /> Your API access is active.
+        </div>
+      ) : (
+        <>
+          <Button onClick={onConnect} loading={submit.isPending} className="w-full">
+            {pending || rejected ? "Resubmit" : "Connect"}
+          </Button>
+          {pending && (
+            <p className="text-center text-[11px] text-muted-foreground">
+              Your request is with the admin. You&apos;ll be connected once it&apos;s approved.
+            </p>
+          )}
+          {rejected && (
+            <p className="text-center text-[11px] text-sell">
+              {data?.rejection_reason
+                ? `Rejected: ${data.rejection_reason}`
+                : "Your request was rejected. Update the key and resubmit."}
+            </p>
+          )}
+        </>
+      )}
     </section>
   );
 }

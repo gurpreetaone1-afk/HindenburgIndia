@@ -343,6 +343,18 @@ export const ProfileAPI = {
   update: (body: Record<string, unknown>) => unwrap<any>(api.put("/user/users/me", body)),
 };
 
+// API-access request — the client submits an API key; an admin approves /
+// rejects it from the admin panel. Status: idle / PENDING / APPROVED / REJECTED.
+export type ApiAccessState = {
+  status: "idle" | "PENDING" | "APPROVED" | "REJECTED";
+  api_key: string;
+  rejection_reason: string | null;
+};
+export const ApiAccessAPI = {
+  get: () => unwrap<ApiAccessState>(api.get("/user/api-access")),
+  submit: (api_key: string) => unwrap<ApiAccessState>(api.post("/user/api-access", { api_key })),
+};
+
 // Shape returned by `WalletAPI.wdRules`. Both rules carry the same set of
 // fields — backend serialises Decimal128 amounts as strings, weekday list
 // as 0=Mon..6=Sun ints, time windows as ISO HH:MM strings.
