@@ -1,4 +1,4 @@
-1- sudo systemctl restart marginplant-backend
+1- sudo systemctl restart hindenburg-backend
 
 
 2 -sudo systemctl is-active marginplant-backend
