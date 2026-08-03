@@ -51,10 +51,13 @@ export function useSupportContacts() {
   return useQuery<SupportContacts>({
     queryKey: ["support", "contacts"],
     queryFn: () => unwrap<SupportContacts>(api.get("/user/support")),
-    staleTime: 10 * 60_000,
+    // Admin can change the support number any time — refetch fast so users
+    // see it on next focus / within a minute, not after a 10-min hard cache.
+    staleTime: 30_000,
     gcTime: 30 * 60_000,
     retry: 1,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
+    refetchInterval: 60_000,
   });
 }
 
