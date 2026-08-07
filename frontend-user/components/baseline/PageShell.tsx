@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Lenis from "lenis";
+import type Lenis from "lenis";
 
 import "./baseline.css";
 import "./sections.css";
@@ -37,18 +37,27 @@ export default function PageShell({
   useAdaptiveGrid();
 
   useEffect(() => {
-    const lenis = new Lenis({ smoothWheel: true });
-    lenisRef.current = lenis;
+    let lenis: Lenis | null = null;
     let id = 0;
-    const raf = (t: number) => {
-      lenis.raf(t);
+    let cancelled = false;
+    // Client-only: dynamic import keeps the ESM `lenis` out of the server
+    // bundle (it has no CJS build, so an SSR require() would MODULE_NOT_FOUND
+    // and fail the static prerender of every marketing page).
+    import("lenis").then(({ default: Lenis }) => {
+      if (cancelled) return;
+      lenis = new Lenis({ smoothWheel: true });
+      lenisRef.current = lenis;
+      const raf = (t: number) => {
+        lenis!.raf(t);
+        id = requestAnimationFrame(raf);
+      };
       id = requestAnimationFrame(raf);
-    };
-    id = requestAnimationFrame(raf);
-    document.documentElement.classList.add("bl-scale");
+      document.documentElement.classList.add("bl-scale");
+    });
     return () => {
+      cancelled = true;
       cancelAnimationFrame(id);
-      lenis.destroy();
+      lenis?.destroy();
       lenisRef.current = null;
       document.documentElement.classList.remove("bl-scale");
     };

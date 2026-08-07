@@ -30,6 +30,9 @@ export function MobileQuickTradeBar({ instrument, ltp, bid, ask }: Props) {
   const isForex = seg.includes("FOREX") || seg.includes("FX") || exch === "CDS";
   const priceDecimals = isCrypto ? 2 : isForex ? 4 : 2;
 
+  // Show depth bid/ask directly — they re-quote every tick, while the LTP only
+  // moves on an actual trade (holds for seconds on a quiet instrument). LTP is
+  // only a fallback when depth is momentarily absent.
   const sellPrice = bid ?? ltp ?? 0;
   const buyPrice = ask ?? ltp ?? 0;
   const fmt = (n: number) => Number(n || 0).toFixed(priceDecimals);

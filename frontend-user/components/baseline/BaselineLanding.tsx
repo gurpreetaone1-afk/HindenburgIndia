@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Lenis from "lenis";
+import type Lenis from "lenis";
 
 import "./baseline.css";
 import "./sections.css";
@@ -53,22 +53,26 @@ export default function BaselineLanding() {
 
   useEffect(() => {
     window.scrollTo(0, 0);
-    const lenis = new Lenis({ smoothWheel: true });
-    lenisRef.current = lenis;
-
+    let lenis: Lenis | null = null;
     let id = 0;
-    const raf = (t: number) => {
-      lenis.raf(t);
+    let cancelled = false;
+    // Client-only dynamic import — lenis is ESM-only and must stay out of the
+    // server bundle or the marketing pages fail to prerender.
+    import("lenis").then(({ default: Lenis }) => {
+      if (cancelled) return;
+      lenis = new Lenis({ smoothWheel: true });
+      lenisRef.current = lenis;
+      const raf = (t: number) => {
+        lenis!.raf(t);
+        id = requestAnimationFrame(raf);
+      };
       id = requestAnimationFrame(raf);
-    };
-    id = requestAnimationFrame(raf);
-
-    // The adaptive grid drives the root font-size; scope it to this page.
-    document.documentElement.classList.add("bl-scale");
-
+      document.documentElement.classList.add("bl-scale");
+    });
     return () => {
+      cancelled = true;
       cancelAnimationFrame(id);
-      lenis.destroy();
+      lenis?.destroy();
       lenisRef.current = null;
       document.documentElement.classList.remove("bl-scale");
     };

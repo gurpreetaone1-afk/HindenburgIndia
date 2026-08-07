@@ -252,6 +252,24 @@ async def place_order(
     bracket_sl = to_decimal(raw_sl) if raw_sl not in (None, "", 0) else None
     bracket_tp = to_decimal(raw_tp) if raw_tp not in (None, "", 0) else None
 
+    # A bracket leg on the wrong side of the market fires the instant it is
+    # stored and books the close at that untraded price — reject at the door.
+    # Same rule the two SL/TP endpoints use (order_validator).
+    if bracket_sl is not None or bracket_tp is not None:
+        _bref = payload.get("expected_price") or 0
+        try:
+            if not _bref or float(str(_bref)) <= 0:
+                from app.services import market_data_service as _bmds
+
+                _bref = await _bmds.get_ltp(instrument.token)
+        except Exception:
+            _bref = 0
+        _bracket_err = order_validator.bracket_direction_error(
+            action, _bref, bracket_sl, bracket_tp
+        )
+        if _bracket_err:
+            raise OrderRejectedError(_bracket_err)
+
     # Client-supplied bid/ask snapshot (see schemas.PlaceOrderRequest). Used
     # by the validator's margin calc and by the matching engine's fill so
     # both agree on a single price for this trade.

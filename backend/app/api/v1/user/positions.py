@@ -786,17 +786,13 @@ async def update_sl_tp(position_id: str, payload: dict, user: CurrentUser):
         raise HTTPException(status_code=400, detail="Target (Take Profit) is disabled for this segment.")
 
     if _ref > 0:
-        # 1. Directional check
-        if sl_val is not None:
-            if _side == "BUY" and sl_val >= _ref:
-                raise HTTPException(status_code=400, detail=f"Stop Loss ₹{sl_val} must be BELOW current price ₹{_ref:.2f} for a BUY position.")
-            if _side == "SELL" and sl_val <= _ref:
-                raise HTTPException(status_code=400, detail=f"Stop Loss ₹{sl_val} must be ABOVE current price ₹{_ref:.2f} for a SELL position.")
-        if tp_val is not None:
-            if _side == "BUY" and tp_val <= _ref:
-                raise HTTPException(status_code=400, detail=f"Target ₹{tp_val} must be ABOVE current price ₹{_ref:.2f} for a BUY position.")
-            if _side == "SELL" and tp_val >= _ref:
-                raise HTTPException(status_code=400, detail=f"Target ₹{tp_val} must be BELOW current price ₹{_ref:.2f} for a SELL position.")
+        # 1. Directional check — shared with order placement and the
+        #    active-trade endpoint so the rule can't drift per caller.
+        from app.services.order_validator import bracket_direction_error
+
+        _dir_err = bracket_direction_error(_side, _ref, sl_val, tp_val)
+        if _dir_err:
+            raise HTTPException(status_code=400, detail=_dir_err)
 
         # 2. Limit-away min-distance check
         if _limit_pct > 0:
@@ -1709,12 +1705,14 @@ async def update_active_trade_sl_tp(trade_id: str, payload: dict, user: CurrentU
         if p is None:
             raise HTTPException(status_code=400, detail="Parent position not open")
 
-    # NOTE: an earlier direction-validation block here referenced two helpers
-    # (`_live_ref_price`, `_validate_sl_tp_direction`) that don't exist in this
-    # module — so EVERY active-trade SL/TP update 500'd with a NameError
-    # (operator-flagged "SL Add" failing). Removed; the SL/TP is set on the
-    # parent position below and the risk enforcer treats out-of-direction
-    # brackets as immediately-eligible anyway, so a bad value self-corrects.
+    # Direction guard. An earlier block here called two helpers that never
+    # existed (NameError → every "SL Add" 500'd), so it was deleted on the
+    # assumption that a wrong-side leg "self-corrects" because the risk
+    # enforcer treats it as immediately eligible. It does NOT self-correct:
+    # it fires at once and SL_HIT/TP_HIT closes book at EXACTLY the leg price,
+    # so the position closes at a price the market never traded — a SELL
+    # SILVERM @232413 with SL 132680 booked a fake +498,665 (CL50047004,
+    # 2026-08-07). Rule now shared with order placement + /sl-tp.
     # ── Per-segment SL / TP enable gate ───────────────────────────────
     # Mirror the position-level /sl-tp endpoint (update_sl_tp): admin can turn
     # OFF SL and/or TP for a segment (Segment Settings → Limit away → SL/TP
@@ -1743,6 +1741,28 @@ async def update_active_trade_sl_tp(trade_id: str, payload: dict, user: CurrentU
             raise HTTPException(status_code=400, detail="Stop Loss is disabled for this segment.")
         if _setting_tp and not _eff.get("tp_enabled", True):
             raise HTTPException(status_code=400, detail="Target (Take Profit) is disabled for this segment.")
+
+        # Wrong-side leg check (see NOTE above). Live LTP is the reference;
+        # falls back to the entry price, and fails OPEN when neither is known.
+        try:
+            _ref_px = float(await market_data_service.get_ltp(p.instrument.token))
+        except Exception:
+            _ref_px = 0.0
+        if _ref_px <= 0:
+            try:
+                _ref_px = float(str(p.avg_price or 0))
+            except Exception:
+                _ref_px = 0.0
+        from app.services.order_validator import bracket_direction_error
+
+        _dir_err = bracket_direction_error(
+            str(p.opened_side or "BUY"),
+            _ref_px,
+            payload.get("stop_loss") if _setting_sl else None,
+            payload.get("target") if _setting_tp else None,
+        )
+        if _dir_err:
+            raise HTTPException(status_code=400, detail=_dir_err)
 
     if "stop_loss" in payload:
         sl = payload["stop_loss"]

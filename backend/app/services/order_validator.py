@@ -86,6 +86,45 @@ def _money_to_float(v: Any) -> float:
             return 0.0
 
 
+def bracket_direction_error(
+    action: Any, ref_price: Any, sl: Any = None, tp: Any = None
+) -> str | None:
+    """Return a user-facing message when an SL/TP leg sits on the WRONG side
+    of ``ref_price``, else None.
+
+    A stop-loss must sit on the LOSING side of the position and a target on
+    the winning side. A leg on the wrong side is already "hit" the moment it
+    is stored: the risk enforcer sees it as immediately eligible and fires it,
+    and the matching engine books SL_HIT / TP_HIT closes at EXACTLY the leg
+    price (deliberate — see `_exact_close` there). So a wrong-side leg closes
+    the position at a price the market never traded.
+
+    Real incident (CL50047004, 2026-08-07): SELL SILVERM26AUGFUT 5 @ 232413
+    got SL = 132680 from the Positions "SL/TP Add" button, which had no
+    direction check — it fired 40 s later and booked a fake +498,665.
+
+    Pure + shared on purpose: order placement and BOTH SL/TP endpoints route
+    through this one rule, so a caller can't silently drift out of it again.
+    """
+    ref = _money_to_float(ref_price)
+    if ref <= 0:
+        return None  # no reliable mark — fail open, caller's other guards apply
+    is_long = str(getattr(action, "value", action) or "").upper() in ("BUY", "LONG")
+    sl_f = _money_to_float(sl)
+    tp_f = _money_to_float(tp)
+    if sl_f > 0:
+        if is_long and sl_f >= ref:
+            return f"Stop Loss ₹{sl_f:g} must be BELOW current price ₹{ref:.2f} for a BUY position."
+        if not is_long and sl_f <= ref:
+            return f"Stop Loss ₹{sl_f:g} must be ABOVE current price ₹{ref:.2f} for a SELL position."
+    if tp_f > 0:
+        if is_long and tp_f <= ref:
+            return f"Target ₹{tp_f:g} must be ABOVE current price ₹{ref:.2f} for a BUY position."
+        if not is_long and tp_f >= ref:
+            return f"Target ₹{tp_f:g} must be BELOW current price ₹{ref:.2f} for a SELL position."
+    return None
+
+
 async def validate(
     *,
     user: User,
