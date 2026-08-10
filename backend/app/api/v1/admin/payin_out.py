@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from beanie import PydanticObjectId
@@ -41,7 +42,132 @@ from app.services.audit_service import log_event
 from app.utils.decimal_utils import to_decimal
 from app.utils.time_utils import now_utc
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["admin-payin-out"])
+
+
+async def _auto_payout_on() -> bool:
+    from app.api.v1.admin.settings import PAYOUT_AUTO_KEY
+    from app.models.platform_setting import PlatformSetting
+
+    row = await PlatformSetting.find_one(PlatformSetting.setting_key == PAYOUT_AUTO_KEY)
+    return bool(row.setting_value) if row is not None else False  # default OFF
+
+
+async def _maybe_auto_payout(r, amount, admin) -> str | None:
+    """Disburse an approved withdrawal through the payout gateway.
+
+    Returns the gateway reference when the payout was accepted, or None when
+    auto-payout doesn't apply (feature off, no key, or the user belongs to an
+    admin rather than the super-admin pool) — the caller then keeps today's
+    manual behaviour.
+
+    On a gateway refusal the user's wallet is REFUNDED and the request is put
+    back to PENDING before the error is surfaced, because in that case no
+    money left the building.
+    """
+    from app.models.user import User
+    from app.services import divinepay_service
+
+    if not divinepay_service.is_configured() or not await _auto_payout_on():
+        return None
+    user = await User.get(r.user_id)
+    if user is None or getattr(user, "assigned_admin_id", None):
+        return None  # admin-owned users keep the manual flow for now
+
+    bank = r.bank
+    try:
+        res = await divinepay_service.create_payout(
+            amount,
+            upi=(bank.upi_id or None) if bank else None,
+            bank_account=(bank.account_number or None) if bank else None,
+            bank_code=(bank.ifsc or None) if bank else None,
+            bank_username=(bank.holder or None) if bank else None,
+        )
+        return str(res["ref"])
+    except Exception as exc:
+        logger.exception("auto_payout_failed withdrawal=%s", r.id)
+        # Money never left — undo the debit and re-queue the request.
+        try:
+            await wallet_service.adjust(
+                r.user_id,
+                amount,
+                transaction_type=TransactionType.REVERSAL,
+                narration="Withdrawal payout failed - amount returned",
+                reference_type="WITHDRAWAL",
+                reference_id=str(r.id),
+                actor_id=admin.id,
+            )
+        except Exception:
+            logger.exception("auto_payout_refund_failed withdrawal=%s", r.id)
+        await WithdrawalRequest.get_motor_collection().update_one(
+            {"_id": r.id},
+            {
+                "$set": {
+                    "status": WithdrawalStatus.PENDING.value,
+                    "processed_by": None,
+                    "processed_at": None,
+                    "updated_at": now_utc(),
+                }
+            },
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Payout failed — amount returned to the user. {exc}",
+        )
+
+
+async def _sync_payout_statuses(rows) -> None:
+    """Bring PROCESSING rows in line with the gateway before listing them.
+
+    ponytail: polled inline on the admin's own page view (bounded by page
+    size, only PROCESSING rows). Move to a background loop if payout volume
+    ever makes the list feel slow.
+    """
+    from app.services import divinepay_service
+
+    pending = [x for x in rows if x.status == WithdrawalStatus.PROCESSING and getattr(x, "gateway_ref", None)]
+    if not pending:
+        return
+    for row in pending:
+        try:
+            data = await divinepay_service.check_payout_status(row.gateway_ref)
+            state = divinepay_service.payout_state(data)
+        except Exception:
+            continue  # gateway hiccup — leave it PROCESSING, try again next load
+        if state == "success":
+            row.status = WithdrawalStatus.COMPLETED
+            await WithdrawalRequest.get_motor_collection().update_one(
+                {"_id": row.id},
+                {"$set": {"status": WithdrawalStatus.COMPLETED.value, "updated_at": now_utc()}},
+            )
+        elif state == "failed":
+            # Gateway could not pay out — give the money back.
+            try:
+                await wallet_service.adjust(
+                    row.user_id,
+                    to_decimal(row.amount),
+                    transaction_type=TransactionType.REVERSAL,
+                    narration="Withdrawal payout failed - amount returned",
+                    reference_type="WITHDRAWAL",
+                    reference_id=str(row.id),
+                    actor_id=None,
+                )
+            except Exception:
+                logger.exception("payout_refund_failed withdrawal=%s", row.id)
+                continue
+            row.status = WithdrawalStatus.REJECTED
+            await WithdrawalRequest.get_motor_collection().update_one(
+                {"_id": row.id},
+                {
+                    "$set": {
+                        "status": WithdrawalStatus.REJECTED.value,
+                        "rejection_reason": "Payout failed at the gateway - amount returned",
+                        "updated_at": now_utc(),
+                    }
+                },
+            )
 
 
 async def _payment_user_filter(admin, search: str | None):
@@ -539,6 +665,8 @@ async def list_withdrawals(
         .limit(page_size)
         .to_list()
     )
+    # Reconcile any gateway payouts still in flight before rendering.
+    await _sync_payout_statuses(rows)
     owner_map = await build_owner_map([r.user_id for r in rows])
 
     # Batch-lookup wallet balances so admin can see at approval time
@@ -673,7 +801,28 @@ async def approve_withdrawal(
         )
         raise
 
-    r.status = WithdrawalStatus.COMPLETED
+    # ── Auto-payout via the gateway (super-admin pool only) ──────────
+    # The wallet is already debited above. If auto-payout is on and this
+    # user belongs to the super admin (no owning admin), disburse now and
+    # park the row in PROCESSING until the gateway confirms. Any failure
+    # refunds the wallet and returns the request to the queue — the user is
+    # never left debited for money that did not leave.
+    payout_ref = await _maybe_auto_payout(r, amount, admin)
+    if payout_ref:
+        await WithdrawalRequest.get_motor_collection().update_one(
+            {"_id": r.id},
+            {
+                "$set": {
+                    "status": WithdrawalStatus.PROCESSING.value,
+                    "gateway_ref": payout_ref,
+                    "updated_at": now_utc(),
+                }
+            },
+        )
+        r.status = WithdrawalStatus.PROCESSING
+        r.gateway_ref = payout_ref
+    else:
+        r.status = WithdrawalStatus.COMPLETED
     r.utr_number = payload.utr_number
     r.processed_by = admin.id
     r.processed_at = processed_at

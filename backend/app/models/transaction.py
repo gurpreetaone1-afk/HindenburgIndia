@@ -154,6 +154,10 @@ class WithdrawalRequest(TimestampMixin):
     bank: BankSnapshot
     remarks: str | None = None
     utr_number: str | None = None  # filled by admin after disbursal
+    # Payout-gateway order number when the disbursal was auto-sent through
+    # Divinepay (status then rides PROCESSING -> COMPLETED/REJECTED off the
+    # gateway's own verdict). None on manually-paid withdrawals.
+    gateway_ref: str | None = None
     charges: Money = Field(default_factory=_zero)
     net_amount: Money = Field(default_factory=_zero)
 

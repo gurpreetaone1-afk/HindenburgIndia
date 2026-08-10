@@ -324,6 +324,7 @@ function PaymentGatewayCard() {
   const isSuperAdmin = admin?.role === "SUPER_ADMIN";
   const [enabled, setEnabled] = useState(true);
   const [configured, setConfigured] = useState(true);
+  const [autoPayout, setAutoPayout] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [toggling, setToggling] = useState(false);
 
@@ -334,6 +335,7 @@ function PaymentGatewayCard() {
         if (!alive) return;
         setEnabled(!!r.enabled);
         setConfigured(!!r.configured);
+        setAutoPayout(!!r.auto_payout);
       })
       .catch(() => {})
       .finally(() => alive && setLoaded(true));
@@ -343,6 +345,19 @@ function PaymentGatewayCard() {
   }, []);
 
   if (!isSuperAdmin) return null;
+
+  async function togglePayout(next: boolean) {
+    setToggling(true);
+    try {
+      await SettingsAPI.setAutoPayout(next);
+      setAutoPayout(next);
+      toast.success(next ? "Auto payout enabled" : "Auto payout disabled");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update setting");
+    } finally {
+      setToggling(false);
+    }
+  }
 
   async function toggle(next: boolean) {
     setToggling(true);
@@ -399,6 +414,39 @@ function PaymentGatewayCard() {
                 className={cn(
                   "inline-block size-5 transform rounded-full bg-white shadow transition-transform",
                   enabled ? "translate-x-6" : "translate-x-1",
+                )}
+              />
+            </button>
+          </div>
+        )}
+
+        {/* Withdrawals — sends real money the moment you approve, so it is
+            off until switched on deliberately. */}
+        {configured && (
+          <div className="flex items-center justify-between rounded-md border border-border bg-card p-3">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">Auto payout — withdrawals</div>
+              <div className="text-[11px] text-muted-foreground">
+                {autoPayout
+                  ? "On — approving a withdrawal sends it to the user's bank / UPI automatically"
+                  : "Off — you approve, then transfer the money yourself"}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => togglePayout(!autoPayout)}
+              disabled={!loaded || toggling}
+              aria-pressed={autoPayout}
+              aria-label={autoPayout ? "Disable auto payout" : "Enable auto payout"}
+              className={cn(
+                "relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:opacity-50",
+                autoPayout ? "bg-emerald-500" : "bg-muted",
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block size-5 transform rounded-full bg-white shadow transition-transform",
+                  autoPayout ? "translate-x-6" : "translate-x-1",
                 )}
               />
             </button>

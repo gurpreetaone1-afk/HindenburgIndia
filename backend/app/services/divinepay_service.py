@@ -122,3 +122,66 @@ async def check_status(order_id: str) -> dict[str, Any]:
 
 def is_success(data: dict[str, Any]) -> bool:
     return str(data.get("status") or "").strip().lower() == "success"
+
+
+# ── Payout (withdrawals) ─────────────────────────────────────────────
+# NOTE: create_payout MOVES REAL MONEY to the customer. It is only ever
+# called from the admin approval path, after the user's wallet has already
+# been debited, and a failure there refunds the wallet.
+
+
+async def create_payout(
+    amount: Decimal,
+    *,
+    upi: str | None = None,
+    bank_account: str | None = None,
+    bank_code: str | None = None,
+    bank_username: str | None = None,
+) -> dict[str, Any]:
+    """Disburse to the customer's UPI id or bank account.
+
+    Returns the gateway's ``platformOrderNum`` plus its charge/net figures.
+    Raises DivinepayError when the gateway refuses (bad details, insufficient
+    merchant balance, …) — the caller must treat that as "money did NOT go
+    out" and put the user's balance back.
+    """
+    body: dict[str, Any] = {"amount": float(amount)}
+    if upi:
+        body["upi"] = upi
+    elif bank_account:
+        body["bankAccount"] = bank_account
+        body["bankCode"] = bank_code or ""
+        body["bankUsername"] = bank_username or ""
+    else:
+        raise DivinepayError("No UPI id or bank account on this withdrawal request.")
+
+    data = await _post("/api/payout/create", body)
+    ref = str(data.get("platformOrderNum") or data.get("platOrderNum") or "").strip()
+    if not ref:
+        # No reference back means we cannot track or reconcile this payout —
+        # treat it as a failure so the caller refunds rather than leaving the
+        # user debited against an untrackable transfer.
+        raise DivinepayError("Payment gateway did not return a payout reference.")
+    return {
+        "ref": ref,
+        "status": str(data.get("status") or "processing").strip().lower(),
+        "charge": data.get("charge"),
+        "net_amount": data.get("netAmount"),
+    }
+
+
+async def check_payout_status(ref: str) -> dict[str, Any]:
+    """Poll a payout. ``currentStatus`` is success / processing / failed."""
+    return await _post("/api/payout/check-status", {"platOrderNum": ref})
+
+
+def payout_state(data: dict[str, Any]) -> str:
+    """Normalise a payout status payload to: success | failed | processing."""
+    raw = str(
+        data.get("currentStatus") or data.get("status") or data.get("gatewayStatus") or ""
+    ).strip().lower()
+    if raw in ("success", "completed", "complete", "settled"):
+        return "success"
+    if raw in ("failed", "fail", "rejected", "cancelled", "canceled", "error"):
+        return "failed"
+    return "processing"

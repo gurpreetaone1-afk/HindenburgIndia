@@ -102,6 +102,10 @@ async def set_weekly_settlement_enabled(payload: UpdatePlatformSettingRequest, a
 # the behaviour before this toggle existed). Turning the gateway off for
 # EVERYONE is still just clearing DIVINEPAY_API_KEY on the server.
 PAYMENT_GATEWAY_POOL_KEY = "payment_gateway.super_admin_pool_enabled"
+# Auto-disburse approved withdrawals through the payout gateway. Default
+# OFF: this sends real money the moment an admin approves, so it has to be
+# switched on deliberately.
+PAYOUT_AUTO_KEY = "payment_gateway.auto_payout_enabled"
 
 
 @router.get("/settings/payment-gateway", response_model=APIResponse[dict])
@@ -111,10 +115,14 @@ async def get_payment_gateway_setting(admin: CurrentAdmin):
     row = await PlatformSetting.find_one(
         PlatformSetting.setting_key == PAYMENT_GATEWAY_POOL_KEY
     )
+    payout_row = await PlatformSetting.find_one(
+        PlatformSetting.setting_key == PAYOUT_AUTO_KEY
+    )
     return APIResponse(
         data={
             "configured": divinepay_service.is_configured(),
             "enabled": True if row is None else bool(row.setting_value),
+            "auto_payout": False if payout_row is None else bool(payout_row.setting_value),
         }
     )
 
@@ -146,6 +154,42 @@ async def set_payment_gateway_setting(
         action=AuditAction.SETTING_CHANGE,
         entity_type="PlatformSetting",
         entity_id=PAYMENT_GATEWAY_POOL_KEY,
+        actor_id=admin.id,
+        new_values={"enabled": enabled},
+    )
+    return APIResponse(data={"enabled": enabled})
+
+
+@router.put("/settings/payment-gateway/auto-payout", response_model=APIResponse[dict])
+async def set_auto_payout_setting(
+    payload: UpdatePlatformSettingRequest, admin: SuperAdmin
+):
+    """Auto-disburse approved withdrawals for the super admin's OWN users.
+
+    ON  — approving a withdrawal fires the payout gateway immediately and the
+          request rides PROCESSING until the gateway confirms.
+    OFF — approving only debits the wallet; the operator transfers manually
+          and fills in the UTR (the behaviour before this existed).
+    """
+    enabled = bool(payload.setting_value)
+    row = await PlatformSetting.find_one(PlatformSetting.setting_key == PAYOUT_AUTO_KEY)
+    if row is None:
+        row = PlatformSetting(
+            setting_key=PAYOUT_AUTO_KEY,
+            setting_value=enabled,
+            setting_type=SettingType.BOOL,
+            category="payments",
+            is_public=False,
+            description="Auto-disburse approved withdrawals via the payout gateway.",
+        )
+        await row.insert()
+    else:
+        row.setting_value = enabled
+        await row.save()
+    await log_event(
+        action=AuditAction.SETTING_CHANGE,
+        entity_type="PlatformSetting",
+        entity_id=PAYOUT_AUTO_KEY,
         actor_id=admin.id,
         new_values={"enabled": enabled},
     )

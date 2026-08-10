@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from app.schemas.trading import DepositCreate, WalletSummary, WithdrawalCreate
 from app.services import wallet_service
 from app.utils.decimal_utils import to_decimal, to_decimal128
 from app.utils.time_utils import now_utc
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/wallet", tags=["user-wallet"])
 
@@ -379,6 +382,88 @@ async def _gateway_on_for(user) -> bool:
     return bool(getattr(admin, "payment_gateway_enabled", False)) if admin else False
 
 
+async def _credit_gateway_deposit(req, utr: str | None) -> bool:
+    """Book a gateway-confirmed deposit into the wallet exactly once.
+
+    The atomic PENDING->APPROVED claim is what makes this safe to call from
+    BOTH the user's UTR submit and the background status sync — whichever
+    gets there first credits, the other sees `already credited`.
+    """
+    processed_at = now_utc()
+    claimed = await DepositRequest.get_motor_collection().find_one_and_update(
+        {"_id": req.id, "status": DepositStatus.PENDING.value},
+        {
+            "$set": {
+                "status": DepositStatus.APPROVED.value,
+                "utr_number": utr or req.utr_number,
+                "processed_at": processed_at,
+                "admin_remark": "Auto-approved by payment gateway",
+                "updated_at": processed_at,
+            }
+        },
+    )
+    if claimed is None:
+        return False  # someone else already credited it
+    amount = to_decimal(req.amount)
+    try:
+        await wallet_service.adjust(
+            req.user_id,
+            amount,
+            transaction_type=TransactionType.DEPOSIT,
+            narration=f"Deposit via UPI gateway{f' (UTR {utr})' if utr else ''}",
+            reference_type="DEPOSIT",
+            reference_id=str(req.id),
+            actor_id=req.user_id,
+        )
+    except Exception:
+        # Credit failed after the claim — put it back so it is retried rather
+        # than sitting APPROVED with no money moved.
+        await DepositRequest.get_motor_collection().update_one(
+            {"_id": req.id},
+            {"$set": {"status": DepositStatus.PENDING.value, "processed_at": None, "updated_at": now_utc()}},
+        )
+        raise
+    return True
+
+
+async def _sync_gateway_deposits(user_id) -> None:
+    """Credit gateway deposits the customer paid but never confirmed.
+
+    The UTR step is a convenience, not the source of truth: the gateway knows
+    when an order is paid. Without this, a user who paid and then closed the
+    tab (or hit the cashier's "order has expired" screen after paying) stayed
+    uncredited with the money sitting at the gateway.
+
+    ponytail: polled from the user's own deposits list (which the wallet page
+    already refreshes every 3 s) and bounded to their few open orders. Promote
+    to a background loop if order volume ever makes that call heavy.
+    """
+    from app.services import divinepay_service
+
+    if not divinepay_service.is_configured():
+        return
+    pending = await DepositRequest.find(
+        {
+            "user_id": user_id,
+            "status": DepositStatus.PENDING.value,
+            "idempotency_key": {"$regex": "^divinepay:"},
+        }
+    ).to_list()
+    for req in pending:
+        order_id = str(req.idempotency_key or "").split("divinepay:", 1)[-1]
+        if not order_id:
+            continue
+        try:
+            data = await divinepay_service.check_status(order_id)
+        except Exception:
+            continue  # gateway hiccup — leave PENDING, retry on the next poll
+        if divinepay_service.is_success(data):
+            try:
+                await _credit_gateway_deposit(req, None)
+            except Exception:
+                logger.exception("gateway_deposit_autocredit_failed deposit=%s", req.id)
+
+
 @router.get("/deposit-mode", response_model=APIResponse[dict])
 async def deposit_mode(user: CurrentUser):
     """Which deposit UI to render: GATEWAY (online UPI) or MANUAL (bank transfer)."""
@@ -480,49 +565,19 @@ async def submit_gateway_utr(payload: dict, user: CurrentUser):
             data={"status": str(result.get("status") or "pending"), "credited": False}
         )
 
-    # Atomic claim before crediting — a double-submit (or a retry after a slow
-    # response) must never credit the wallet twice. Same compare-and-set the
-    # admin approval path uses.
-    processed_at = now_utc()
-    claimed = await DepositRequest.get_motor_collection().find_one_and_update(
-        {"_id": req.id, "status": DepositStatus.PENDING.value},
-        {
-            "$set": {
-                "status": DepositStatus.APPROVED.value,
-                "utr_number": utr,
-                "processed_at": processed_at,
-                "admin_remark": "Auto-approved by payment gateway",
-                "updated_at": processed_at,
-            }
-        },
-    )
-    if claimed is None:
+    credited = await _credit_gateway_deposit(req, utr)
+    if not credited:
         return APIResponse(data={"status": "success", "already_credited": True})
-
-    amount = to_decimal(req.amount)
-    try:
-        await wallet_service.adjust(
-            req.user_id,
-            amount,
-            transaction_type=TransactionType.DEPOSIT,
-            narration=f"Deposit via UPI gateway (UTR {utr})",
-            reference_type="DEPOSIT",
-            reference_id=str(req.id),
-            actor_id=user.id,
-        )
-    except Exception:
-        # Credit failed after the claim — put it back in the queue rather than
-        # showing APPROVED with no money moved.
-        await DepositRequest.get_motor_collection().update_one(
-            {"_id": req.id},
-            {"$set": {"status": DepositStatus.PENDING.value, "processed_at": None, "updated_at": now_utc()}},
-        )
-        raise
-    return APIResponse(data={"status": "success", "credited": True, "amount": str(amount)})
+    return APIResponse(
+        data={"status": "success", "credited": True, "amount": str(to_decimal(req.amount))}
+    )
 
 
 @router.get("/deposits", response_model=APIResponse[list])
 async def my_deposits(user: CurrentUser):
+    # Credit anything the gateway has already settled but the user never
+    # confirmed with a UTR (paid, then closed the tab / hit "order expired").
+    await _sync_gateway_deposits(user.id)
     rows = await DepositRequest.find(DepositRequest.user_id == user.id).sort("-created_at").limit(100).to_list()
     return APIResponse(
         data=[
