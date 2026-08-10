@@ -162,7 +162,7 @@ async def set_payment_gateway_setting(
 
 @router.put("/settings/payment-gateway/auto-payout", response_model=APIResponse[dict])
 async def set_auto_payout_setting(
-    payload: UpdatePlatformSettingRequest, admin: SuperAdmin
+    payload: UpdatePlatformSettingRequest, admin: CurrentAdmin
 ):
     """Auto-disburse approved withdrawals for the super admin's OWN users.
 
@@ -171,6 +171,11 @@ async def set_auto_payout_setting(
     OFF — approving only debits the wallet; the operator transfers manually
           and fills in the UTR (the behaviour before this existed).
     """
+    # NOTE: use CurrentAdmin + this guard, NOT the `SuperAdmin` alias — this
+    # module has `from __future__ import annotations`, so an un-imported
+    # annotation silently degrades into a query parameter and every call
+    # 422s with "admin field required" instead of authenticating.
+    _require_super_admin(admin)
     enabled = bool(payload.setting_value)
     row = await PlatformSetting.find_one(PlatformSetting.setting_key == PAYOUT_AUTO_KEY)
     if row is None:
