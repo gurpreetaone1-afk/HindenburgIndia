@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Check, X, Copy } from "lucide-react";
+import { Check, X, Copy, Trash2 } from "lucide-react";
 import { ApiAccessAPI } from "@/lib/api";
 import { PageHeader } from "@/components/common/PageHeader";
 import { StatusPill } from "@/components/common/StatusPill";
@@ -93,6 +93,27 @@ export default function AdminApiAccessPage() {
       qc.invalidateQueries({ queryKey: ["admin", "api-access"] });
     } catch (e: any) {
       toast.error(e?.message || "Reject failed");
+      qc.invalidateQueries({ queryKey: ["admin", "api-access"] });
+    } finally {
+      clearBusy(id);
+    }
+  }
+
+  async function remove(id: string) {
+    if (busy.has(id)) return;
+    if (
+      !window.confirm(
+        "Delete this API-access request? The user loses API access and must submit a new key from the app.",
+      )
+    )
+      return;
+    markBusy(id);
+    try {
+      await ApiAccessAPI.remove(id);
+      toast.success("API-access request deleted");
+      qc.invalidateQueries({ queryKey: ["admin", "api-access"] });
+    } catch (e: any) {
+      toast.error(e?.message || "Delete failed");
       qc.invalidateQueries({ queryKey: ["admin", "api-access"] });
     } finally {
       clearBusy(id);
@@ -199,30 +220,45 @@ export default function AdminApiAccessPage() {
                 )}
               </div>
 
-              {isPending && (
-                <div className="mt-3 flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-9 flex-1 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500 hover:text-white dark:text-emerald-400"
-                    disabled={!canMutate || busy.has(r.id)}
-                    onClick={() => canMutate && approve(r.id)}
-                    title={canMutate ? "Approve API access" : "View-only access"}
-                  >
-                    <Check className="size-4" /> Approve
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-9 flex-1 border-destructive/40 text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                    disabled={!canMutate || busy.has(r.id)}
-                    onClick={() => canMutate && setRejecting({ id: r.id, reason: "" })}
-                    title={canMutate ? "Reject with reason" : "View-only access"}
-                  >
-                    <X className="size-4" /> Reject
-                  </Button>
-                </div>
-              )}
+              <div className="mt-3 flex items-center gap-2">
+                {isPending && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-9 flex-1 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500 hover:text-white dark:text-emerald-400"
+                      disabled={!canMutate || busy.has(r.id)}
+                      onClick={() => canMutate && approve(r.id)}
+                      title={canMutate ? "Approve API access" : "View-only access"}
+                    >
+                      <Check className="size-4" /> Approve
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-9 flex-1 border-destructive/40 text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                      disabled={!canMutate || busy.has(r.id)}
+                      onClick={() => canMutate && setRejecting({ id: r.id, reason: "" })}
+                      title={canMutate ? "Reject with reason" : "View-only access"}
+                    >
+                      <X className="size-4" /> Reject
+                    </Button>
+                  </>
+                )}
+                {/* Delete works on ANY status — removes the row, revokes the
+                    user's API access, and resets their app to the Connect form. */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className={`h-9 ${isPending ? "px-2.5" : "flex-1"} border-destructive/40 text-destructive hover:bg-destructive hover:text-destructive-foreground`}
+                  disabled={!canMutate || busy.has(r.id)}
+                  onClick={() => canMutate && remove(r.id)}
+                  title={canMutate ? "Delete request — user must resubmit" : "View-only access"}
+                >
+                  <Trash2 className="size-4" />
+                  {isPending ? "" : " Delete"}
+                </Button>
+              </div>
             </div>
           );
         })}

@@ -524,6 +524,7 @@ export const ApiAccessAPI = {
   approve: (id: string) => unwrap<any>(api.post(`/admin/api-access/${id}/approve`, {})),
   reject: (id: string, rejection_reason: string) =>
     unwrap<any>(api.post(`/admin/api-access/${id}/reject`, { rejection_reason })),
+  remove: (id: string) => unwrap<any>(api.delete(`/admin/api-access/${id}`)),
 };
 
 // Admin notification bell — backed by /admin/notifications endpoints.
