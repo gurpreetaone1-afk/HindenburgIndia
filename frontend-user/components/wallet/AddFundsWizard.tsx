@@ -265,7 +265,11 @@ export function AddFundsWizard({
     // Online gateway: open a real pay-in order and send the user to the
     // gateway's UPI page, then collect the bank UTR on step 3.
     if (isGateway) {
-      if (amount < minAmount) return toast.error(`Minimum deposit is ${formatINR(minAmount)}`);
+      // Online payments have a hard gateway floor on top of the admin's own
+      // deposit rule — tell the user up front instead of round-tripping.
+      const gwMin = Number(depMode?.min_amount ?? 0) || 0;
+      const effMin = Math.max(minAmount, gwMin);
+      if (amount < effMin) return toast.error(`Minimum online payment is ${formatINR(effMin)}`);
       if (gwBusy) return;
       setGwBusy(true);
       try {

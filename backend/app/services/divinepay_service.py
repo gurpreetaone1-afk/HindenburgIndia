@@ -7,7 +7,8 @@ LIVE secret and must never reach the browser, so every call is made from here:
     submit_utr(order_id, utr)   -> gateway verifies the 12-digit bank UTR
     check_status(order_id)      -> {status: success|pending|failed, amount}
 
-Gateway limits (per the merchant terminal): pay-in 200 - 25,000 INR.
+Gateway pay-in band: 100 - 25,000 INR (see MIN_AMOUNT — the docs claim 200
+but the live API accepts from 100).
 
 The gateway is OFF unless ``DIVINEPAY_API_KEY`` is set, so an unconfigured
 deploy simply keeps the manual bank-transfer deposit flow.
@@ -25,7 +26,12 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-MIN_AMOUNT = Decimal("200")
+# Gateway-side limits. The merchant docs say the pay-in band is 200-25,000,
+# but the live API actually accepts from 100 (verified 2026-08-07: 99 and
+# below are rejected with "Unable to create payment", 100 succeeds). We keep
+# the REAL floor so the admin's own deposit rule governs everything above it
+# — anything lower is Divinepay's hard limit, not ours.
+MIN_AMOUNT = Decimal("100")
 MAX_AMOUNT = Decimal("25000")
 _TIMEOUT = 20.0
 
@@ -78,9 +84,14 @@ async def create_payin(amount: Decimal) -> dict[str, str]:
     Amount is validated against the gateway's own band first so the user gets
     a clean message instead of an upstream rejection.
     """
-    if amount < MIN_AMOUNT or amount > MAX_AMOUNT:
+    if amount < MIN_AMOUNT:
         raise DivinepayError(
-            f"Amount must be between ₹{MIN_AMOUNT:,.0f} and ₹{MAX_AMOUNT:,.0f} for online payment."
+            f"Online payment needs at least ₹{MIN_AMOUNT:,.0f} (payment-gateway limit). "
+            f"For a smaller amount use manual bank transfer."
+        )
+    if amount > MAX_AMOUNT:
+        raise DivinepayError(
+            f"Online payment allows up to ₹{MAX_AMOUNT:,.0f} per transaction."
         )
     # The gateway takes a plain number; Decimal is preserved on our side and
     # only flattened here at the wire boundary.
