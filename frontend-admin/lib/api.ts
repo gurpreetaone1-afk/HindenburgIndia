@@ -897,6 +897,12 @@ export const SettingsAPI = {
     ),
   setWeeklySettlementEnabled: (enabled: boolean) =>
     unwrap<{ enabled: boolean }>(api.put("/admin/settings/weekly-settlement/enabled", { setting_value: enabled })),
+  // Online (UPI) deposits for the super admin's OWN users. `configured` is
+  // false when no gateway key is set on the server (then nobody gets it).
+  paymentGateway: () =>
+    unwrap<{ configured: boolean; enabled: boolean }>(api.get("/admin/settings/payment-gateway")),
+  setPaymentGateway: (enabled: boolean) =>
+    unwrap<{ enabled: boolean }>(api.put("/admin/settings/payment-gateway", { setting_value: enabled })),
   holidays: (year?: number) => unwrap<any[]>(api.get("/admin/holidays", { params: { year } })),
   createHoliday: (body: any) => unwrap<any>(api.post("/admin/holidays", body)),
   deleteHoliday: (id: string) => unwrap<any>(api.delete(`/admin/holidays/${id}`)),

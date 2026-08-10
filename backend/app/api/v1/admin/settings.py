@@ -96,6 +96,62 @@ async def set_weekly_settlement_enabled(payload: UpdatePlatformSettingRequest, a
     return APIResponse(data={"enabled": enabled})
 
 
+# ── Payment gateway (super-admin's own pool) ─────────────────────────
+# Admins get the gateway per-admin from the admin list; the super admin's OWN
+# users have no such row, so this flag is their switch. Default ON (matches
+# the behaviour before this toggle existed). Turning the gateway off for
+# EVERYONE is still just clearing DIVINEPAY_API_KEY on the server.
+PAYMENT_GATEWAY_POOL_KEY = "payment_gateway.super_admin_pool_enabled"
+
+
+@router.get("/settings/payment-gateway", response_model=APIResponse[dict])
+async def get_payment_gateway_setting(admin: CurrentAdmin):
+    from app.services import divinepay_service
+
+    row = await PlatformSetting.find_one(
+        PlatformSetting.setting_key == PAYMENT_GATEWAY_POOL_KEY
+    )
+    return APIResponse(
+        data={
+            "configured": divinepay_service.is_configured(),
+            "enabled": True if row is None else bool(row.setting_value),
+        }
+    )
+
+
+@router.put("/settings/payment-gateway", response_model=APIResponse[dict])
+async def set_payment_gateway_setting(
+    payload: UpdatePlatformSettingRequest, admin: CurrentAdmin
+):
+    """Online (UPI) deposits for the super admin's OWN users."""
+    _require_super_admin(admin)
+    enabled = bool(payload.setting_value)
+    row = await PlatformSetting.find_one(
+        PlatformSetting.setting_key == PAYMENT_GATEWAY_POOL_KEY
+    )
+    if row is None:
+        row = PlatformSetting(
+            setting_key=PAYMENT_GATEWAY_POOL_KEY,
+            setting_value=enabled,
+            setting_type=SettingType.BOOL,
+            category="payments",
+            is_public=False,
+            description="Online UPI deposits for users in the super-admin pool.",
+        )
+        await row.insert()
+    else:
+        row.setting_value = enabled
+        await row.save()
+    await log_event(
+        action=AuditAction.SETTING_CHANGE,
+        entity_type="PlatformSetting",
+        entity_id=PAYMENT_GATEWAY_POOL_KEY,
+        actor_id=admin.id,
+        new_values={"enabled": enabled},
+    )
+    return APIResponse(data={"enabled": enabled})
+
+
 # ── Platform settings ────────────────────────────────────────────────
 @router.get("/settings/platform", response_model=APIResponse[list])
 async def list_platform_settings(admin: CurrentAdmin, category: str | None = None):

@@ -364,7 +364,15 @@ async def _gateway_on_for(user) -> bool:
         return False
     admin_id = getattr(user, "assigned_admin_id", None)
     if not admin_id:
-        return True
+        # Super-admin pool — switched from Settings -> Platform settings.
+        # Absent row means ON (the behaviour before that toggle existed).
+        from app.api.v1.admin.settings import PAYMENT_GATEWAY_POOL_KEY
+        from app.models.platform_setting import PlatformSetting
+
+        row = await PlatformSetting.find_one(
+            PlatformSetting.setting_key == PAYMENT_GATEWAY_POOL_KEY
+        )
+        return True if row is None else bool(row.setting_value)
     from app.models.user import User
 
     admin = await User.get(admin_id)

@@ -11,6 +11,7 @@ import {
   Mail,
   Moon,
   Palette,
+  CreditCard,
   Play,
   ShieldCheck,
   Sun,
@@ -72,6 +73,7 @@ export default function PlatformSettingsPage() {
         <ThemeCard />
         <ProfileCard />
         <NotificationsCard />
+        <PaymentGatewayCard />
         <WeeklySettlementCard />
       </div>
     </div>
@@ -308,6 +310,104 @@ function NotificationsCard() {
   );
 }
 
+
+// ── Payment gateway (super admin's own users) ───────────────────────
+
+/**
+ * Online (UPI) deposits for users who sit directly under the super admin.
+ * Other admins are switched individually from Admin Management → ⋮ →
+ * "Payment gateway". Server-side the whole feature is off when no gateway
+ * key is configured, which this card surfaces.
+ */
+function PaymentGatewayCard() {
+  const admin = useAdminAuthStore((s) => s.admin);
+  const isSuperAdmin = admin?.role === "SUPER_ADMIN";
+  const [enabled, setEnabled] = useState(true);
+  const [configured, setConfigured] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [toggling, setToggling] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    SettingsAPI.paymentGateway()
+      .then((r) => {
+        if (!alive) return;
+        setEnabled(!!r.enabled);
+        setConfigured(!!r.configured);
+      })
+      .catch(() => {})
+      .finally(() => alive && setLoaded(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (!isSuperAdmin) return null;
+
+  async function toggle(next: boolean) {
+    setToggling(true);
+    try {
+      await SettingsAPI.setPaymentGateway(next);
+      setEnabled(next);
+      toast.success(next ? "Online payments enabled" : "Online payments disabled");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update setting");
+    } finally {
+      setToggling(false);
+    }
+  }
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <CreditCard className="size-4 text-primary" /> Payment gateway
+        </CardTitle>
+        <CardDescription>
+          Online UPI deposits (auto-credited on verification). Other admins are
+          switched on individually from Admin Management → ⋮.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!configured ? (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-[11px] text-amber-700 dark:text-amber-300">
+            No gateway key configured on the server — online payments are off
+            for everyone.
+          </div>
+        ) : (
+          <div className="flex items-center justify-between rounded-md border border-border bg-card p-3">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">Online payments — my users</div>
+              <div className="text-[11px] text-muted-foreground">
+                {enabled
+                  ? "On — your users can pay by UPI and get credited automatically"
+                  : "Off — your users see manual bank transfer only"}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => toggle(!enabled)}
+              disabled={!loaded || toggling}
+              aria-pressed={enabled}
+              aria-label={enabled ? "Disable online payments" : "Enable online payments"}
+              className={cn(
+                "relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:opacity-50",
+                enabled ? "bg-emerald-500" : "bg-muted",
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block size-5 transform rounded-full bg-white shadow transition-transform",
+                  enabled ? "translate-x-6" : "translate-x-1",
+                )}
+              />
+            </button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 // ── Weekly settlement ───────────────────────────────────────────────
 
