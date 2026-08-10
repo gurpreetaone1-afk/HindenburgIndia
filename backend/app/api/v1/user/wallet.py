@@ -383,85 +383,22 @@ async def _gateway_on_for(user) -> bool:
 
 
 async def _credit_gateway_deposit(req, utr: str | None) -> bool:
-    """Book a gateway-confirmed deposit into the wallet exactly once.
+    """Thin alias — the real logic (and its atomic claim) lives in the
+    service so the background reconciler shares exactly one code path."""
+    from app.services import divinepay_service
 
-    The atomic PENDING->APPROVED claim is what makes this safe to call from
-    BOTH the user's UTR submit and the background status sync — whichever
-    gets there first credits, the other sees `already credited`.
-    """
-    processed_at = now_utc()
-    claimed = await DepositRequest.get_motor_collection().find_one_and_update(
-        {"_id": req.id, "status": DepositStatus.PENDING.value},
-        {
-            "$set": {
-                "status": DepositStatus.APPROVED.value,
-                "utr_number": utr or req.utr_number,
-                "processed_at": processed_at,
-                "admin_remark": "Auto-approved by payment gateway",
-                "updated_at": processed_at,
-            }
-        },
-    )
-    if claimed is None:
-        return False  # someone else already credited it
-    amount = to_decimal(req.amount)
-    try:
-        await wallet_service.adjust(
-            req.user_id,
-            amount,
-            transaction_type=TransactionType.DEPOSIT,
-            narration=f"Deposit via UPI gateway{f' (UTR {utr})' if utr else ''}",
-            reference_type="DEPOSIT",
-            reference_id=str(req.id),
-            actor_id=req.user_id,
-        )
-    except Exception:
-        # Credit failed after the claim — put it back so it is retried rather
-        # than sitting APPROVED with no money moved.
-        await DepositRequest.get_motor_collection().update_one(
-            {"_id": req.id},
-            {"$set": {"status": DepositStatus.PENDING.value, "processed_at": None, "updated_at": now_utc()}},
-        )
-        raise
-    return True
+    return await divinepay_service.credit_deposit(req, utr)
 
 
 async def _sync_gateway_deposits(user_id) -> None:
-    """Credit gateway deposits the customer paid but never confirmed.
-
-    The UTR step is a convenience, not the source of truth: the gateway knows
-    when an order is paid. Without this, a user who paid and then closed the
-    tab (or hit the cashier's "order has expired" screen after paying) stayed
-    uncredited with the money sitting at the gateway.
-
-    ponytail: polled from the user's own deposits list (which the wallet page
-    already refreshes every 3 s) and bounded to their few open orders. Promote
-    to a background loop if order volume ever makes that call heavy.
-    """
+    """Instant path: credit this customer's paid-but-unconfirmed orders when
+    they refresh their wallet. The background loop covers everyone else."""
     from app.services import divinepay_service
 
-    if not divinepay_service.is_configured():
-        return
-    pending = await DepositRequest.find(
-        {
-            "user_id": user_id,
-            "status": DepositStatus.PENDING.value,
-            "idempotency_key": {"$regex": "^divinepay:"},
-        }
-    ).to_list()
-    for req in pending:
-        order_id = str(req.idempotency_key or "").split("divinepay:", 1)[-1]
-        if not order_id:
-            continue
-        try:
-            data = await divinepay_service.check_status(order_id)
-        except Exception:
-            continue  # gateway hiccup — leave PENDING, retry on the next poll
-        if divinepay_service.is_success(data):
-            try:
-                await _credit_gateway_deposit(req, None)
-            except Exception:
-                logger.exception("gateway_deposit_autocredit_failed deposit=%s", req.id)
+    try:
+        await divinepay_service.reconcile_deposits(user_id=user_id)
+    except Exception:
+        logger.exception("gateway_deposit_sync_failed user=%s", user_id)
 
 
 @router.get("/deposit-mode", response_model=APIResponse[dict])

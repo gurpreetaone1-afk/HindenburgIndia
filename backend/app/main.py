@@ -773,6 +773,20 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     )
     setattr(app, "_eod_order_cleanup_task", eod_cancel_task)
 
+    # Payment-gateway deposit reconcile: every 20 s, credit any Divinepay
+    # order the gateway reports as paid but that is still PENDING here. The
+    # customer's UTR submit is only a shortcut — this is what guarantees a
+    # paid deposit lands in the wallet even if they close the app right
+    # after paying. Leader-only so one worker does the polling.
+    from app.services.divinepay_service import deposit_reconcile_loop
+    dp_task: _asyncio.Task = _asyncio.create_task(
+        _supervise(
+            "divinepay_deposit_reconcile",
+            _leader_only("divinepay_deposit_reconcile", deposit_reconcile_loop, interval_sec=20.0),
+        )
+    )
+    setattr(app, "_divinepay_reconcile_task", dp_task)
+
     # Tracker self-heal: every 15 min, walk every UserPositionTracker row
     # and recompute it from the live Position docs. Catches any drift
     # introduced by an unexpected restart / fill retry / partial flow,
@@ -1015,6 +1029,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                 await itask
             except (asyncio.CancelledError, Exception):
                 pass
+    except Exception:
+        pass
+
+    # Stop the payment-gateway deposit reconciler cleanly
+    try:
+        dtask = getattr(app, "_divinepay_reconcile_task", None)
+        if dtask is not None:
+            dtask.cancel()
     except Exception:
         pass
 

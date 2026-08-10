@@ -124,6 +124,123 @@ def is_success(data: dict[str, Any]) -> bool:
     return str(data.get("status") or "").strip().lower() == "success"
 
 
+# ── Deposit reconciliation ───────────────────────────────────────────
+# The customer's UTR submit is a convenience, not the source of truth: the
+# gateway knows when an order is actually paid. These helpers credit off the
+# GATEWAY's verdict so a customer who paid and then closed the tab (or hit
+# the cashier's "order has expired" screen after paying) is still credited.
+
+
+async def credit_deposit(req, utr: str | None = None) -> bool:
+    """Book a gateway-confirmed deposit into the wallet exactly once.
+
+    The atomic PENDING->APPROVED claim is what makes this safe to call from
+    the UTR submit, the user's own list refresh, and the background poller
+    concurrently — the first one through credits, the rest get False.
+    """
+    from app.models.transaction import DepositRequest, DepositStatus, TransactionType
+    from app.services import wallet_service
+    from app.utils.decimal_utils import to_decimal
+    from app.utils.time_utils import now_utc
+
+    processed_at = now_utc()
+    claimed = await DepositRequest.get_motor_collection().find_one_and_update(
+        {"_id": req.id, "status": DepositStatus.PENDING.value},
+        {
+            "$set": {
+                "status": DepositStatus.APPROVED.value,
+                "utr_number": utr or req.utr_number,
+                "processed_at": processed_at,
+                "admin_remark": "Auto-approved by payment gateway",
+                "updated_at": processed_at,
+            }
+        },
+    )
+    if claimed is None:
+        return False
+    try:
+        await wallet_service.adjust(
+            req.user_id,
+            to_decimal(req.amount),
+            transaction_type=TransactionType.DEPOSIT,
+            narration=f"Deposit via UPI gateway{f' (UTR {utr})' if utr else ''}",
+            reference_type="DEPOSIT",
+            reference_id=str(req.id),
+            actor_id=req.user_id,
+        )
+    except Exception:
+        # Credit failed after the claim — return it to the queue so the next
+        # sweep retries rather than leaving it APPROVED with no money moved.
+        await DepositRequest.get_motor_collection().update_one(
+            {"_id": req.id},
+            {"$set": {"status": DepositStatus.PENDING.value, "processed_at": None, "updated_at": now_utc()}},
+        )
+        raise
+    return True
+
+
+async def reconcile_deposits(*, user_id=None, max_age_hours: int = 24) -> int:
+    """Credit every open gateway order the gateway now reports as paid.
+
+    `user_id` limits the sweep to one customer (used on their own wallet
+    refresh for an instant credit); without it the background poller sweeps
+    everyone. Only orders from the last `max_age_hours` are polled so the
+    query stays small as history grows.
+    """
+    if not is_configured():
+        return 0
+    from datetime import timedelta
+
+    from app.models.transaction import DepositRequest, DepositStatus
+    from app.utils.time_utils import now_utc
+
+    q: dict[str, Any] = {
+        "status": DepositStatus.PENDING.value,
+        "idempotency_key": {"$regex": "^divinepay:"},
+        "created_at": {"$gte": now_utc() - timedelta(hours=max_age_hours)},
+    }
+    if user_id is not None:
+        q["user_id"] = user_id
+
+    credited = 0
+    for req in await DepositRequest.find(q).to_list():
+        order_id = str(req.idempotency_key or "").split("divinepay:", 1)[-1]
+        if not order_id:
+            continue
+        try:
+            data = await check_status(order_id)
+        except Exception:
+            continue  # gateway hiccup — retry on the next sweep
+        if not is_success(data):
+            continue
+        try:
+            if await credit_deposit(req):
+                credited += 1
+                logger.info(
+                    "gateway_deposit_credited order=%s user=%s amount=%s",
+                    order_id, req.user_id, req.amount,
+                )
+        except Exception:
+            logger.exception("gateway_deposit_credit_failed order=%s", order_id)
+    return credited
+
+
+async def deposit_reconcile_loop(interval_sec: float = 20.0) -> None:
+    """Background sweep so a paid order is credited even if the customer
+    never reopens the app. Leader-locked by the caller."""
+    import asyncio
+
+    logger.info("divinepay_deposit_reconcile_started interval_sec=%s", interval_sec)
+    while True:
+        try:
+            await reconcile_deposits()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("divinepay_deposit_reconcile_tick_failed")
+        await asyncio.sleep(interval_sec)
+
+
 # ── Payout (withdrawals) ─────────────────────────────────────────────
 # NOTE: create_payout MOVES REAL MONEY to the customer. It is only ever
 # called from the admin approval path, after the user's wallet has already
