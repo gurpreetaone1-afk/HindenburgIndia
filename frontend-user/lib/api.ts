@@ -386,6 +386,19 @@ export const WalletAPI = {
   myDeposits: () => unwrap<any[]>(api.get("/user/wallet/deposits")),
   createWithdrawal: (body: any) => unwrap<any>(api.post("/user/wallet/withdrawals", body)),
   myWithdrawals: () => unwrap<any[]>(api.get("/user/wallet/withdrawals")),
+  // Online (UPI gateway) deposits. MANUAL = the usual bank-transfer flow.
+  depositMode: () =>
+    unwrap<{ mode: "GATEWAY" | "MANUAL"; min_amount: string; max_amount: string }>(
+      api.get("/user/wallet/deposit-mode"),
+    ),
+  createGatewayDeposit: (amount: number) =>
+    unwrap<{ deposit_id: string; order_id: string; payment_url: string; amount: string }>(
+      api.post("/user/wallet/deposits/gateway", { amount }),
+    ),
+  submitGatewayUtr: (order_id: string, utr: string) =>
+    unwrap<{ status: string; credited?: boolean; already_credited?: boolean; amount?: string }>(
+      api.post("/user/wallet/deposits/gateway/submit-utr", { order_id, utr }),
+    ),
   deleteDeposit: (id: string) => unwrap<any>(api.delete(`/user/wallet/deposits/${id}`)),
   deleteWithdrawal: (id: string) => unwrap<any>(api.delete(`/user/wallet/withdrawals/${id}`)),
   // Effective deposit + withdrawal rules for this user — already resolved

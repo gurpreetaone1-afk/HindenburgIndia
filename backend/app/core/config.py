@@ -159,6 +159,14 @@ class Settings(BaseSettings):
     ZERODHA_CREDS_KEY: SecretStr = Field(default=SecretStr(""))
     PRICE_FEED_PROVIDER: Literal["mock", "angel_one", "zerodha"] = "mock"
 
+    # Divinepay UPI pay-in gateway (deposits). Server-side only — the key is a
+    # live secret and must never be shipped to a browser. Leaving it blank is
+    # the global OFF switch: every user keeps the manual bank-transfer deposit
+    # flow. Per-admin visibility is a separate flag (User.payment_gateway_enabled)
+    # that the super admin turns on from the admin list.
+    DIVINEPAY_API_KEY: SecretStr = Field(default=SecretStr(""))
+    DIVINEPAY_BASE_URL: str = "https://divinepay.us.cc"
+
     # Infoway — global forex / crypto / metals / energy / stocks / indices feed.
     INFOWAY_API_KEY: SecretStr = Field(default=SecretStr(""))
     INFOWAY_AUTO_CONNECT: bool = True

@@ -17,6 +17,7 @@ import {
   Trash2,
   MailCheck,
   MailX,
+  CreditCard,
 } from "lucide-react";
 
 import { BrokerMgmtAPI, ManagementAPI, setTokens } from "@/lib/api";
@@ -181,6 +182,20 @@ export default function SubAdminsPage() {
     },
     onError: (e: any) => toast.error(e?.message ?? "Could not update OTP setting"),
   });
+
+  // Online (UPI gateway) deposits for this admin's users. Off by default —
+  // until this is on, their users only see manual bank transfer.
+  const gatewayMut = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      ManagementAPI.setSubAdminPaymentGateway(id, enabled),
+    onSuccess: (_d, vars) => {
+      toast.success(
+        vars.enabled ? "Payment gateway enabled for this admin" : "Payment gateway disabled",
+      );
+      qc.invalidateQueries({ queryKey: ["admin", "sub-admins"] });
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Could not update payment gateway"),
+  });
   const resetPwMut = useMutation({
     mutationFn: ({ id, pw }: { id: string; pw: string }) =>
       ManagementAPI.resetSubAdminPassword(id, pw),
@@ -300,6 +315,17 @@ export default function SubAdminsPage() {
                 <DropdownMenuItem onSelect={() => otpMut.mutate({ id: r.id, enabled: false })}>
                   <MailX className="size-4 text-amber-500" />
                   Turn OFF login OTP
+                </DropdownMenuItem>
+              )}
+              {r.payment_gateway_enabled ? (
+                <DropdownMenuItem onSelect={() => gatewayMut.mutate({ id: r.id, enabled: false })}>
+                  <CreditCard className="size-4 text-amber-500" />
+                  Payment gateway: ON — turn off
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onSelect={() => gatewayMut.mutate({ id: r.id, enabled: true })}>
+                  <CreditCard className="size-4 text-emerald-500" />
+                  Payment gateway: OFF — turn on
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem

@@ -12,7 +12,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.core.dependencies import SuperAdmin
 from app.models.user import User
@@ -50,6 +50,7 @@ async def _ser_sub_admin(sa: User) -> SubAdminDTO:
         permissions=sa.admin_permissions,
         pnl_share_pct=str(sa.pnl_share_pct) if sa.pnl_share_pct is not None else "0",
         login_otp_enabled=getattr(sa, "login_otp_enabled", True),
+        payment_gateway_enabled=getattr(sa, "payment_gateway_enabled", False),
         user_count=await mgmt.count_assigned_users(sa.id),
         broker_count=await mgmt.count_assigned_brokers(sa.id),
         created_at=sa.created_at,
@@ -133,6 +134,26 @@ async def update_sub_admin(
         sub_admin_id, full_name=payload.full_name, actor_id=admin.id
     )
     return APIResponse(data=await _ser_sub_admin(sa))
+
+
+@router.put(
+    "/sub-admins/{sub_admin_id}/payment-gateway", response_model=APIResponse[dict]
+)
+async def set_payment_gateway(sub_admin_id: str, payload: dict, admin: SuperAdmin):
+    """Turn the online (UPI gateway) deposit option on/off for ONE admin.
+
+    Off by default: that admin's users keep manual bank transfer until the
+    super admin flips this. Global availability still depends on the gateway
+    key being configured server-side.
+    """
+    sa = await User.get(PydanticObjectId(sub_admin_id))
+    if sa is None:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    sa.payment_gateway_enabled = bool(payload.get("enabled"))
+    await sa.save()
+    return APIResponse(
+        data={"id": str(sa.id), "payment_gateway_enabled": sa.payment_gateway_enabled}
+    )
 
 
 @router.put(

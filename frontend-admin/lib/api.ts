@@ -524,6 +524,7 @@ export const ApiAccessAPI = {
   approve: (id: string) => unwrap<any>(api.post(`/admin/api-access/${id}/approve`, {})),
   reject: (id: string, rejection_reason: string) =>
     unwrap<any>(api.post(`/admin/api-access/${id}/reject`, { rejection_reason })),
+  remove: (id: string) => unwrap<any>(api.delete(`/admin/api-access/${id}`)),
 };
 
 // Admin notification bell — backed by /admin/notifications endpoints.
@@ -833,6 +834,11 @@ export const ManagementAPI = {
     unwrap<any>(api.post(`/admin/management/sub-admins/${id}/unblock`)),
   setSubAdminOtp: (id: string, enabled: boolean) =>
     unwrap<any>(api.post(`/admin/management/sub-admins/${id}/otp`, { enabled })),
+  // Online (UPI gateway) deposits for THIS admin's users. Off by default.
+  setSubAdminPaymentGateway: (id: string, enabled: boolean) =>
+    unwrap<{ id: string; payment_gateway_enabled: boolean }>(
+      api.put(`/admin/management/sub-admins/${id}/payment-gateway`, { enabled }),
+    ),
   deleteSubAdmin: (id: string) =>
     unwrap<any>(api.delete(`/admin/management/sub-admins/${id}`)),
   resetSubAdminPassword: (id: string, new_password: string) =>

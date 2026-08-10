@@ -67,6 +67,7 @@ class SubAdminDTO(BaseModel):
     permissions: AdminPermissions | None = None
     pnl_share_pct: str
     login_otp_enabled: bool = True  # email OTP required on this sub-admin's login
+    payment_gateway_enabled: bool = False  # online UPI deposits for this admin's users
     user_count: int = 0  # active trading clients (CLOSED + broker rows excluded)
     broker_count: int = 0  # broker + sub-broker login accounts under this admin
     created_at: datetime | None = None

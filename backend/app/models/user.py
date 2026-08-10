@@ -242,6 +242,13 @@ class User(TimestampMixin):
     # NULL ⇒ owned by super-admin (the platform itself).
     assigned_admin_id: PydanticObjectId | None = None
 
+    # Online (Divinepay UPI) deposits for THIS admin's users. Default OFF —
+    # the super admin turns it on per admin from the admin list, and only then
+    # do that admin's users see the online-payment option instead of manual
+    # bank transfer. Users in the super-admin pool (no assigned_admin_id) get
+    # it whenever the gateway key is configured.
+    payment_gateway_enabled: bool = False
+
     # Sub-admin profile — only populated for role == ADMIN.
     admin_permissions: AdminPermissions | None = None
     pnl_share_pct: Decimal128 | None = None  # 0..100

@@ -191,6 +191,23 @@ export function AddFundsWizard({
   });
   const minAmount = Number(rules?.deposit?.min_amount ?? 0) || 500;
 
+  // ── Online (UPI gateway) mode ────────────────────────────────────
+  // GATEWAY when the user's owning admin has the payment gateway on. The
+  // manual QR + screenshot path below is untouched and still used for
+  // MANUAL, so nothing changes for admins who haven't enabled it.
+  const { data: depMode } = useQuery({
+    queryKey: ["deposit-mode"],
+    queryFn: () => WalletAPI.depositMode(),
+    staleTime: 60_000,
+    enabled: open,
+  });
+  const isGateway = depMode?.mode === "GATEWAY";
+  const [gwOrder, setGwOrder] = useState<
+    { order_id: string; payment_url: string; amount: string } | null
+  >(null);
+  const [gwUtr, setGwUtr] = useState("");
+  const [gwBusy, setGwBusy] = useState(false);
+
   // Reset whenever the wizard opens.
   useEffect(() => {
     if (open) {
@@ -198,6 +215,8 @@ export function AddFundsWizard({
       setAmtStr("");
       setScreenshotUrl("");
       setSelectedBankId(null);
+      setGwOrder(null);
+      setGwUtr("");
     }
   }, [open]);
 
@@ -242,8 +261,50 @@ export function AddFundsWizard({
   // a upi:// intent — it pops the OS app-chooser (PhonePe / GPay …) OVER the
   // QR screen, which the operator asked to remove. The user pays by scanning
   // the QR or copying the UPI ID, then uploads the screenshot.
-  function payViaUpiApp() {
+  async function payViaUpiApp() {
+    // Online gateway: open a real pay-in order and send the user to the
+    // gateway's UPI page, then collect the bank UTR on step 3.
+    if (isGateway) {
+      if (amount < minAmount) return toast.error(`Minimum deposit is ${formatINR(minAmount)}`);
+      if (gwBusy) return;
+      setGwBusy(true);
+      try {
+        const res = await WalletAPI.createGatewayDeposit(amount);
+        setGwOrder(res);
+        window.open(res.payment_url, "_blank", "noopener");
+        setStep(3);
+      } catch (e: any) {
+        toast.error(e?.message || "Could not start payment");
+      } finally {
+        setGwBusy(false);
+      }
+      return;
+    }
     setStep(3);
+  }
+
+  // Gateway verifies the UTR against the bank; a success verdict from THEM is
+  // what credits the wallet (never the client).
+  async function verifyGatewayUtr() {
+    if (!gwOrder || gwBusy) return;
+    if (gwUtr.length !== 12) return toast.error("Enter the 12-digit UTR");
+    setGwBusy(true);
+    try {
+      const res = await WalletAPI.submitGatewayUtr(gwOrder.order_id, gwUtr);
+      if (res.status === "success") {
+        toast.success("Payment verified — wallet credited");
+        setGwOrder(null);
+        setGwUtr("");
+        onSuccess?.();
+        onClose();
+      } else {
+        toast.message("Payment not confirmed yet — try again in a moment.");
+      }
+    } catch (e: any) {
+      toast.error(e?.message || "Could not verify payment");
+    } finally {
+      setGwBusy(false);
+    }
   }
 
   async function onPickFile(file: File) {
@@ -432,8 +493,73 @@ export function AddFundsWizard({
           </div>
         )}
 
+        {/* ── STEP 3 (ONLINE GATEWAY): enter the bank UTR ──────────────────
+            The user has already paid on the gateway's own page; all we need
+            is the 12-digit UTR, which the gateway verifies before we credit.
+            No screenshot and no admin approval on this path. */}
+        {step === 3 && isGateway && (
+          <div className="flex flex-1 flex-col">
+            <Header onBack={() => setStep(1)} />
+            <div className="flex flex-1 flex-col gap-4 px-5 pt-4">
+              <div>
+                <div className="text-lg font-semibold">Enter payment reference</div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Finish the payment in the tab that opened, then enter the 12-digit
+                  UTR / reference your bank or UPI app shows.
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-border bg-muted/30 p-3 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Amount</span>
+                  <span className="font-semibold">{formatINR(gwOrder?.amount ?? amount)}</span>
+                </div>
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="text-muted-foreground">Order</span>
+                  <span className="font-mono text-[10px]">{gwOrder?.order_id}</span>
+                </div>
+              </div>
+
+              {gwOrder && (
+                <button
+                  type="button"
+                  onClick={() => window.open(gwOrder.payment_url, "_blank", "noopener")}
+                  className="w-full rounded-xl border border-border py-3 text-sm font-medium hover:bg-muted/50"
+                >
+                  Open payment page again
+                </button>
+              )}
+
+              <div className="space-y-1.5">
+                <label htmlFor="gw-utr" className="text-xs font-medium">
+                  12-digit UTR
+                </label>
+                <input
+                  id="gw-utr"
+                  inputMode="numeric"
+                  maxLength={12}
+                  placeholder="123456789012"
+                  value={gwUtr}
+                  onChange={(e) => setGwUtr(e.target.value.replace(/\D/g, ""))}
+                  className="w-full rounded-xl border border-border bg-background px-3 py-3 text-base tracking-widest outline-none focus:border-primary"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={verifyGatewayUtr}
+                disabled={gwBusy || gwUtr.length !== 12}
+                className="w-full rounded-xl bg-primary py-3.5 text-sm font-semibold text-primary-foreground disabled:opacity-50"
+              >
+                {gwBusy ? "Verifying…" : "Verify & add funds"}
+              </button>
+              <PoweredFooter />
+            </div>
+          </div>
+        )}
+
         {/* ─────────────── STEP 3: Pay & Screenshot (QR + UPI id) ─────────────── */}
-        {step === 3 && (
+        {step === 3 && !isGateway && (
           <div className="flex flex-1 flex-col">
             <Header onBack={() => setStep(1)} />
             <div className="flex flex-1 flex-col px-5 pt-4">

@@ -197,3 +197,42 @@ async def reject_api_access(
     )
     await _notify_user(r.user_id, "REJECTED", r.rejection_reason)
     return APIResponse(data={"id": str(r.id), "status": r.status.value})
+
+
+@router.delete("/api-access/{request_id}", response_model=APIResponse[dict])
+async def delete_api_access(
+    request_id: str,
+    admin: CurrentAdmin,
+    _: None = Depends(require_perm("users", "write")),
+):
+    """Delete a request entirely (any status). Revokes the user's API-access
+    capability and resets their app to the empty "Connect" form - they must
+    re-submit a key to request access again."""
+    r = await ApiAccessRequest.get(PydanticObjectId(request_id))
+    if r is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    await assert_user_in_scope(admin, r.user_id)
+    user_id = r.user_id
+    await r.delete()
+
+    try:
+        u = await User.get(user_id)
+        if u is not None:
+            u.permissions.api_access = False
+            await u.save()
+    except Exception:  # pragma: no cover
+        pass
+
+    await log_event(
+        action=AuditAction.DELETE,
+        entity_type="ApiAccessRequest",
+        entity_id=PydanticObjectId(request_id),
+        actor_id=admin.id,
+        target_user_id=user_id,
+    )
+    await publish_admin_event(
+        "api_access_update",
+        {"event": "deleted", "user_id": str(user_id), "request_id": request_id},
+    )
+    await _notify_user(user_id, "idle")
+    return APIResponse(data={"id": request_id, "status": "idle"})
