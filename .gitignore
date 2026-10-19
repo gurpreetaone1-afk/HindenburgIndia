@@ -86,3 +86,9 @@ frontend-user.hbk-backup/
 # env backups (contain secrets)
 .env.bak*
 backend/.env.bak*
+
+# fail-safe deploy (scripts/deploy.sh)
+.next.build/
+.next.prev/
+.next.failed/
+.deploy/

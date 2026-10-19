@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Deploys build into .next.build and swap it in only on success (scripts/deploy.sh).
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   transpilePackages: ["lenis"],
   poweredByHeader: false,
   compress: true,
