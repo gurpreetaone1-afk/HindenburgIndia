@@ -1,153 +1,236 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────────
-#  MarginPlant Broker — production deploy script
-#  Runs on the EC2 host. Invoked by GitHub Actions over SSH; can also
-#  be run manually:
-#      cd /opt/marginplant && bash scripts/deploy.sh
+# Fail-safe deploy for the Hindenburg VPS (pm2: hb-backend, hb-user, hb-admin).
 #
-#  Smart-rebuild: figures out what actually changed between the previous
-#  HEAD and the new origin/main, then rebuilds only the affected piece.
-#  A full rebuild forces by setting FORCE_FULL=1.
-# ─────────────────────────────────────────────────────────────────────
-set -euo pipefail
+#   bash scripts/deploy.sh            deploy origin/main
+#   bash scripts/deploy.sh rollback   go back to the release before the last deploy
+#
+# Build phase: frontends build into .next.build, backend gets an import check.
+#   Any failure -> .next.build deleted, repo reset to the previous commit, exit 1.
+#   The live .next and the running processes are never touched.
+# Switch phase: .next -> .next.prev, .next.build -> .next, pm2 restart, then every
+#   service is checked; a failed check rolls back automatically.
+# Only the parts that changed since the last good deploy are rebuilt / restarted.
+set -Eeuo pipefail
 
-REPO_DIR="/opt/marginplant"
-BACKEND_DIR="$REPO_DIR/backend"
-USER_DIR="$REPO_DIR/frontend-user"
-ADMIN_DIR="$REPO_DIR/frontend-admin"
-VENV="$BACKEND_DIR/.venv"
+REPO=/opt/hindenburg
+BRANCH=main
+STATE="$REPO/.deploy"
+FRONTENDS=(frontend-user frontend-admin)
+declare -A PM2=([backend]=hb-backend [frontend-user]=hb-user [frontend-admin]=hb-admin)
 
-cd "$REPO_DIR"
-
-echo "═══════════════════════════════════════════════════════════════"
-echo "  MarginPlant deploy — $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-echo "═══════════════════════════════════════════════════════════════"
-
-# ── 1) Pull latest ─────────────────────────────────────────────────
-PREV_SHA=$(git rev-parse HEAD)
-git fetch --quiet origin main
-NEW_SHA=$(git rev-parse origin/main)
-
-if [ "$PREV_SHA" = "$NEW_SHA" ] && [ "${FORCE_FULL:-0}" != "1" ]; then
-  echo "✓ Already at $NEW_SHA — nothing to do (pass FORCE_FULL=1 to override)"
-  exit 0
-fi
-
-# Hard reset to origin/main. .env and other gitignored files survive
-# because they're not tracked.
-git reset --hard origin/main
-echo "✓ Pulled $PREV_SHA → $NEW_SHA"
-
-# Detect what changed (forced full rebuild if FORCE_FULL=1)
-if [ "${FORCE_FULL:-0}" = "1" ]; then
-  CHANGED="ALL"
-else
-  CHANGED=$(git diff --name-only "$PREV_SHA" "$NEW_SHA" || echo "ALL")
-fi
-
-backend_changed=0
-user_changed=0
-admin_changed=0
-backend_deps_changed=0
-user_deps_changed=0
-admin_deps_changed=0
-nginx_changed=0
-
-if [ "$CHANGED" = "ALL" ]; then
-  backend_changed=1
-  user_changed=1
-  admin_changed=1
-  backend_deps_changed=1
-  user_deps_changed=1
-  admin_deps_changed=1
-else
-  echo "$CHANGED" | grep -q "^backend/"          && backend_changed=1
-  echo "$CHANGED" | grep -q "^frontend-user/"    && user_changed=1
-  echo "$CHANGED" | grep -q "^frontend-admin/"   && admin_changed=1
-  echo "$CHANGED" | grep -q "^backend/requirements.txt$" && backend_deps_changed=1
-  echo "$CHANGED" | grep -q "^frontend-user/package-lock.json$" && user_deps_changed=1
-  echo "$CHANGED" | grep -q "^frontend-admin/package-lock.json$" && admin_deps_changed=1
-  echo "$CHANGED" | grep -q "^deploy/nginx/"     && nginx_changed=1
-fi
-
-echo "Changed: backend=$backend_changed user=$user_changed admin=$admin_changed nginx=$nginx_changed"
-
-# ── 2) Backend ─────────────────────────────────────────────────────
-if [ "$backend_changed" = "1" ]; then
-  echo "── Backend ──"
-  if [ "$backend_deps_changed" = "1" ]; then
-    echo "  pip install (requirements changed)…"
-    "$VENV/bin/pip" install --quiet --upgrade pip
-    "$VENV/bin/pip" install --quiet -r "$BACKEND_DIR/requirements.txt"
-    # Deps (or the systemd unit / env) changed → full restart so the new
-    # packages + ExecStart/Environment are actually loaded. A reload won't
-    # pick those up.
-    echo "  restarting marginplant-backend.service (deps changed)…"
-    sudo systemctl restart marginplant-backend
-  else
-    # Code-only change → graceful ROLLING reload (gunicorn SIGHUP via the
-    # unit's ExecReload). Gunicorn re-imports the app, spins up fresh
-    # workers and retires the old ones one at a time, so the listen socket
-    # is never unbound → no 5xx, WebSockets stay connected, and the
-    # leader:feed lock hands off to a standby within its TTL. Falls back to
-    # a hard restart if the unit has no ExecReload yet (first deploy of the
-    # gunicorn unit).
-    echo "  reloading marginplant-backend.service (rolling, code-only)…"
-    sudo systemctl reload marginplant-backend || sudo systemctl restart marginplant-backend
-  fi
-fi
-
-# ── 3) Frontend user ───────────────────────────────────────────────
-if [ "$user_changed" = "1" ]; then
-  echo "── Frontend user ──"
-  cd "$USER_DIR"
-  if [ "$user_deps_changed" = "1" ]; then
-    echo "  npm ci…"
-    npm ci --no-audit --no-fund
-  fi
-  echo "  building…"
-  rm -rf .next
-  npm run build
-  echo "  reloading PM2 marginplant-user…"
-  pm2 reload marginplant-user --update-env
-fi
-
-# ── 4) Frontend admin ──────────────────────────────────────────────
-if [ "$admin_changed" = "1" ]; then
-  echo "── Frontend admin ──"
-  cd "$ADMIN_DIR"
-  if [ "$admin_deps_changed" = "1" ]; then
-    echo "  npm ci…"
-    npm ci --no-audit --no-fund
-  fi
-  echo "  building…"
-  rm -rf .next
-  npm run build
-  echo "  reloading PM2 marginplant-admin…"
-  pm2 reload marginplant-admin --update-env
-fi
-
-# ── 5) Nginx config sync (if tracked nginx config changed) ─────────
-if [ "$nginx_changed" = "1" ] && [ -f "$REPO_DIR/deploy/nginx/marginplant.conf" ]; then
-  echo "── Nginx config ──"
-  sudo cp "$REPO_DIR/deploy/nginx/marginplant.conf" /etc/nginx/sites-available/marginplant
-  sudo nginx -t
-  sudo systemctl reload nginx
-fi
-
-# ── 6) Healthcheck ─────────────────────────────────────────────────
-echo "── Healthcheck ──"
-sleep 4
-backend_code=$(curl -s -o /dev/null -w "%{http_code}" -m 5 http://127.0.0.1:8000/api/v1/user/instruments/search?q=BTC || echo "0")
-if [ "$backend_code" = "401" ] || [ "$backend_code" = "200" ]; then
-  echo "  ✓ backend OK ($backend_code)"
-else
-  echo "  ✗ backend FAIL ($backend_code)"
-  echo "  Last 20 log lines:"
-  sudo journalctl -u marginplant-backend --no-pager -n 20 | sed 's/^/    /'
+mkdir -p "$STATE"
+exec 9>"$STATE/lock"
+if ! flock -n 9; then
+  echo "another deploy is running" >&2
   exit 1
 fi
+exec > >(tee -a "$STATE/deploy.log") 2>&1
+trap 'log "unexpected error at line $LINENO (exit $?)"' ERR
 
-echo "═══════════════════════════════════════════════════════════════"
-echo "✅ Deploy complete: $NEW_SHA"
-echo "═══════════════════════════════════════════════════════════════"
+log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
+die() {
+  log "FAIL: $*"
+  exit 1
+}
+
+check_url() { # url expected-code — retries for up to 30 s (backend needs ~10 s to boot)
+  local url=$1 want=$2 got='' i
+  for ((i = 0; i < 30; i++)); do
+    got=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$url" || true)
+    if [[ $got == "$want" ]]; then
+      log "  ok  $url -> $got"
+      return 0
+    fi
+    sleep 1
+  done
+  log "  BAD $url -> $got (want $want)"
+  return 1
+}
+
+verify() {
+  local bad=0
+  log "verify"
+  check_url http://127.0.0.1:8000/health 200 || bad=1
+  check_url http://127.0.0.1:3000/ 200 || bad=1
+  check_url http://127.0.0.1:3000/terminal 200 || bad=1
+  check_url http://127.0.0.1:3001/ 307 || bad=1
+  check_url http://127.0.0.1:3001/login 200 || bad=1
+  return "$bad"
+}
+
+restart() {
+  log "pm2 restart $1"
+  pm2 restart "$1" >/dev/null
+}
+
+market_open() { # NSE cash session, Mon-Fri 09:15-15:30 IST
+  # ponytail: exchange holidays not known — on a holiday set ALLOW_MARKET_RESTART=1
+  local dow hm
+  dow=$(TZ=Asia/Kolkata date +%u)
+  hm=$(TZ=Asia/Kolkata date +%H%M)
+  ((dow <= 5 && 10#$hm >= 915 && 10#$hm < 1530))
+}
+
+build_frontend() {
+  local dir="$REPO/$1"
+  rm -rf "$dir/.next.build"
+  log "build $1"
+  if ! (cd "$dir" && NEXT_DIST_DIR=.next.build nice -n 10 npm run build) >"$STATE/build-$1.log" 2>&1; then
+    tail -30 "$STATE/build-$1.log"
+    return 1
+  fi
+  if [[ ! -s $dir/.next.build/BUILD_ID ]]; then
+    log "$1: no .next.build/BUILD_ID"
+    return 1
+  fi
+  log "  $1 BUILD_ID $(cat "$dir/.next.build/BUILD_ID")"
+}
+
+# Put back the previous release: repo to $1, then restore each part in $2..
+restore() {
+  local sha=$1 p d
+  shift
+  git -C "$REPO" reset -q --hard "$sha"
+  log "repo reset to $sha"
+  for p in "$@"; do
+    if [[ $p == backend ]]; then
+      restart hb-backend
+      continue
+    fi
+    d="$REPO/$p"
+    if [[ ! -d $d/.next.prev ]]; then
+      log "WARN: $p has no .next.prev to restore"
+      continue
+    fi
+    rm -rf "$d/.next.failed"
+    mv "$d/.next" "$d/.next.failed"
+    mv "$d/.next.prev" "$d/.next"
+    restart "${PM2[$p]}"
+  done
+}
+
+deploy() {
+  cd "$REPO"
+  if [[ -n $(git status --porcelain) ]]; then
+    git status --short
+    die "uncommitted changes in $REPO — commit them first"
+  fi
+  local prev_sha live_sha new_sha files part f
+  local changed=() built=()
+  prev_sha=$(git rev-parse HEAD)
+  live_sha=$(cat "$STATE/live_sha" 2>/dev/null || true)
+  git fetch -q origin "$BRANCH"
+  new_sha=$(git rev-parse "origin/$BRANCH")
+  log "deploy $prev_sha -> $new_sha (live: ${live_sha:-unknown})"
+
+  if [[ -n $live_sha ]] && git cat-file -e "$live_sha^{commit}" 2>/dev/null; then
+    files=$(git diff --name-only "$live_sha" "$new_sha")
+    for part in backend "${FRONTENDS[@]}"; do
+      if grep -q "^$part/" <<<"$files"; then
+        changed+=("$part")
+      fi
+    done
+  else
+    changed=(backend "${FRONTENDS[@]}") # first run: what is live is unknown, do everything
+  fi
+  if ((${#changed[@]} == 0)); then
+    git reset -q --hard "$new_sha"
+    echo "$new_sha" >"$STATE/live_sha"
+    log "nothing to rebuild — live is up to date"
+    return 0
+  fi
+  log "changed: ${changed[*]}"
+  if [[ " ${changed[*]} " == *" backend "* ]] && market_open && [[ ${ALLOW_MARKET_RESTART:-0} != 1 ]]; then
+    die "backend changed but the market is open — not restarting the trading backend (ALLOW_MARKET_RESTART=1 to override)"
+  fi
+
+  # ---- build phase: nothing live is touched ----
+  git reset -q --hard "$new_sha"
+  # ponytail: no auto npm/pip install — a new dependency fails the build safely;
+  # install it by hand, then deploy again.
+  local failed=''
+  for part in "${changed[@]}"; do
+    if [[ $part == backend ]]; then
+      log "backend import check"
+      if ! (cd "$REPO/backend" && .venv/bin/python -c 'import app.main' >"$STATE/build-backend.log" 2>&1); then
+        tail -30 "$STATE/build-backend.log"
+        failed=backend
+        break
+      fi
+    elif build_frontend "$part"; then
+      built+=("$part")
+    else
+      failed=$part
+      break
+    fi
+  done
+  if [[ -n $failed ]]; then
+    for f in "${FRONTENDS[@]}"; do
+      rm -rf "${REPO:?}/$f/.next.build"
+    done
+    git reset -q --hard "$prev_sha"
+    die "$failed failed to build — live untouched, repo back at $prev_sha"
+  fi
+
+  # ---- switch phase ----
+  printf 'ROLLBACK_SHA=%q\nDEPLOYED_SHA=%q\nPARTS=%q\nPREV_LIVE=%q\n' \
+    "$prev_sha" "$new_sha" "${changed[*]}" "$live_sha" >"$STATE/last"
+  for f in "${built[@]}"; do
+    rm -rf "${REPO:?}/$f/.next.prev"
+    mv "$REPO/$f/.next" "$REPO/$f/.next.prev"
+    mv "$REPO/$f/.next.build" "$REPO/$f/.next"
+    restart "${PM2[$f]}"
+  done
+  if [[ " ${changed[*]} " == *" backend "* ]]; then
+    restart hb-backend
+  fi
+
+  if verify; then
+    echo "$new_sha" >"$STATE/live_sha"
+    log "DEPLOYED $new_sha"
+    return 0
+  fi
+  log "verify failed — rolling back to $prev_sha"
+  restore "$prev_sha" "${changed[@]}"
+  rm -f "$STATE/last"
+  if verify; then
+    die "deploy of $new_sha rolled back; $prev_sha is live again"
+  fi
+  die "deploy of $new_sha rolled back but services are STILL unhealthy — check pm2 logs"
+}
+
+rollback() {
+  if [[ ! -f $STATE/last ]]; then
+    die "nothing to roll back (no previous deploy recorded)"
+  fi
+  local ROLLBACK_SHA DEPLOYED_SHA PARTS PREV_LIVE
+  # shellcheck source=/dev/null
+  source "$STATE/last"
+  log "rollback $DEPLOYED_SHA -> $ROLLBACK_SHA ($PARTS)"
+  if [[ " $PARTS " == *" backend "* ]] && market_open && [[ ${ALLOW_MARKET_RESTART:-0} != 1 ]]; then
+    die "rollback restarts the backend but the market is open (ALLOW_MARKET_RESTART=1 to override)"
+  fi
+  # shellcheck disable=SC2086 # PARTS is a space-separated list
+  restore "$ROLLBACK_SHA" $PARTS
+  rm -f "$STATE/last"
+  # live = whatever was live before that deploy (unknown -> next deploy rebuilds everything)
+  if [[ -n $PREV_LIVE ]]; then
+    echo "$PREV_LIVE" >"$STATE/live_sha"
+  else
+    rm -f "$STATE/live_sha"
+  fi
+  if verify; then
+    log "ROLLED BACK — $ROLLBACK_SHA is live (run deploy again to roll forward)"
+    return 0
+  fi
+  die "rolled back but services are unhealthy — check pm2 logs"
+}
+
+case "${1:-deploy}" in
+  deploy) deploy ;;
+  rollback) rollback ;;
+  *)
+    echo "usage: bash scripts/deploy.sh [rollback]" >&2
+    exit 2
+    ;;
+esac

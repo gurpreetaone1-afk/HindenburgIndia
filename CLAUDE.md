@@ -82,15 +82,24 @@ npm run type-check   # tsc --noEmit
 
 ### Deploy (this server — Hindenburg VPS)
 
-**Do NOT run `scripts/deploy.sh`.** It does `git reset --hard origin/main`, and this server carries live fixes that are not on GitHub yet (uncommitted files + local commits) — the script would wipe them. It also targets old marginplant systemd/pm2 names that don't exist here. Never `git pull` / `git reset` / `git checkout .` / `git stash` here without committing the live changes first.
+Code goes live from GitHub `main`: commit + push, then on the server run
+
+```
+bash /opt/hindenburg/scripts/deploy.sh            # deploy origin/main
+bash /opt/hindenburg/scripts/deploy.sh rollback   # back to the release before the last deploy
+```
+
+The script rebuilds/restarts only what changed since the last good deploy (`.deploy/live_sha`). Frontends build into `.next.build` (via `NEXT_DIST_DIR`); a failed build or backend import check deletes it and resets the repo — the live `.next` and running processes are never touched. On success it swaps `.next` → `.next.prev`, `.next.build` → `.next`, restarts via pm2 and checks every service; a failed check rolls back automatically. It refuses to restart the backend during NSE hours (Mon–Fri 09:15–15:30 IST) unless `ALLOW_MARKET_RESTART=1`. Logs: `.deploy/deploy.log`, `.deploy/build-*.log`. It does not run `npm install` / `pip install` — do that by hand when dependencies change.
+
+**Never run `npm run build` in a frontend dir by hand** — Next.js wipes the live `.next` at build start, so the running site breaks until the build finishes (or stays broken if it fails). Never edit code on the server without committing it: `deploy.sh` refuses to run with uncommitted changes, and `git reset` / `git checkout .` / `git stash` would lose them.
 
 Everything runs under **pm2** (there are no systemd units for these):
 
-| What | Restart / deploy | Check |
+| What | pm2 name | Check (what `deploy.sh` verifies) |
 |---|---|---|
-| Backend (FastAPI, port 8000) | `pm2 restart hb-backend` | `curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/health` → 200 (allow 10–15 s after a restart) |
-| User site (hindenburgindia.live) | `cd /opt/hindenburg/frontend-user && npm run build && pm2 restart hb-user` | `pm2 status hb-user` |
-| Admin (admin.hindenburgindia.live) | `cd /opt/hindenburg/frontend-admin && npm run build && pm2 restart hb-admin` | `pm2 status hb-admin` |
+| Backend (FastAPI, port 8000) | `hb-backend` | `http://127.0.0.1:8000/health` → 200 (allow 10–15 s after a restart) |
+| User site (hindenburgindia.live, port 3000) | `hb-user` | `/` → 200, `/terminal` → 200 |
+| Admin (admin.hindenburgindia.live, port 3001) | `hb-admin` | `/` → 307, `/login` → 200 |
 
 Backend Python is `/opt/hindenburg/backend/.venv/bin/python`; run one-off scripts from `backend/` (so `.env` loads) with `PYTHONPATH=/opt/hindenburg/backend`. Logs: `pm2 logs hb-backend --lines 50 --nostream`. The mobile app (Expo) is NOT on this server — OTA updates are published from the developer's PC.
 
