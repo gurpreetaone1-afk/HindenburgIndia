@@ -115,15 +115,22 @@ deploy() {
     git status --short
     die "uncommitted changes in $REPO — commit them first"
   fi
-  local prev_sha live_sha new_sha files part f
+  local prev_sha live_sha new_sha back_sha files part f
   local changed=() built=()
   prev_sha=$(git rev-parse HEAD)
   live_sha=$(cat "$STATE/live_sha" 2>/dev/null || true)
+  if [[ -n $live_sha ]] && ! git cat-file -e "$live_sha^{commit}" 2>/dev/null; then
+    live_sha=''
+  fi
   git fetch -q origin "$BRANCH"
   new_sha=$(git rev-parse "origin/$BRANCH")
+  if ! git merge-base --is-ancestor "$prev_sha" "$new_sha"; then
+    die "HEAD has commits that are not on origin/$BRANCH — push them first (deploy would drop them)"
+  fi
+  back_sha=${live_sha:-$prev_sha} # what a rollback returns to: the code that is live now
   log "deploy $prev_sha -> $new_sha (live: ${live_sha:-unknown})"
 
-  if [[ -n $live_sha ]] && git cat-file -e "$live_sha^{commit}" 2>/dev/null; then
+  if [[ -n $live_sha ]]; then
     files=$(git diff --name-only "$live_sha" "$new_sha")
     for part in backend "${FRONTENDS[@]}"; do
       if grep -q "^$part/" <<<"$files"; then
@@ -174,7 +181,7 @@ deploy() {
 
   # ---- switch phase ----
   printf 'ROLLBACK_SHA=%q\nDEPLOYED_SHA=%q\nPARTS=%q\nPREV_LIVE=%q\n' \
-    "$prev_sha" "$new_sha" "${changed[*]}" "$live_sha" >"$STATE/last"
+    "$back_sha" "$new_sha" "${changed[*]}" "$live_sha" >"$STATE/last"
   for f in "${built[@]}"; do
     rm -rf "${REPO:?}/$f/.next.prev"
     mv "$REPO/$f/.next" "$REPO/$f/.next.prev"
@@ -190,11 +197,11 @@ deploy() {
     log "DEPLOYED $new_sha"
     return 0
   fi
-  log "verify failed — rolling back to $prev_sha"
-  restore "$prev_sha" "${changed[@]}"
+  log "verify failed — rolling back to $back_sha"
+  restore "$back_sha" "${changed[@]}"
   rm -f "$STATE/last"
   if verify; then
-    die "deploy of $new_sha rolled back; $prev_sha is live again"
+    die "deploy of $new_sha rolled back; $back_sha is live again"
   fi
   die "deploy of $new_sha rolled back but services are STILL unhealthy — check pm2 logs"
 }
@@ -206,6 +213,7 @@ rollback() {
   local ROLLBACK_SHA DEPLOYED_SHA PARTS PREV_LIVE
   # shellcheck source=/dev/null
   source "$STATE/last"
+  ROLLBACK_SHA=${PREV_LIVE:-$ROLLBACK_SHA}
   log "rollback $DEPLOYED_SHA -> $ROLLBACK_SHA ($PARTS)"
   if [[ " $PARTS " == *" backend "* ]] && market_open && [[ ${ALLOW_MARKET_RESTART:-0} != 1 ]]; then
     die "rollback restarts the backend but the market is open (ALLOW_MARKET_RESTART=1 to override)"
@@ -226,11 +234,16 @@ rollback() {
   die "rolled back but services are unhealthy — check pm2 logs"
 }
 
-case "${1:-deploy}" in
-  deploy) deploy ;;
-  rollback) rollback ;;
-  *)
-    echo "usage: bash scripts/deploy.sh [rollback]" >&2
-    exit 2
-    ;;
-esac
+main() {
+  case "${1:-deploy}" in
+    deploy) deploy ;;
+    rollback) rollback ;;
+    *)
+      echo "usage: bash scripts/deploy.sh [rollback]" >&2
+      exit 2
+      ;;
+  esac
+}
+
+# One line: bash has parsed it before git reset rewrites this file mid-run.
+main "$@"; exit $?
