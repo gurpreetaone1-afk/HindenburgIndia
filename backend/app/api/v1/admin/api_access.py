@@ -206,7 +206,7 @@ async def delete_api_access(
     _: None = Depends(require_perm("users", "write")),
 ):
     """Delete a request entirely (any status). Revokes the user's API-access
-    capability and resets their app to the empty "Connect" form - they must
+    capability and resets their app to the empty "Connect" form — they must
     re-submit a key to request access again."""
     r = await ApiAccessRequest.get(PydanticObjectId(request_id))
     if r is None:
@@ -215,6 +215,7 @@ async def delete_api_access(
     user_id = r.user_id
     await r.delete()
 
+    # Revoke the capability flag so the user loses API access immediately.
     try:
         u = await User.get(user_id)
         if u is not None:
@@ -234,5 +235,7 @@ async def delete_api_access(
         "api_access_update",
         {"event": "deleted", "user_id": str(user_id), "request_id": request_id},
     )
+    # "idle" → the user's GET returns no row, so the app re-renders the empty
+    # Connect form and the "connected" state disappears live.
     await _notify_user(user_id, "idle")
     return APIResponse(data={"id": request_id, "status": "idle"})

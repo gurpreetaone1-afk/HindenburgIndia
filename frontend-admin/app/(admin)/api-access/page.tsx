@@ -245,13 +245,15 @@ export default function AdminApiAccessPage() {
                     </Button>
                   </>
                 )}
+                {/* Delete works on ANY status — removes the row, revokes the
+                    user's API access, and resets their app to the Connect form. */}
                 <Button
                   size="sm"
                   variant="outline"
                   className={`h-9 ${isPending ? "px-2.5" : "flex-1"} border-destructive/40 text-destructive hover:bg-destructive hover:text-destructive-foreground`}
                   disabled={!canMutate || busy.has(r.id)}
                   onClick={() => canMutate && remove(r.id)}
-                  title={canMutate ? "Delete request - user must resubmit" : "View-only access"}
+                  title={canMutate ? "Delete request — user must resubmit" : "View-only access"}
                 >
                   <Trash2 className="size-4" />
                   {isPending ? "" : " Delete"}
