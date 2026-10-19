@@ -27,7 +27,9 @@ async def list_notifications(user: CurrentUser, only_unread: bool = False, limit
                 "level": n.level.value,
                 "title": n.title,
                 "message": n.message,
+                "body": n.message,      # mobile app reads `body`
                 "is_read": n.is_read,
+                "read": n.is_read,      # mobile app reads `read`
                 "data": n.data,
                 "created_at": n.created_at,
             }

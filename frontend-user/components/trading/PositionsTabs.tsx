@@ -63,6 +63,9 @@ interface Props {
    *  "positions" but the Orders rail-toggle opens the drawer on "pending"
    *  so the user sees their order book straight away. */
   initialTab?: TabKey;
+  /** Fill the parent's height (the terminal's drag-resized positions strip)
+   *  instead of the default 28vh-capped table. */
+  fill?: boolean;
 }
 
 const ONE_CLICK_KEY = "setupfx.terminal.oneClick";
@@ -99,7 +102,7 @@ function isBenignCloseError(e: any): boolean {
   );
 }
 
-export function PositionsTabs({ positions, pendingOrders, history, cancelled, totalPnL, initialTab = "positions" }: Props) {
+export function PositionsTabs({ positions, pendingOrders, history, cancelled, totalPnL, initialTab = "positions", fill = false }: Props) {
   const qc = useQueryClient();
   const [tab, setTab] = useState<TabKey>(initialTab);
 
@@ -492,7 +495,7 @@ export function PositionsTabs({ positions, pendingOrders, history, cancelled, to
     // viewport — the inner `overflow-x-auto` already handles wide-table
     // horizontal scroll; without min-w-0 the 900-px grid template can
     // grow the chart section past its allowance and clip the order panel.
-    <div className="flex min-h-0 min-w-0 flex-col rounded-lg border border-border bg-card">
+    <div className={cn("flex min-h-0 min-w-0 flex-col rounded-lg border border-border bg-card", fill && "h-full")}>
       {/* Tabs row */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-2">
         <div className="flex">
@@ -561,7 +564,7 @@ export function PositionsTabs({ positions, pendingOrders, history, cancelled, to
        * design; min-h-[120px] avoids a 0-height blotter on very small
        * screens.
        */}
-      <div className="max-h-[28vh] min-h-[120px] overflow-auto scrollbar-thin">
+      <div className={cn("overflow-auto scrollbar-thin", fill ? "min-h-0 flex-1" : "max-h-[28vh] min-h-[120px]")}>
       {/* Header */}
       <div
         className="sticky top-0 z-10 grid items-center gap-2 border-b border-border bg-card px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground"

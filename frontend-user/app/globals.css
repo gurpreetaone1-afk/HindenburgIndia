@@ -506,3 +506,10 @@
     animation: none;
   }
 }
+
+/* AnimatedPrice flash — tints the TEXT green/red on change then eases back to
+   the element's own base colour (only `from` set → auto-return). No bg box. */
+@keyframes apFlashUp { from { color: #16a34a; } }
+@keyframes apFlashDown { from { color: #ef4444; } }
+.ap-up { animation: apFlashUp 0.5s ease-out; }
+.ap-down { animation: apFlashDown 0.5s ease-out; }

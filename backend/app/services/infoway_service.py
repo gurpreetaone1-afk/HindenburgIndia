@@ -536,8 +536,27 @@ class InfowayService:
         best_ask = _safe_float(ask_prices[0] if ask_prices else 0.0)
         best_bid = _safe_float(bid_prices[0] if bid_prices else 0.0)
 
+        _prev_ltp_guard = _safe_float((self.ticks.get(sym) or {}).get("ltp") or 0)
         if best_bid > 0 and best_ask > 0:
-            price = (best_bid + best_ask) / 2.0
+            # Guard against a garbage depth level skewing the mid. Real spreads
+            # are tiny (<<1%); an absurd bid/ask gap (or a crossed book) means
+            # one side is junk, and a raw (bid+ask)/2 would jump 20-50% (slipping
+            # past the 50% spike filter) then snap back — the "achanak bahut
+            # zyada galat" flicker. On an absurd spread, anchor to the last-good
+            # price and take whichever side is closer, not a skewed mid.
+            _spread_pct = (
+                (best_ask - best_bid) / best_bid if best_ask >= best_bid else 1.0
+            )
+            if _spread_pct <= 0.03:
+                price = (best_bid + best_ask) / 2.0
+            elif _prev_ltp_guard > 0:
+                price = (
+                    best_bid
+                    if abs(best_bid - _prev_ltp_guard) <= abs(best_ask - _prev_ltp_guard)
+                    else best_ask
+                )
+            else:
+                price = (best_bid + best_ask) / 2.0
         else:
             price = best_bid or best_ask
         if price <= 0:

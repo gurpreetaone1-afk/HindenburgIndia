@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useBranding } from "@/lib/branding-context";
 import Link from "next/link";
@@ -87,7 +87,25 @@ export default function RegisterPage() {
 function RegisterPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const refCode = (searchParams?.get("ref") || "").trim().toUpperCase();
+  const urlRef = (searchParams?.get("ref") || "").trim().toUpperCase();
+  const [refCode, setRefCode] = useState(urlRef);
+  // Referral attribution must SURVIVE navigation (register -> login -> back)
+  // and demo-login -> logout -> register: the ?ref= param is only on the first
+  // click, so persist it and fall back to the stored code whenever the param is
+  // gone. (logout only clears auth keys, so "hb_ref" survives it.)
+  useEffect(() => {
+    try {
+      if (urlRef) {
+        window.localStorage.setItem("hb_ref", urlRef);
+        setRefCode(urlRef);
+      } else {
+        const saved = (window.localStorage.getItem("hb_ref") || "").trim().toUpperCase();
+        if (saved) setRefCode(saved);
+      }
+    } catch {
+      /* storage unavailable - keep the URL value */
+    }
+  }, [urlRef]);
   // On a tenant custom domain (e.g. stockcafe.live) the URL has no ?ref=,
   // so fall back to the resolved brand's admin code. Belt-and-suspenders
   // alongside the backend's Origin/Referer detection — covers the case
@@ -207,6 +225,17 @@ function RegisterPageInner() {
           PAN and Aadhaar, fully online — most accounts are approved the same day.
         </p>
       </div>
+
+      {refCode ? (
+        <div className="flex items-center gap-2.5 rounded-lg border border-primary/30 bg-primary/5 px-3.5 py-2.5">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="text-primary">
+            <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+          <span className="text-sm text-muted-foreground">Referred by</span>
+          <span className="ml-auto font-mono text-sm font-semibold tracking-wider text-foreground">{refCode}</span>
+        </div>
+      ) : null}
 
       {/* Form */}
       {step === "form" && (

@@ -90,6 +90,10 @@ class MetaApiFeed:
         self._task: asyncio.Task[Any] | None = None
         self._stop = False
         self._last_rx = 0.0
+        # RPC price fallback (used when the STREAMING sync hangs — fresh/demo
+        # accounts — so terminal_state never fills). Polled into _rpc_prices.
+        self._rpc: Any = None
+        self._rpc_prices: dict[str, dict] = {}
 
     # ── public accessors ──────────────────────────────────────────────
     def is_enabled(self) -> bool:
@@ -157,6 +161,8 @@ class MetaApiFeed:
                 price = ts.price(symbol=mt)
         except Exception:
             price = None
+        if not price:
+            price = self._rpc_prices.get(mt)
         if not price:
             return None
         bid = _f(price.get("bid"))
@@ -357,36 +363,89 @@ class MetaApiFeed:
         except Exception as e:
             logger.warning("metaapi_deploy_wait_warning: %s", e)
 
-        self._conn = self._account.get_streaming_connection()
+        # This account's STREAMING sync hangs (fresh / demo accounts), so drive
+        # the feed from the RPC connection: it synchronises fast and serves live
+        # quotes on demand. get_tick reads _rpc_prices (an RPC connection has no
+        # streaming terminal_state, so get_tick falls through to this cache).
+        self._conn = self._account.get_rpc_connection()
         await self._conn.connect()
-        await self._conn.wait_synchronized({"timeoutInSeconds": 60})
+        await asyncio.wait_for(self._conn.wait_synchronized(), timeout=45)
+        self._rpc = self._conn
         self._connected = True
         self._last_rx = time.monotonic()
-        logger.info("metaapi_connected account=%s", acc_id)
+        logger.info("metaapi_connected account=%s (rpc price feed)", acc_id)
 
-        _sub_count = 0
-        for s in self._symbols:
-            broker = self._mt_symbol(s)
-            if broker in self._unavailable or self._looks_non_metaapi(s):
-                continue
+        # Poll ALL symbols CONCURRENTLY each cycle so a full refresh costs ~1
+        # network round-trip (not 21x sequential, which made prices crawl at
+        # ~3-5 s each). Near-real-time movement with a per-call timeout guard.
+        async def _poll_one(broker: str):
             try:
-                await self._conn.subscribe_to_market_data(broker)
-                _sub_count += 1
+                p = await asyncio.wait_for(
+                    self._rpc.get_symbol_price(broker), timeout=6
+                )
+                if p and (_f(p.get("bid")) > 0 or _f(p.get("ask")) > 0):
+                    self._rpc_prices[broker] = p
+                    return p
+            except asyncio.TimeoutError:
+                pass
             except Exception as e:  # noqa: BLE001
-                self._note_sub_error(broker, e, "metaapi_subscribe_failed")
+                txt = str(e).lower()
+                if "does not exist" in txt or "not found" in txt:
+                    self._unavailable.add(broker)  # memoise genuinely-missing
+                # else: transient / dead-connection error — swallow quietly; the
+                # staleness recycle below recovers it (no warn-flood).
+            return None
 
-        logger.info("metaapi_subscribed symbols=%d", _sub_count)
-
-        # Keep the connection alive; the SDK streams into terminal_state in the
-        # background. Bail out (→ reconnect) if it desynchronises.
-        while not self._stop:
-            await asyncio.sleep(5)
+        async def _recycle_rpc() -> None:
             try:
-                if not getattr(self._conn, "synchronized", True):
-                    logger.warning("metaapi_desynchronised_forcing_reconnect")
-                    return
+                await self._rpc.close()
             except Exception:
-                return
+                pass
+            self._rpc = self._account.get_rpc_connection()
+            await self._rpc.connect()
+            await asyncio.wait_for(self._rpc.wait_synchronized(), timeout=30)
 
+        from datetime import datetime, timezone
+        _last_recycle = time.monotonic()
+        while not self._stop:
+            brokers = []
+            for s in list(self._symbols):
+                if self._looks_non_metaapi(s):
+                    continue
+                b = self._mt_symbol(s)
+                if b not in self._unavailable:
+                    brokers.append(b)
+            newest = None
+            if brokers and self._rpc is not None:
+                prices = await asyncio.gather(*(_poll_one(b) for b in brokers))
+                for p in prices:
+                    t = p.get("time") if p else None
+                    if isinstance(t, str):
+                        try:
+                            t = datetime.fromisoformat(t.replace("Z", "+00:00"))
+                        except Exception:
+                            t = None
+                    if isinstance(t, datetime) and (newest is None or t > newest):
+                        newest = t
+                if any(p is not None for p in prices):
+                    self._last_rx = time.monotonic()
+            # The RPC connection can silently go STALE (get_symbol_price keeps
+            # returning cached prices after the underlying sync dies — froze the
+            # feed for days). If the freshest broker tick is old, recycle the
+            # RPC connection; a fresh one resumes live prices at once. Rate-
+            # limited so a legitimately-closed market doesn't churn-reconnect.
+            age = (
+                (datetime.now(timezone.utc) - newest).total_seconds()
+                if newest is not None
+                else 1e9
+            )
+            if age > 90 and time.monotonic() - _last_recycle > 45:
+                _last_recycle = time.monotonic()
+                try:
+                    await _recycle_rpc()
+                    logger.info("metaapi_rpc_recycled stale_age=%.0fs", age)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("metaapi_rpc_recycle_failed: %s", str(e)[:120])
+            await asyncio.sleep(0.2)
 
 metaapi = MetaApiFeed()

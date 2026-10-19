@@ -160,6 +160,45 @@ async def set_payment_gateway_setting(
     return APIResponse(data={"enabled": enabled})
 
 
+@router.get("/settings/my-gateway", response_model=APIResponse[dict])
+async def get_my_gateway(admin: CurrentAdmin):
+    """This admin's OWN online-deposit switch (online UPI vs manual transfer).
+
+    Lets a regular admin turn their gateway OFF (their users then see manual
+    bank transfer) and back ON themselves, right from Platform settings —
+    persisted on their own user doc. `configured` tells the UI whether a
+    gateway is wired for them at all (PayFromUPI token, or the global
+    Divinepay key).
+    """
+    from app.services import divinepay_service
+
+    has_pfu = bool(getattr(admin, "payfromupi_token", None))
+    return APIResponse(
+        data={
+            "enabled": bool(getattr(admin, "payment_gateway_enabled", False)),
+            "provider": "payfromupi" if has_pfu else "divinepay",
+            "configured": has_pfu or divinepay_service.is_configured(),
+        }
+    )
+
+
+@router.put("/settings/my-gateway", response_model=APIResponse[dict])
+async def set_my_gateway(payload: UpdatePlatformSettingRequest, admin: CurrentAdmin):
+    """Flip this admin's OWN online-deposit switch. ON = online UPI gateway for
+    their users; OFF = manual bank transfer only."""
+    enabled = bool(payload.setting_value)
+    admin.payment_gateway_enabled = enabled
+    await admin.save()
+    await log_event(
+        action=AuditAction.SETTING_CHANGE,
+        entity_type="User",
+        entity_id=admin.id,
+        actor_id=admin.id,
+        new_values={"payment_gateway_enabled": enabled},
+    )
+    return APIResponse(data={"enabled": enabled})
+
+
 @router.put("/settings/payment-gateway/auto-payout", response_model=APIResponse[dict])
 async def set_auto_payout_setting(
     payload: UpdatePlatformSettingRequest, admin: CurrentAdmin

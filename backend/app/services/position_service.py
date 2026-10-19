@@ -33,6 +33,125 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# ── Lot-basis realization ───────────────────────────────────────────────
+# A position is netted per (user, token, product) at a weighted-average price,
+# but users close individual LOTS: Active Trades lists every fill with its own
+# entry and its Exit tags the closing order with that lot's price
+# (`cost_basis_override`); the Closed blotter shows each close against the lot
+# it removed (that lot, else FIFO). Booking the wallet at the AVERAGE made a
+# close's money differ from what the trade showed (totals matched, the split
+# didn't) — e.g. lots 130@118.80 + 65@111.55, exit the 111.55 lot at 89.30:
+# the average booked −1,760.20 while the trade showed −1,446.25. Realizing at
+# the basis of the lots actually removed makes wallet == blotter per close,
+# and the surviving lots keep their own prices (remaining avg = theirs).
+
+_LOT_EPS = Decimal("0.000001")
+
+
+def _take_lots(lots: list[list[Decimal]], qty: Decimal, pick: Decimal | None) -> Decimal:
+    """Remove `qty` from `lots` ([[price, qty], …] oldest first, mutated in
+    place, order kept): the lot priced at `pick` first (specific-lot exit),
+    then FIFO. Returns the removed cost Σ price × qty; ValueError if short."""
+    cost = Decimal(0)
+    left = qty
+    if pick is not None and lots:
+        i = min(range(len(lots)), key=lambda k: abs(lots[k][0] - pick))
+        if abs(lots[i][0] - pick) <= max(Decimal("0.01"), abs(pick) * Decimal("0.0001")):
+            take = min(lots[i][1], left)
+            cost += lots[i][0] * take
+            lots[i][1] -= take
+            left -= take
+            if lots[i][1] <= _LOT_EPS:
+                lots.pop(i)
+    while left > _LOT_EPS and lots:
+        take = min(lots[0][1], left)
+        cost += lots[0][0] * take
+        lots[0][1] -= take
+        left -= take
+        if lots[0][1] <= _LOT_EPS:
+            lots.pop(0)
+    if left > _LOT_EPS:
+        raise ValueError("close exceeds open lots")
+    return cost
+
+
+def _lots_from_fills(fills: list[Any], held: Decimal, avg: Decimal) -> list[list[Decimal]] | None:
+    """Open lots left after replaying a position cycle's fills (oldest first).
+    None when they don't reconcile with the position's qty / average — e.g. a
+    price edited by an admin, a weekly settlement, a flip, or a position opened
+    before lot-basis booking existed — so callers fall back to the average."""
+    if held == 0:
+        return None
+    open_side = OrderAction.BUY if held > 0 else OrderAction.SELL
+    lots: list[list[Decimal]] = []
+    try:
+        for t in fills:
+            q = abs(to_decimal(t.quantity))
+            px = to_decimal(t.price)
+            if q <= 0 or px <= 0:
+                continue
+            if t.action == open_side and t.pnl_inr is None:
+                lots.append([px, q])
+            else:
+                cbo = getattr(t, "cost_basis_override", None)
+                _take_lots(lots, q, to_decimal(cbo) if cbo is not None else None)
+    except ValueError:
+        return None
+    total = sum((q for _, q in lots), Decimal(0))
+    if total <= 0 or abs(total - abs(held)) > abs(held) * _LOT_EPS + _LOT_EPS:
+        return None
+    lots_avg = sum((p * q for p, q in lots), Decimal(0)) / total
+    # The stored average is 2-dp rounded on every pyramid fill; anything beyond
+    # that rounding means the price changed outside these fills.
+    if abs(lots_avg - avg) > Decimal("0.01") * (len(lots) + 1):
+        return None
+    return lots
+
+
+async def close_basis(
+    pos: Position, closed_qty: Decimal, cost_basis_override: Any = None
+) -> tuple[Decimal, Decimal | None]:
+    """(per-unit cost basis of the lots this close removes, avg price of the
+    lots left — None if none). Falls back to (avg_price, None), the old
+    average-cost booking, whenever the fills don't reconcile."""
+    from datetime import timedelta
+    from app.models.trade import Trade
+
+    avg = to_decimal(pos.avg_price)
+    try:
+        start = getattr(pos, "reopened_at", None) or pos.opened_at
+        if start is None or closed_qty <= 0:
+            return avg, None
+        fills = (
+            await Trade.find(
+                {
+                    "user_id": pos.user_id,
+                    "instrument.token": pos.instrument.token,
+                    "product_type": pos.product_type.value,
+                    "executed_at": {"$gte": start - timedelta(seconds=5)},
+                }
+            )
+            .sort("+executed_at")
+            .to_list()
+        )
+        lots = _lots_from_fills(fills, to_decimal(pos.quantity), avg)
+        if not lots:
+            return avg, None
+        pick = to_decimal(cost_basis_override) if cost_basis_override is not None else None
+        basis = _take_lots(lots, closed_qty, pick) / closed_qty
+        left = sum((q for _, q in lots), Decimal(0))
+        rem_avg = sum((p * q for p, q in lots), Decimal(0)) / left if left > _LOT_EPS else None
+        if abs(basis - avg) > Decimal("0.005"):
+            logger.info(
+                "lot_basis_close",
+                extra={"pos_id": str(pos.id), "avg": str(avg), "basis": str(basis), "qty": str(closed_qty)},
+            )
+        return basis, rem_avg
+    except Exception:
+        logger.exception("close_basis_failed pos=%s", getattr(pos, "id", None))
+        return avg, None
+
+
 async def apply_fill(
     *,
     user_id: PydanticObjectId,
@@ -46,6 +165,8 @@ async def apply_fill(
     stop_loss: Decimal | None = None,
     target: Decimal | None = None,
     is_demo: bool = False,
+    close_basis: Decimal | None = None,
+    remaining_avg: Decimal | None = None,
     _retry: int = 0,
 ) -> Position:
     """Idempotent-ish: looks up an open position for this instrument+product
@@ -118,6 +239,8 @@ async def apply_fill(
                 stop_loss=stop_loss,
                 target=target,
                 is_demo=is_demo,
+                close_basis=close_basis,
+                remaining_avg=remaining_avg,
                 _retry=_retry + 1,
             )
     else:
@@ -168,7 +291,10 @@ async def apply_fill(
             # margin proportional to how much of the original was closed.
             closed_qty = min(abs(cur_qty), abs(signed_qty))
             sign = 1 if cur_qty > 0 else -1
-            realized = (price - cur_avg) * to_decimal(closed_qty) * sign
+            # Realize at the basis of the lots this close removes (passed in
+            # by the matching engine — see close_basis); else the average.
+            basis = close_basis if close_basis is not None else cur_avg
+            realized = (price - basis) * to_decimal(closed_qty) * sign
             pos.realized_pnl = Decimal128(str(quantize_money(to_decimal(pos.realized_pnl) + realized)))
             pos.quantity = new_qty
             if new_qty == 0:
@@ -224,6 +350,10 @@ async def apply_fill(
                 # doesn't add new locked margin — it releases existing.)
                 scale = to_decimal(abs(new_qty)) / to_decimal(abs(cur_qty))
                 new_margin_used = to_decimal(pos.margin_used) * scale
+                # The surviving lots keep their own prices, so the average is
+                # theirs (lot-basis booking); unchanged when it's unknown.
+                if remaining_avg is not None:
+                    pos.avg_price = Decimal128(str(remaining_avg.quantize(Decimal("0.000001"))))
                 # apply_brackets stays False — the surviving position is in
                 # its original direction with its original avg, so existing
                 # SL/TP remain valid (if any). The closing order's bracket
@@ -1025,6 +1155,133 @@ async def resync_closed_position_fills(position: Position) -> int:
     return updated
 
 
+async def resync_open_position_fills(position: Position) -> int:
+    """Push an admin-edited OPEN position's avg_price onto its underlying
+    OPENING Trade fills so the user-facing Active-trades tab reflects it.
+
+    WHY: /active-trades shows each open fill's OWN execution price
+    (``Trade.price``), not ``Position.avg_price`` — so an admin open-price
+    correction updated the Position doc + Orders but the Active tab kept the
+    old fill price. Closing fills don't exist yet for an open cycle, so we only
+    touch opening fills (``pnl_inr is None``) on the position's side.
+
+    ponytail: takes the most-recent same-side opening fills that sum to the
+    position qty — correct for the common single-fill / same-side-add open; a
+    position reopened across interleaved closed cycles could pick an older
+    cycle's opening fill. Upgrade to per-cycle FIFO (as /active-trades does)
+    if that surfaces. Best-effort; returns fills updated.
+    """
+    from app.models.trade import Trade
+    from app.models.order import OrderAction
+
+    trades = await Trade.find(
+        {
+            "user_id": position.user_id,
+            "instrument.token": position.instrument.token,
+            "product_type": position.product_type.value,
+            "pnl_inr": None,
+        }
+    ).sort("-executed_at").to_list()
+    if not trades:
+        return 0
+
+    long = position.quantity >= 0
+    trades = [t for t in trades if (t.action == OrderAction.BUY) == long]
+    if not trades:
+        return 0
+
+    new_avg = to_decimal(position.avg_price)
+    need = abs(to_decimal(position.quantity))
+    updated = 0
+    accum = Decimal(0)
+    for t in trades:
+        if need > 0 and accum >= need:
+            break
+        t.price = to_decimal128(new_avg)
+        t.value = to_decimal128(new_avg * to_decimal(t.quantity))
+        await t.save()
+        accum += abs(to_decimal(t.quantity))
+        updated += 1
+    return updated
+
+
+async def resync_position_orders(position: Position) -> int:
+    """Push an admin-edited position's open/close prices (and times) back onto
+    its underlying EXECUTED Order records so the user-facing Orders -> Executed
+    list shows the corrected fill.
+
+    There is no Position->Order FK, so we pair by structure rather than a fixed
+    time window (the old window broke when opened_at was edited past closed_at,
+    and grabbed unrelated orders for long-held positions):
+
+    * exit  = the squareoff order whose executed_at is CLOSEST to closed_at
+      (closed_at is the real close time, reliable even after an open-time edit).
+    * entry = the most recent NON-squareoff order at/before that exit — the fill
+      this exit closed. For an OPEN position, entry = the most recent open fill.
+
+    Entry takes the new avg_price + opened_at; exit takes the new close price +
+    closed_at, and its cost_basis_override entry-hint takes the new avg_price.
+    Best-effort; returns the number of orders updated. ponytail: single
+    entry/exit only — a partial-fill position (multiple entry orders) updates
+    just the latest entry; add per-fill FIFO reconstruction if that shows up.
+    """
+    from app.models.order import Order, OrderStatus
+
+    orders = await Order.find(
+        {
+            "user_id": position.user_id,
+            "instrument.token": position.instrument.token,
+            "product_type": position.product_type.value,
+            "status": {"$in": [OrderStatus.EXECUTED.value, OrderStatus.PARTIAL.value]},
+            "executed_at": {"$ne": None},
+        }
+    ).sort("executed_at").to_list()
+    if not orders:
+        return 0
+
+    new_avg = to_decimal(position.avg_price)
+    new_close = to_decimal(position.ltp) if position.ltp is not None else None
+
+    entry_o = None
+    exit_o = None
+    if position.status == PositionStatus.CLOSED and position.closed_at is not None:
+        exits = [o for o in orders if o.is_squareoff]
+        if exits:
+            exit_o = min(
+                exits,
+                key=lambda o: abs((o.executed_at - position.closed_at).total_seconds()),
+            )
+            entries = [
+                o for o in orders
+                if not o.is_squareoff and o.executed_at <= exit_o.executed_at
+            ]
+            entry_o = entries[-1] if entries else None
+    else:
+        entries = [o for o in orders if not o.is_squareoff]
+        entry_o = entries[-1] if entries else None
+
+    updated = 0
+    if entry_o is not None:
+        entry_o.average_price = to_decimal128(new_avg)
+        if to_decimal(entry_o.price) > 0:
+            entry_o.price = to_decimal128(new_avg)
+        if position.opened_at is not None:
+            entry_o.executed_at = position.opened_at
+        await entry_o.save()
+        updated += 1
+    if exit_o is not None and new_close is not None:
+        exit_o.average_price = to_decimal128(new_close)
+        if to_decimal(exit_o.price) > 0:
+            exit_o.price = to_decimal128(new_close)
+        if exit_o.cost_basis_override is not None:
+            exit_o.cost_basis_override = to_decimal128(new_avg)
+        if position.closed_at is not None:
+            exit_o.executed_at = position.closed_at
+        await exit_o.save()
+        updated += 1
+    return updated
+
+
 async def list_closed_trade_events_fifo(
     user_id: str | PydanticObjectId,
     *,
@@ -1290,6 +1547,47 @@ async def list_closed_trade_events_fifo(
             except Exception:
                 _basis = None
 
+        # Lot-basis era: the engine stamped the exact per-unit basis it
+        # booked (`close_basis`) — show THAT, so this close's P&L here equals
+        # its wallet P&L line. It removed the exited lot first (then FIFO):
+        # do the same with the queue so later closes pair with the same lots.
+        # Fills booked before lot-basis (no close_basis) display as before.
+        _lb_pick = None
+        _cb = getattr(t, "close_basis", None)
+        if _cb is not None:
+            try:
+                _lb = float(str(_cb))
+            except Exception:
+                _lb = None
+            if _lb is not None:
+                if _basis is not None and q:
+                    _bi = min(range(len(q)), key=lambda i: abs(q[i]["price"] - _basis))
+                    if _bi > 0 and abs(q[_bi]["price"] - _basis) <= max(0.01, abs(_basis) * 1e-4):
+                        _lb_pick = (q[_bi], _bi)
+                        del q[_bi]
+                        q.appendleft(_lb_pick[0])  # keeps the others' FIFO order
+                _basis = _lb
+
+        # Engine-truth lot selection (multi-lot disambiguation). With several
+        # OPEN lots for the same instrument, the matching engine may close a
+        # lot that is NOT the FIFO-front — e.g. an older lot stays open while a
+        # newer same-instrument round-trip is closed. Pure FIFO would eat the
+        # still-open older (cheaper) lot and report a wildly wrong gross
+        # (operator: "real ~600 loss, blotter showed 18,000+"). The engine
+        # already booked the exact P&L in `pnl_inr`, so derive the entry the
+        # engine priced against and rotate THAT lot to the queue front so it
+        # is the one consumed. Only when no explicit cost_basis_override was
+        # given, and only when a deeper lot matches better than the front —
+        # the normal single-lot / FIFO-front case is a no-op rotate.
+        if _basis is None and t.pnl_inr is not None and qty > 0 and price > 0 and q:
+            _raw_gross = float(str(t.pnl_inr)) + close_brk
+            # closing SELL (is_buy False) → long close  → entry = price - gross/qty
+            # closing BUY  (is_buy True)  → short close → entry = price + gross/qty
+            _derived = (price + _raw_gross / qty) if is_buy else (price - _raw_gross / qty)
+            _bi = min(range(len(q)), key=lambda i: abs(q[i]["price"] - _derived))
+            if abs(q[_bi]["price"] - _derived) <= max(0.01, price * 1e-4):
+                q.rotate(-_bi)  # bring the engine-closed lot to the FIFO front
+
         while remaining > 1e-9 and q:
             front = q[0]
             consume = min(front["qty"], remaining)
@@ -1330,6 +1628,10 @@ async def list_closed_trade_events_fifo(
 
             if front["qty"] < 1e-9:
                 q.popleft()
+
+        if _lb_pick is not None and q and q[0] is _lb_pick[0] and _lb_pick[0]["qty"] > 1e-9:
+            q.popleft()
+            q.insert(min(_lb_pick[1], len(q)), _lb_pick[0])
 
     # Drop closing fills an admin REOPEN/DELETE later undid. They stay in the
     # collection (audit) and were processed above so the FIFO pairing of the

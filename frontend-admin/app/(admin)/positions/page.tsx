@@ -192,7 +192,17 @@ function AdminPositionsInner() {
   // one aggregated all-qty row per position instead of the per-fill rows).
   // Harmless when no user is in scope — `closedFifoMode` also gates on
   // `queryUserId`, so the all-positions view still uses the aggregate path.
-  const [fifoView, setFifoView] = useState(true);
+  // Persisted across reloads/navigation: once an admin turns FIFO view OFF
+  // it STAYS off until they turn it back ON (operator ask). Default ON when
+  // the key was never set.
+  const [fifoView, setFifoView] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      return window.localStorage.getItem("admin.fifoView") !== "0";
+    } catch {
+      return true;
+    }
+  });
 
   // Search + filter + pagination state. Hoisted above the queries because
   // the Closed tab paginates + searches SERVER-side, so its query depends
@@ -1142,7 +1152,13 @@ function AdminPositionsInner() {
           <button
             type="button"
             onClick={() => {
-              setFifoView((v) => !v);
+              setFifoView((v) => {
+                const next = !v;
+                try {
+                  window.localStorage.setItem("admin.fifoView", next ? "1" : "0");
+                } catch {}
+                return next;
+              });
               setPage(1);
             }}
             title="Show the per-opening-fill FIFO breakdown exactly as the user sees it in their Closed history"

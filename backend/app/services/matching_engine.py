@@ -356,12 +356,20 @@ async def execute_market_order(
     # Opening fills leave both = None.
     pnl_inr_dec: Decimal | None = None
     raw_pnl_inr_dec: Decimal | None = None
+    close_basis: Decimal | None = None
+    remaining_avg: Decimal | None = None
     if is_closing and existing_pos is not None:
         cur_qty = to_decimal(existing_pos.quantity)
-        avg = to_decimal(existing_pos.avg_price)
         closed_qty = min(abs(cur_qty), qty_dec)
         sign = Decimal(1) if cur_qty > 0 else Decimal(-1)
-        raw_realized = (ltp - avg) * closed_qty * sign
+        # Book at the basis of the lots this close removes (the lot the user
+        # exited, else FIFO) so the wallet P&L equals the trade's P&L in the
+        # Closed blotter; falls back to the average when the fills don't
+        # reconcile. Computed before this fill's Trade row is inserted.
+        close_basis, remaining_avg = await position_service.close_basis(
+            existing_pos, closed_qty, getattr(order, "cost_basis_override", None)
+        )
+        raw_realized = (ltp - close_basis) * closed_qty * sign
         if market_data_service.is_usd_quoted_segment(order.instrument.segment):
             fx = to_decimal(market_data_service.get_usd_inr_rate())
             raw_realized = raw_realized * fx
@@ -386,8 +394,9 @@ async def execute_market_order(
         pnl_inr=Decimal128(str(pnl_inr_dec)) if pnl_inr_dec is not None else None,
         # Carry the specific-lot Exit hint through to the fill so the Active /
         # Closed per-fill reconstructions can attribute this close to the exact
-        # lot the user tapped. Display only — pnl_inr above is unchanged.
+        # lot the user tapped (pnl_inr above is booked at that lot's price).
         cost_basis_override=getattr(order, "cost_basis_override", None),
+        close_basis=Decimal128(str(close_basis)) if close_basis is not None else None,
     )
     order.filled_quantity += order.quantity
     order.pending_quantity = max(0, order.quantity - order.filled_quantity)
@@ -417,6 +426,8 @@ async def execute_market_order(
         stop_loss=sl_dec,
         target=tp_dec,
         is_demo=bool(getattr(order, "is_demo", False)),
+        close_basis=close_basis,
+        remaining_avg=remaining_avg,
     )
 
     # ── P&L sharing WS notify on Position close ──────────────────────

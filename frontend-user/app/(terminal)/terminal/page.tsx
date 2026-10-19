@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -12,8 +12,7 @@ import { useMarketStream } from "@/lib/useMarketStream";
 import { OrderPanel } from "@/components/trading/OrderPanel";
 import { PositionsTabs } from "@/components/trading/PositionsTabs";
 import { TradingViewChart } from "@/components/trading/TradingViewChart";
-import { FreeTradingViewChart } from "@/components/trading/FreeTradingViewChart";
-import { toPublicTvSymbol } from "@/lib/publicTvSymbol";
+import { ResizeHandle, useDragSize } from "@/components/common/ResizeHandle";
 import { ChartTabs, type ChartTab } from "@/components/trading/ChartTabs";
 import { TIMEFRAMES, type Timeframe } from "@/components/trading/ChartToolbar";
 import { MobileQuickTradeBar } from "@/components/trading/MobileQuickTradeBar";
@@ -138,6 +137,17 @@ export default function TradingTerminalPage() {
       return next;
     });
   }
+
+  // Desktop drag-to-resize: order panel width + positions strip height. The
+  // original responsive sizes stay until the user first drags a section.
+  const orderBoxRef = useRef<HTMLDivElement>(null);
+  const orderSize = useDragSize("setupfx.terminal.orderPanelW", orderBoxRef, 280, () =>
+    Math.round(window.innerWidth * 0.45),
+  );
+  const posBoxRef = useRef<HTMLDivElement>(null);
+  const posSize = useDragSize("setupfx.terminal.positionsH", posBoxRef, 110, () =>
+    Math.round(window.innerHeight * 0.65),
+  );
 
   // Tabs derived from watchlist quotes. `id` comes from `activeWl.items`
   // Chart tabs are now PURELY local state — decoupled from the watchlist
@@ -636,27 +646,25 @@ export default function TradingTerminalPage() {
                 (() => {
                   const tvInterval =
                     tf.interval === "minute" ? "1" : tf.interval === "3minute" ? "3" : tf.interval === "5minute" ? "5" : tf.interval === "15minute" ? "15" : tf.interval === "30minute" ? "30" : tf.interval === "60minute" ? "60" : "1D";
-                  // International (forex / metals / energy / crypto) → free
-                  // TradingView Advanced widget with real OANDA/Binance data.
-                  // Indian (NSE/BSE/NFO/BFO/MCX) → licensed chart on our feed.
-                  const publicTv = toPublicTvSymbol(
-                    instrument?.symbol,
-                    instrument?.exchange,
-                    (instrument as any)?.segment,
-                  );
-                  return publicTv ? (
-                    <FreeTradingViewChart
-                      tvSymbol={publicTv}
-                      interval={tvInterval}
-                      theme={chartTheme}
-                    />
-                  ) : (
+                  // Every instrument (Indian + forex / metals / energy / crypto)
+                  // uses the licensed chart on our own feed: it draws the
+                  // position / SL / TP / order lines and trades from the chart,
+                  // which the free embed widget (an iframe) cannot do.
+                  const onToken = (x: any) =>
+                    String(x?.instrument_token ?? x?.token ?? "") === selectedToken;
+                  return (
                     <TradingViewChart
                       token={selectedToken}
                       symbol={instrument?.symbol}
                       interval={tvInterval}
                       theme={chartTheme}
                       quote={chartLiveQuote}
+                      instrument={instrument}
+                      positions={(positionsLive ?? []).filter(onToken)}
+                      orders={(pendingOrders ?? []).filter(onToken)}
+                      bid={Number(bestBid ?? 0)}
+                      ask={Number(bestAsk ?? 0)}
+                      ltp={liveLtp > 0 ? liveLtp : Number(quote?.ltp ?? 0)}
                     />
                   );
                 })()
@@ -714,14 +722,24 @@ export default function TradingTerminalPage() {
             Hidden on mobile — the user explicitly asked for a chart-only
             mobile view; positions / orders are reachable via the bottom-nav
             "Orders" tab which already shows Positions / Holdings / All Orders. */}
-        <div className="hidden shrink-0 lg:block">
-          <PositionsTabs
-            positions={positionsLive ?? []}
-            pendingOrders={pendingOrders}
-            history={history}
-            cancelled={cancelled}
-            totalPnL={totalPnL}
+        <div className="relative hidden shrink-0 lg:block">
+          {/* Drag the top edge to make positions taller / the chart bigger. */}
+          <ResizeHandle
+            axis="y"
+            className="-top-1.5"
+            title="Drag to resize positions"
+            onPointerDown={(e) => posSize.start(e, "y", -1)}
           />
+          <div ref={posBoxRef} style={posSize.custom ? { height: posSize.size } : undefined}>
+            <PositionsTabs
+              positions={positionsLive ?? []}
+              pendingOrders={pendingOrders}
+              history={history}
+              cancelled={cancelled}
+              totalPnL={totalPnL}
+              fill={posSize.custom}
+            />
+          </div>
           {/* Slim wallet stats strip — Total Balance / Equity / Used Margin /
               Available / Open P&L. Sits at the bottom of the desktop terminal
               as a footer (per user request). Mobile gets the same numbers
@@ -753,13 +771,25 @@ export default function TradingTerminalPage() {
           advanced options (LIMIT, SL-M, SL/TP, product type) stay on
           desktop only by user request. */}
       <div
+        ref={orderBoxRef}
+        style={orderSize.custom && !orderPanelCollapsed ? { width: orderSize.size } : undefined}
         className={cn(
-          "relative hidden shrink-0 transition-[width] duration-300 ease-out lg:block",
+          "relative hidden shrink-0 lg:block",
+          !orderSize.dragging && "transition-[width] duration-300 ease-out",
           orderPanelCollapsed
             ? "lg:hidden"
-            : "lg:w-[340px] xl:w-[380px] 2xl:w-[420px]",
+            : orderSize.custom
+              ? ""
+              : "lg:w-[340px] xl:w-[380px] 2xl:w-[420px]",
         )}
       >
+        {/* Drag the left edge to make the order panel wider / narrower. */}
+        <ResizeHandle
+          axis="x"
+          className="-left-1.5"
+          title="Drag to resize order panel"
+          onPointerDown={(e) => orderSize.start(e, "x", -1)}
+        />
         {/* Collapse chevron — TOP of the panel's left edge (was
             vertical-center earlier, which made the arrow hard to find
             in a tall column). User can also collapse via Esc-style

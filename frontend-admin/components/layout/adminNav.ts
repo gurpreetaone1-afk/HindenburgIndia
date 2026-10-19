@@ -9,6 +9,7 @@
  */
 
 import {
+  Bell,
   Activity,
   Banknote,
   BadgeCheck,
@@ -65,6 +66,7 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
       { href: "/users", label: "All users", icon: Users, perm: "users" },
       { href: "/kyc", label: "KYC Review", icon: BadgeCheck, perm: "kyc" },
       { href: "/api-access", label: "API Access", icon: Plug, perm: "users" },
+      { href: "/notifications", label: "Send Notification", icon: Bell, perm: "users" },
     ],
   },
   {
@@ -113,13 +115,15 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
       { href: "/management/sub-admins", label: "Admin Management", icon: Crown, superOnly: true },
       { href: "/management/settlements", label: "Settlements", icon: Wallet, superOnly: true },
       {
+        // Super-admin can now manage brokers directly under itself (broker +
+        // its users stay in the super-admin pool). Admins see their own; a
+        // broker sees its sub-brokers.
         href: "/management/brokers",
         label: "Brokers",
         icon: Crown,
         perm: "brokers",
         brokerPerm: "sub_brokers",
         brokerLabel: "Sub-brokers",
-        hideForSuperAdmin: true,
       },
       { href: "/management/pnl-sharing", label: "P&L Sharing", icon: Handshake },
     ],

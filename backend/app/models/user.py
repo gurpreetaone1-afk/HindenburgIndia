@@ -249,6 +249,12 @@ class User(TimestampMixin):
     # it whenever the gateway key is configured.
     payment_gateway_enabled: bool = False
 
+    # Per-admin PayFromUPI pay-in token. Only populated on ADMIN rows that
+    # use the PayFromUPI gateway for their users' online deposits (others use
+    # the global Divinepay gateway). When set, this admin's users route their
+    # online UPI deposits through PayFromUPI instead. Deposit-only.
+    payfromupi_token: str | None = None
+
     # Sub-admin profile — only populated for role == ADMIN.
     admin_permissions: AdminPermissions | None = None
     pnl_share_pct: Decimal128 | None = None  # 0..100

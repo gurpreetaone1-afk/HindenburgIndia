@@ -388,7 +388,7 @@ export const WalletAPI = {
   myWithdrawals: () => unwrap<any[]>(api.get("/user/wallet/withdrawals")),
   // Online (UPI gateway) deposits. MANUAL = the usual bank-transfer flow.
   depositMode: () =>
-    unwrap<{ mode: "GATEWAY" | "MANUAL"; min_amount: string; max_amount: string }>(
+    unwrap<{ mode: "GATEWAY" | "MANUAL"; provider?: string; min_amount: string; max_amount: string }>(
       api.get("/user/wallet/deposit-mode"),
     ),
   createGatewayDeposit: (amount: number) =>

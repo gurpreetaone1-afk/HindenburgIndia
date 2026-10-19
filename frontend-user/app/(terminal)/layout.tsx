@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import Script from "next/script";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { ResizeHandle, useDragSize } from "@/components/common/ResizeHandle";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -40,6 +41,11 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
   const logout = useAuthStore((s) => s.logout);
+
+  // Desktop drag-to-resize for the MARKET list (keeps its 340 px default
+  // until the user first drags its right edge).
+  const mktRef = useRef<HTMLDivElement>(null);
+  const mktSize = useDragSize("setupfx.terminal.marketW", mktRef, 240, 640);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   // Instruments ("MARKET") side panel. Starts null to avoid an SSR/mobile
@@ -230,7 +236,24 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
           rail's 40-px column was pure dead weight on phones. */}
       <div className="flex min-h-0 flex-1">
         {sidePanel === "instruments" && (
-          <InstrumentsPanel onClose={closeInstruments} />
+          // Width applies on desktop only (CSS var at lg) so phones keep the
+          // panel's own responsive width.
+          <div
+            ref={mktRef}
+            className={cn(
+              "relative flex shrink-0",
+              mktSize.custom && "lg:w-[var(--mkt-w)] lg:[&>aside]:w-full",
+            )}
+            style={mktSize.custom ? ({ "--mkt-w": `${mktSize.size}px` } as React.CSSProperties) : undefined}
+          >
+            <InstrumentsPanel onClose={closeInstruments} />
+            <ResizeHandle
+              axis="x"
+              className="-right-1"
+              title="Drag to resize market list"
+              onPointerDown={(e) => mktSize.start(e, "x", 1)}
+            />
+          </div>
         )}
         {/* Mobile/md: allow vertical scroll so the chart + order panel +
             positions strip can all be reached. The previous unconditional

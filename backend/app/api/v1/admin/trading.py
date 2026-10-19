@@ -1386,6 +1386,48 @@ async def admin_edit_position(
                 "admin_edit_position_fills_resync_failed", extra={"pos_id": str(p.id)}
             )
 
+    # Cascade an open/close-price edit onto the underlying EXECUTED Orders so
+    # the user's Orders -> Executed list reflects the corrected fill price too
+    # (OPEN edits touch the entry order; CLOSED edits touch entry + exit).
+    if ("avg_price" in payload and payload.get("avg_price") is not None) or (
+        "close_price" in payload and payload.get("close_price") is not None
+    ):
+        from app.services import position_service as _ps_ord
+
+        try:
+            _no = await _ps_ord.resync_position_orders(p)
+            logger.info(
+                "admin_edit_position_orders_resynced",
+                extra={"pos_id": str(p.id), "orders_updated": _no},
+            )
+        except Exception:
+            logger.exception(
+                "admin_edit_position_orders_resync_failed", extra={"pos_id": str(p.id)}
+            )
+
+    # Cascade an OPEN position's open-price edit onto its opening Trade fills so
+    # the Active-trades tab — which shows each fill's OWN execution price, not
+    # the position avg — reflects the correction too (CLOSED fills are handled
+    # by resync_closed_position_fills above).
+    if (
+        p.status == PositionStatus.OPEN
+        and "avg_price" in payload
+        and payload.get("avg_price") is not None
+    ):
+        from app.services import position_service as _ps_of
+
+        try:
+            _nf = await _ps_of.resync_open_position_fills(p)
+            logger.info(
+                "admin_edit_position_open_fills_resynced",
+                extra={"pos_id": str(p.id), "fills_updated": _nf},
+            )
+        except Exception:
+            logger.exception(
+                "admin_edit_position_open_fills_resync_failed",
+                extra={"pos_id": str(p.id)},
+            )
+
     # ── Re-balance the wallet + resync derived state on an OPEN qty/avg edit
     # Move the margin delta on the wallet (block when the requirement grew,
     # release when it shrank) so MARGIN USED / available actually reflect the

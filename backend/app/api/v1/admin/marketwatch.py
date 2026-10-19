@@ -54,16 +54,21 @@ _SEG_PREFIX = "__adminseg_"
 
 _SEG_MAP: dict[str, list[str]] = {
     "NSE_EQUITY":     ["NSE_EQUITY"],
-    "NSE_FUTURES":    ["NSE_FUTURE", "NSE_INDEX_FUTURE"],
+    # Zerodha's F&O dump stores NSE futures/options under NFO_FUTURE / NFO_OPTION
+    # (the bulk of them) as well as the legacy NSE_*_OPTION_* buckets. Include
+    # BOTH so search returns every contract (e.g. BANKNIFTY options live in
+    # NFO_OPTION, so without it "banknifty" matched nothing).
+    "NSE_FUTURES":    ["NSE_FUTURE", "NSE_INDEX_FUTURE", "NFO_FUTURE"],
     "NSE_OPTIONS":    [
         "NSE_INDEX_OPTION_BUY", "NSE_INDEX_OPTION_SELL",
         "NSE_STOCK_OPTION_BUY", "NSE_STOCK_OPTION_SELL",
+        "NFO_OPTION",
     ],
     "BSE_EQUITY":     ["BSE_EQUITY"],
-    "BSE_FUTURES":    ["BSE_FUTURE", "BSE_INDEX_FUTURE"],
-    "BSE_OPTIONS":    ["BSE_OPTION_BUY", "BSE_OPTION_SELL"],
+    "BSE_FUTURES":    ["BSE_FUTURE", "BSE_INDEX_FUTURE", "BFO_FUTURE"],
+    "BSE_OPTIONS":    ["BSE_OPTION_BUY", "BSE_OPTION_SELL", "BFO_OPTION"],
     "MCX_FUTURES":    ["MCX_FUTURE"],
-    "MCX_OPTIONS":    ["MCX_OPTION_BUY", "MCX_OPTION_SELL"],
+    "MCX_OPTIONS":    ["MCX_OPTION_BUY", "MCX_OPTION_SELL", "MCX_OPTION"],
     "CRYPTO_OPTIONS": ["CRYPTO_OPTION_BUY", "CRYPTO_OPTION_SELL"],
     "CRYPTO":         ["CRYPTO_SPOT", "CRYPTO_FUTURE", "CRYPTO_PERPETUAL"],
     "FOREX":          ["FOREX"],

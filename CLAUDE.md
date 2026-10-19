@@ -80,9 +80,19 @@ npm run lint         # next lint (non-blocking in CI)
 npm run type-check   # tsc --noEmit
 ```
 
-### Deploy
+### Deploy (this server — Hindenburg VPS)
 
-[scripts/deploy.sh](scripts/deploy.sh) is the on-server deploy script — it diffs `HEAD` against `origin/main` and only restarts the affected piece (backend systemd unit, PM2 frontend, nginx). Force everything with `FORCE_FULL=1 bash scripts/deploy.sh`. See [deploy/README.md](deploy/README.md) for one-time EC2 setup (passwordless sudo for systemctl/nginx). The matching `.github/workflows/deploy.yml` (Actions → SSH → EC2 → `deploy.sh`) is referenced in [deploy/README.md](deploy/README.md) but is not currently checked into this tree — verify on the deployment host before assuming CI auto-deploys.
+**Do NOT run `scripts/deploy.sh`.** It does `git reset --hard origin/main`, and this server carries live fixes that are not on GitHub yet (uncommitted files + local commits) — the script would wipe them. It also targets old marginplant systemd/pm2 names that don't exist here. Never `git pull` / `git reset` / `git checkout .` / `git stash` here without committing the live changes first.
+
+Everything runs under **pm2** (there are no systemd units for these):
+
+| What | Restart / deploy | Check |
+|---|---|---|
+| Backend (FastAPI, port 8000) | `pm2 restart hb-backend` | `curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/health` → 200 (allow 10–15 s after a restart) |
+| User site (hindenburgindia.live) | `cd /opt/hindenburg/frontend-user && npm run build && pm2 restart hb-user` | `pm2 status hb-user` |
+| Admin (admin.hindenburgindia.live) | `cd /opt/hindenburg/frontend-admin && npm run build && pm2 restart hb-admin` | `pm2 status hb-admin` |
+
+Backend Python is `/opt/hindenburg/backend/.venv/bin/python`; run one-off scripts from `backend/` (so `.env` loads) with `PYTHONPATH=/opt/hindenburg/backend`. Logs: `pm2 logs hb-backend --lines 50 --nostream`. The mobile app (Expo) is NOT on this server — OTA updates are published from the developer's PC.
 
 ## Architecture: things that aren't obvious from the file tree
 

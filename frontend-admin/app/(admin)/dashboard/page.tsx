@@ -88,8 +88,20 @@ export default function AdminDashboardPage() {
   const appUrl =
     admin?.custom_domain && admin.custom_domain_status === "READY"
       ? `https://${admin.custom_domain}`
-      : process.env.NEXT_PUBLIC_USER_APP_URL?.replace(/\/$/, "") ??
-        "https://app.hindenburgindia.live";
+      : (() => {
+          const fromEnv = (process.env.NEXT_PUBLIC_USER_APP_URL || "").trim();
+          // Ignore dev / localhost values; use the real end-user origin.
+          if (fromEnv && !/localhost|127\.0\.0\.1/.test(fromEnv))
+            return fromEnv.replace(/\/+$/, "").replace(/^http:/, "https:");
+          if (typeof window !== "undefined") {
+            const url = new URL(window.location.origin);
+            url.protocol = "https:";
+            if (url.hostname.startsWith("admin."))
+              url.hostname = url.hostname.slice("admin.".length);
+            return url.origin;
+          }
+          return "https://hindenburgindia.live";
+        })();
   const referralLink = admin?.user_code
     ? `${appUrl}/register?ref=${admin.user_code}`
     : null;

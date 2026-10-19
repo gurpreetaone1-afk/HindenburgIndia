@@ -54,12 +54,18 @@ class Trade(TimestampMixin):
     # the close), so the displayed P&L matches the user's true cost.
     pnl_inr: Money | None = None
 
-    # Specific-lot Exit hint copied from the closing Order (DISPLAY ONLY — does
-    # NOT affect pnl_inr / the wallet, which are booked against the position
-    # avg). Carries the entry price of the exact fill the user tapped "Exit" on,
+    # Specific-lot Exit hint copied from the closing Order. Since lot-basis
+    # booking, pnl_inr / the wallet are realized against THIS lot. Carries the entry price of the exact fill the user tapped "Exit" on,
     # so the Active/Closed per-fill reconstructions attribute this close to the
     # right lot instead of FIFO-front. None on opening fills and normal closes.
     cost_basis_override: Money | None = None
+
+    # Per-unit entry basis this closing fill was realized at (lot-basis
+    # booking: the lots it removed — the exited lot, else FIFO; or the
+    # position average as a fallback). The Closed blotter displays it so the
+    # trade's P&L equals its wallet line. None on opening fills and on
+    # closes booked before lot-basis existed.
+    close_basis: Money | None = None
 
     # Set True when an admin REOPEN (or DELETE) undoes the close this trade
     # belongs to. The close fill stays in the collection for the audit trail,

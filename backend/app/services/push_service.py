@@ -216,3 +216,94 @@ async def send_to_user(
         PushSubscription.subject_id == uid,
     ).to_list()
     await _fan_out(subs, {"title": title, "body": body, "url": url, "tag": tag})
+
+
+async def send_to_all_users(
+    *,
+    title: str,
+    body: str,
+    url: str = "/",
+    tag: str | None = None,
+    user_ids: list[PydanticObjectId] | None = None,
+) -> int:
+    """Broadcast a push to EVERY trader's subscriptions (admin announcement).
+
+    ``user_ids=None`` → every USER subscription (super-admin, platform-wide).
+    Otherwise only the given users (a sub-admin's scoped pool). Returns the
+    number of subscriptions the payload was fanned out to.
+    """
+    if user_ids is None:
+        subs = await PushSubscription.find(
+            PushSubscription.subject_type == PushSubjectType.USER
+        ).to_list()
+    else:
+        if not user_ids:
+            return 0
+        subs = await PushSubscription.find(
+            PushSubscription.subject_type == PushSubjectType.USER,
+            {"subject_id": {"$in": user_ids}},
+        ).to_list()
+    await _fan_out(subs, {"title": title, "body": body, "url": url, "tag": tag})
+
+    # Native-app (Expo) tokens for the same users → real OS pop-up.
+    from app.models.expo_push_token import ExpoPushToken, ExpoSubjectType
+
+    if user_ids is None:
+        etoks = await ExpoPushToken.find(
+            ExpoPushToken.subject_type == ExpoSubjectType.USER
+        ).to_list()
+    else:
+        etoks = await ExpoPushToken.find(
+            ExpoPushToken.subject_type == ExpoSubjectType.USER,
+            {"subject_id": {"$in": user_ids}},
+        ).to_list()
+    expo_sent = await send_expo([t.token for t in etoks], title=title, body=body, url=url)
+    return len(subs) + expo_sent
+
+
+async def send_expo(
+    tokens: list[str],
+    *,
+    title: str,
+    body: str,
+    url: str = "/",
+) -> int:
+    """Push to native-app (Expo) tokens via the Expo Push API. Batched by 100
+    (Expo's limit). Best-effort — a bad token never starves the rest."""
+    toks = [t for t in tokens if t]
+    if not toks:
+        return 0
+    import httpx
+
+    messages = [
+        {
+            "to": t,
+            "title": title,
+            "body": body,
+            "sound": "default",
+            "priority": "high",
+            "channelId": "default",
+            "data": {"url": url},
+        }
+        for t in toks
+    ]
+    sent = 0
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for i in range(0, len(messages), 100):
+                batch = messages[i : i + 100]
+                try:
+                    r = await client.post(
+                        "https://exp.host/--/api/v2/push/send",
+                        json=batch,
+                        headers={"Content-Type": "application/json", "Accept": "application/json"},
+                    )
+                    if r.status_code == 200:
+                        sent += len(batch)
+                    else:
+                        logger.warning("expo_push_http_%s: %s", r.status_code, r.text[:200])
+                except Exception:
+                    logger.exception("expo_push_batch_failed")
+    except Exception:
+        logger.exception("expo_push_send_failed")
+    return sent

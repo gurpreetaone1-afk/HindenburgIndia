@@ -16,7 +16,7 @@ from app.core.rate_limit import rate_limit
 from app.models.audit_log import AuditAction
 from app.models.user import User, UserRole
 from app.schemas.admin.auth import AdminLoginRequest, AdminTokenPair, AdminUserOut
-from app.schemas.auth import LogoutRequest, RefreshRequest, TokenPair
+from app.schemas.auth import ChangePasswordRequest, LogoutRequest, RefreshRequest, TokenPair
 from app.schemas.common import APIResponse, OkResponse
 from app.core.config import settings
 from app.services import auth_service
@@ -185,6 +185,34 @@ async def admin_logout(payload: LogoutRequest, admin: CurrentAdmin):
     await auth_service.logout(refresh_token=payload.refresh_token, user_id=str(admin.id))
     await log_event(action=AuditAction.LOGOUT, entity_type="User", entity_id=admin.id, actor_id=admin.id)
     return APIResponse(data=OkResponse(message="Admin logged out"))
+
+
+@router.post("/change-password", response_model=APIResponse[OkResponse])
+async def admin_change_password(
+    payload: ChangePasswordRequest, admin: CurrentAdmin, request: Request
+):
+    """Change the logged-in admin's OWN password.
+
+    Works for super-admin + every admin/broker (any CurrentAdmin). On success
+    all of this admin's existing sessions are force-expired (token_version bump
+    + Redis purge) so they must re-login with the new password everywhere.
+    """
+    from app.services.audit_service import log_event
+
+    await auth_service.change_password(
+        admin, current=payload.current_password, new=payload.new_password
+    )
+    await auth_service.revoke_user_sessions(admin)
+    await log_event(
+        action=AuditAction.PASSWORD_CHANGE,
+        entity_type="User",
+        entity_id=admin.id,
+        actor_id=admin.id,
+        ip_address=_client_ip(request),
+    )
+    return APIResponse(
+        data=OkResponse(message="Password updated — please log in again")
+    )
 
 
 @router.get("/me", response_model=APIResponse[AdminUserOut])

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useTheme } from "next-themes";
 import {
   Bell,
@@ -12,6 +12,7 @@ import {
   Moon,
   Palette,
   CreditCard,
+  KeyRound,
   Play,
   ShieldCheck,
   Sun,
@@ -21,7 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAdminAuthStore } from "@/stores/authStore";
-import { SettingsAPI } from "@/lib/api";
+import { AdminAuthAPI, SettingsAPI } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -72,8 +73,10 @@ export default function PlatformSettingsPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <ThemeCard />
         <ProfileCard />
+        <ChangePasswordCard />
         <NotificationsCard />
         <PaymentGatewayCard />
+        <MyGatewayCard />
         <WeeklySettlementCard />
       </div>
     </div>
@@ -305,6 +308,230 @@ function NotificationsCard() {
           <li>· Each toast has a "View" button that opens /payments.</li>
           <li>· Setting is saved to this browser only.</li>
         </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// ── Change password (super admin + every admin / broker) ──────
+
+/**
+ * Lets the signed-in admin change their OWN login password. Available to
+ * every admin role (super-admin included) — no role gate. Backend expires
+ * all of this admin's sessions on success, so we force a re-login.
+ */
+function ChangePasswordCard() {
+  const admin = useAdminAuthStore((s) => s.admin);
+  const logout = useAdminAuthStore((s) => s.logout);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  if (!admin) return null;
+
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (next.length < 8) {
+      toast.error("New password must be at least 8 characters");
+      return;
+    }
+    if (next !== confirm) {
+      toast.error("New password and confirm do not match");
+      return;
+    }
+    setSaving(true);
+    try {
+      await AdminAuthAPI.changePassword(current, next);
+      toast.success("Password changed — please log in again");
+      // Backend force-expired every session of this admin — re-login.
+      setTimeout(() => {
+        void logout();
+        if (typeof window !== "undefined") window.location.href = "/login";
+      }, 900);
+    } catch (err: any) {
+      toast.error(err?.message || "Could not change password");
+      setSaving(false);
+    }
+  }
+
+  const inputCls =
+    "w-full rounded-md border border-border bg-card px-3 py-2 text-sm outline-none focus:border-primary";
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <KeyRound className="size-4 text-primary" /> Change password
+        </CardTitle>
+        <CardDescription>
+          Update your own login password. You will be logged out of all devices.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form className="space-y-3" onSubmit={submit}>
+          <div className="space-y-1">
+            <label className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Current password
+            </label>
+            <input
+              type="password"
+              autoComplete="current-password"
+              className={inputCls}
+              value={current}
+              onChange={(e) => setCurrent(e.target.value)}
+              required
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              New password
+            </label>
+            <input
+              type="password"
+              autoComplete="new-password"
+              className={inputCls}
+              value={next}
+              onChange={(e) => setNext(e.target.value)}
+              required
+              minLength={8}
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Confirm new password
+            </label>
+            <input
+              type="password"
+              autoComplete="new-password"
+              className={inputCls}
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              required
+              minLength={8}
+            />
+          </div>
+          <Button type="submit" className="w-full justify-center gap-2" disabled={saving}>
+            {saving ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <KeyRound className="size-4" />
+            )}
+            Update password
+          </Button>
+          <p className="text-[11px] text-muted-foreground">
+            Minimum 8 characters. After changing, log in again with the new password.
+          </p>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// ── My gateway (per-admin: online UPI vs manual) ──────────
+
+/**
+ * Lets a REGULAR admin (not super) turn their OWN online-deposit gateway
+ * ON/OFF. ON → their users deposit via the online UPI gateway; OFF → their
+ * users see manual bank transfer only. Persisted on the admin's user doc, so
+ * once they switch it OFF it stays OFF until they turn it back ON. Hidden for
+ * super admin (they use the pool card above) and when no gateway is wired.
+ */
+function MyGatewayCard() {
+  const admin = useAdminAuthStore((s) => s.admin);
+  const isSuperAdmin = admin?.role === "SUPER_ADMIN";
+  const [enabled, setEnabled] = useState(false);
+  const [configured, setConfigured] = useState(false);
+  const [provider, setProvider] = useState<string>("");
+  const [loaded, setLoaded] = useState(false);
+  const [toggling, setToggling] = useState(false);
+
+  useEffect(() => {
+    if (isSuperAdmin) return;
+    let alive = true;
+    SettingsAPI.myGateway()
+      .then((r) => {
+        if (!alive) return;
+        setEnabled(!!r.enabled);
+        setConfigured(!!r.configured);
+        setProvider(r.provider || "");
+      })
+      .catch(() => {})
+      .finally(() => alive && setLoaded(true));
+    return () => {
+      alive = false;
+    };
+  }, [isSuperAdmin]);
+
+  if (isSuperAdmin) return null;
+
+  async function toggle(next: boolean) {
+    setToggling(true);
+    try {
+      await SettingsAPI.setMyGateway(next);
+      setEnabled(next);
+      toast.success(
+        next ? "Online payments ON — your users can pay by UPI" : "Switched to manual bank transfer",
+      );
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update setting");
+    } finally {
+      setToggling(false);
+    }
+  }
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <CreditCard className="size-4 text-primary" /> Payment gateway
+        </CardTitle>
+        <CardDescription>
+          Online UPI deposits for your users. Turn OFF to show manual bank
+          transfer only — your choice stays until you switch it back.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!loaded ? (
+          <div className="text-[11px] text-muted-foreground">Loading…</div>
+        ) : !configured ? (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-[11px] text-amber-700 dark:text-amber-300">
+            No online gateway is wired for your account yet — your users see
+            manual bank transfer. Contact the super admin to enable it.
+          </div>
+        ) : (
+          <div className="flex items-center justify-between rounded-md border border-border bg-card p-3">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">
+                {enabled ? "Online payments — ON" : "Manual transfer — ON"}
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                {enabled
+                  ? "Your users can pay by UPI and get credited automatically"
+                  : "Your users see manual bank transfer only"}
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={toggling}
+              onClick={() => toggle(!enabled)}
+              aria-pressed={enabled}
+              className={cn(
+                "relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full transition-colors",
+                enabled ? "bg-emerald-500" : "bg-muted",
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block size-5 transform rounded-full bg-white shadow transition-transform",
+                  enabled ? "translate-x-6" : "translate-x-1",
+                )}
+              />
+            </button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

@@ -215,6 +215,17 @@ export const AdminAuthAPI = {
   refresh: (refresh_token: string) => unwrap<AdminTokenPair>(api.post("/admin/auth/refresh", { refresh_token })),
   logout: (refresh_token?: string) => unwrap<any>(api.post("/admin/auth/logout", { refresh_token })),
   me: () => unwrap<any>(api.get("/admin/auth/me")),
+  changePassword: (current_password: string, new_password: string) =>
+    unwrap<any>(
+      api.post("/admin/auth/change-password", { current_password, new_password }),
+    ),
+};
+
+export const NotifyAPI = {
+  broadcast: (title: string, body: string, url?: string) =>
+    unwrap<{ push_sent: number; recipients: number }>(
+      api.post("/admin/push/broadcast", { title, body, url: url || "/" }),
+    ),
 };
 
 export const DashboardAPI = {
@@ -910,6 +921,14 @@ export const SettingsAPI = {
     ),
   setPaymentGateway: (enabled: boolean) =>
     unwrap<{ enabled: boolean }>(api.put("/admin/settings/payment-gateway", { setting_value: enabled })),
+  // THIS admin's OWN online-deposit switch (any admin, not just super). ON =
+  // online UPI gateway for their users; OFF = manual bank transfer only.
+  myGateway: () =>
+    unwrap<{ enabled: boolean; provider: string; configured: boolean }>(
+      api.get("/admin/settings/my-gateway"),
+    ),
+  setMyGateway: (enabled: boolean) =>
+    unwrap<{ enabled: boolean }>(api.put("/admin/settings/my-gateway", { setting_value: enabled })),
   holidays: (year?: number) => unwrap<any[]>(api.get("/admin/holidays", { params: { year } })),
   createHoliday: (body: any) => unwrap<any>(api.post("/admin/holidays", body)),
   deleteHoliday: (id: string) => unwrap<any>(api.delete(`/admin/holidays/${id}`)),

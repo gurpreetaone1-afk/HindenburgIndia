@@ -461,9 +461,10 @@ export default function ZerodhaConnectPage() {
 
       {/* ── Account A / Account B tab switcher ──────────────────── */}
       <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/30 p-1 w-fit">
+        {/* Account B disabled — single-account setup: Account A carries all
+            NSE + MCX (on-demand keeps active tokens well under the 3000 cap). */}
         {[
-          { idx: 0, label: "Account A", desc: "Primary (up to 3000 tokens)" },
-          { idx: 1, label: "Account B", desc: "Secondary (+3000 tokens)" },
+          { idx: 0, label: "Account A", desc: "NSE + MCX live data" },
         ].map(({ idx, label, desc }) => (
           <button
             key={idx}

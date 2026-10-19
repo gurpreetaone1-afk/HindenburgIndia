@@ -75,6 +75,17 @@ function LoginPageInner() {
   }, [hydrated, currentUser, router, setUser]);
 
   const impAccess = searchParams?.get("access");
+
+  // Seed referral attribution if a broker/admin LOGIN link carried ?ref=, so a
+  // later register (even after demo-login -> logout) still credits them.
+  useEffect(() => {
+    try {
+      const r = (searchParams?.get("ref") || "").trim().toUpperCase();
+      if (r) window.localStorage.setItem("hb_ref", r);
+    } catch {
+      /* storage unavailable */
+    }
+  }, [searchParams]);
   const impRefresh = searchParams?.get("refresh");
   const isImpersonating = !!(impAccess && impRefresh);
   const [impersonationFailed, setImpersonationFailed] = useState(false);

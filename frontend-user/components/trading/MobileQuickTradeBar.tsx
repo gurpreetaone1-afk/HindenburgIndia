@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Briefcase } from "lucide-react";
 import { TradeDetailSheet } from "@/components/trading/TradeDetailSheet";
 import { cn } from "@/lib/utils";
+import { AnimatedPrice } from "@/components/ui/AnimatedPrice";
 
 interface Props {
   instrument: any;
@@ -67,7 +68,7 @@ export function MobileQuickTradeBar({ instrument, ltp, bid, ask }: Props) {
               Sell
             </span>
             <span className="font-tabular text-sm font-bold tabular-nums leading-tight">
-              {fmt(sellPrice)}
+              <AnimatedPrice value={sellPrice} format={fmt} glide flash={false} />
             </span>
           </button>
 
@@ -85,7 +86,7 @@ export function MobileQuickTradeBar({ instrument, ltp, bid, ask }: Props) {
               Buy
             </span>
             <span className="font-tabular text-sm font-bold tabular-nums leading-tight">
-              {fmt(buyPrice)}
+              <AnimatedPrice value={buyPrice} format={fmt} glide flash={false} />
             </span>
           </button>
         </div>

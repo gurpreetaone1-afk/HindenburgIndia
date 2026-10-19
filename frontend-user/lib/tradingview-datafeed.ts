@@ -14,6 +14,48 @@
  */
 import { InstrumentAPI } from "./api";
 
+/**
+ * Backend history rows → TradingView bars. The endpoint returns two shapes:
+ * Zerodha `{time: unix seconds}` and Binance/Yahoo `{date: ISO string}` (no
+ * `time`). Reading only `time` dropped every Binance/Yahoo bar and the chart
+ * fell back to synthetic candles — so crypto/forex/metals couldn't use this
+ * chart. `date` rows are UTC-aligned, so intraday ones are floored to the
+ * resolution: Yahoo's live-partial last row (e.g. 09:54:54) then merges into
+ * its 09:50 bar instead of becoming a stray bar. Zerodha times are left as-is
+ * (its 60-minute bars start at 09:15 IST, which a UTC floor would shift).
+ */
+function toTvBars(candles: any[], resolution: string): any[] {
+  const stepMs = Number(resolution) > 0 ? Number(resolution) * 60_000 : 0;
+  const byTime = new Map<number, any>();
+  for (const c of candles ?? []) {
+    let t = typeof c?.time === "number" ? c.time * 1000 : c?.date ? Date.parse(c.date) : NaN;
+    if (typeof c?.time !== "number" && stepMs) t = Math.floor(t / stepMs) * stepMs;
+    const bar = {
+      time: t,
+      open: Number(c?.open),
+      high: Number(c?.high),
+      low: Number(c?.low),
+      close: Number(c?.close),
+      volume: Number(c?.volume) || 0,
+    };
+    if (!Number.isFinite(bar.time) || !(bar.open > 0) || !(bar.close > 0)) continue;
+    const prev = byTime.get(t);
+    byTime.set(
+      t,
+      prev
+        ? {
+            ...prev,
+            high: Math.max(prev.high, bar.high),
+            low: Math.min(prev.low, bar.low),
+            close: bar.close,
+            volume: prev.volume + bar.volume,
+          }
+        : bar,
+    );
+  }
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
 /* ── Resolution mapping ──────────────────────────────────────────── */
 const RESOLUTION_MAP: Record<string, string> = {
   "1": "minute",
@@ -477,20 +519,7 @@ export class CustomDatafeed {
       // earlier filter was throwing away the whole result when the backend
       // returned bars older than `periodParams.from` on the first paint
       // (the case that left option charts blank).
-      const bars = candles
-        .map((c: any) => ({
-          time: c.time * 1000,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-          volume: c.volume || 0,
-        }))
-        .filter((b: any) =>
-          Number.isFinite(b.time) && Number.isFinite(b.open) &&
-          Number.isFinite(b.close) && b.open > 0 && b.close > 0
-        )
-        .sort((a: any, b: any) => a.time - b.time);
+      const bars = toTvBars(candles, resolution);
 
       const fromMs = (periodParams.from || 0) * 1000;
       const toMs = (periodParams.to || Math.floor(Date.now() / 1000)) * 1000;
@@ -600,22 +629,9 @@ export class CustomDatafeed {
             const interval = RESOLUTION_MAP[resolution] || "5minute";
             const gapDays = Math.min(Math.ceil((nowSec - lastSec) / 86400) + 1, 5);
             const recent = (await InstrumentAPI.history(token, interval, gapDays)) ?? [];
-            const gapBars = recent
-              .map((c: any) => ({
-                time: c.time * 1000,
-                open: c.open,
-                high: c.high,
-                low: c.low,
-                close: c.close,
-                volume: c.volume || 0,
-              }))
-              .filter(
-                (b: any) =>
-                  b.time > seedBar.time &&
-                  Number.isFinite(b.open) && b.open > 0 &&
-                  Number.isFinite(b.close) && b.close > 0,
-              )
-              .sort((a: any, b: any) => a.time - b.time);
+            const gapBars = toTvBars(recent, resolution).filter(
+              (b: any) => b.time > seedBar.time,
+            );
             for (const bar of gapBars) {
               // Re-read sub each iteration in case it was removed
               const s = this.subscribers.get(listenerGuid);

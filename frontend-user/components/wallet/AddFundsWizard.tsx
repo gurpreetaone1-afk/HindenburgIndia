@@ -202,6 +202,9 @@ export function AddFundsWizard({
     enabled: open,
   });
   const isGateway = depMode?.mode === "GATEWAY";
+  // PayFromUPI is a HOSTED-page gateway: no UTR to type — the user pays on the
+  // opened page and we just confirm with the gateway. Divinepay needs the UTR.
+  const isPfu = depMode?.provider === "payfromupi";
   const [gwOrder, setGwOrder] = useState<
     { order_id: string; payment_url: string; amount: string } | null
   >(null);
@@ -291,10 +294,10 @@ export function AddFundsWizard({
   // what credits the wallet (never the client).
   async function verifyGatewayUtr() {
     if (!gwOrder || gwBusy) return;
-    if (gwUtr.length !== 12) return toast.error("Enter the 12-digit UTR");
+    if (!isPfu && gwUtr.length !== 12) return toast.error("Enter the 12-digit UTR");
     setGwBusy(true);
     try {
-      const res = await WalletAPI.submitGatewayUtr(gwOrder.order_id, gwUtr);
+      const res = await WalletAPI.submitGatewayUtr(gwOrder.order_id, isPfu ? "" : gwUtr);
       if (res.status === "success") {
         toast.success("Payment verified — wallet credited");
         setGwOrder(null);
@@ -506,10 +509,13 @@ export function AddFundsWizard({
             <Header onBack={() => setStep(1)} />
             <div className="flex flex-1 flex-col gap-4 px-5 pt-4">
               <div>
-                <div className="text-lg font-semibold">Enter payment reference</div>
+                <div className="text-lg font-semibold">
+                  {isPfu ? "Confirm your payment" : "Enter payment reference"}
+                </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Finish the payment in the tab that opened, then enter the 12-digit
-                  UTR / reference your bank or UPI app shows.
+                  {isPfu
+                    ? "Finish the payment in the tab that opened. Once done, tap the button below and your wallet is credited automatically."
+                    : "Finish the payment in the tab that opened, then enter the 12-digit UTR / reference your bank or UPI app shows."}
                 </p>
               </div>
 
@@ -534,28 +540,30 @@ export function AddFundsWizard({
                 </button>
               )}
 
-              <div className="space-y-1.5">
-                <label htmlFor="gw-utr" className="text-xs font-medium">
-                  12-digit UTR
-                </label>
-                <input
-                  id="gw-utr"
-                  inputMode="numeric"
-                  maxLength={12}
-                  placeholder="123456789012"
-                  value={gwUtr}
-                  onChange={(e) => setGwUtr(e.target.value.replace(/\D/g, ""))}
-                  className="w-full rounded-xl border border-border bg-background px-3 py-3 text-base tracking-widest outline-none focus:border-primary"
-                />
-              </div>
+              {!isPfu && (
+                <div className="space-y-1.5">
+                  <label htmlFor="gw-utr" className="text-xs font-medium">
+                    12-digit UTR
+                  </label>
+                  <input
+                    id="gw-utr"
+                    inputMode="numeric"
+                    maxLength={12}
+                    placeholder="123456789012"
+                    value={gwUtr}
+                    onChange={(e) => setGwUtr(e.target.value.replace(/\D/g, ""))}
+                    className="w-full rounded-xl border border-border bg-background px-3 py-3 text-base tracking-widest outline-none focus:border-primary"
+                  />
+                </div>
+              )}
 
               <button
                 type="button"
                 onClick={verifyGatewayUtr}
-                disabled={gwBusy || gwUtr.length !== 12}
+                disabled={gwBusy || (!isPfu && gwUtr.length !== 12)}
                 className="w-full rounded-xl bg-primary py-3.5 text-sm font-semibold text-primary-foreground disabled:opacity-50"
               >
-                {gwBusy ? "Verifying…" : "Verify & add funds"}
+                {gwBusy ? "Verifying…" : isPfu ? "I've paid — Verify" : "Verify & add funds"}
               </button>
               <PoweredFooter />
             </div>

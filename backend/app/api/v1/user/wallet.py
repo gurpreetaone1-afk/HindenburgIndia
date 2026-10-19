@@ -352,15 +352,42 @@ async def create_deposit(payload: DepositCreate, user: CurrentUser):
     return APIResponse(data={"id": str(req.id), "status": req.status.value})
 
 
-async def _gateway_on_for(user) -> bool:
-    """Is the online (Divinepay) deposit flow available to THIS user?
+async def _owning_admin(user):
+    """The ADMIN doc that owns this user (via assigned_admin_id), or None."""
+    from app.models.user import User
 
-    Two gates, both must pass:
-      1. the gateway key is configured at all (global switch), and
-      2. the admin who owns this user has it turned on. Users with no owning
-         admin sit in the super-admin pool — the gateway belongs to the super
-         admin, so they get it as soon as the key is set.
+    admin_id = getattr(user, "assigned_admin_id", None)
+    return await User.get(admin_id) if admin_id else None
+
+
+async def _gateway_provider_for(user) -> tuple[str, str | None]:
+    """Pick the online-deposit provider for THIS user.
+
+    PayFromUPI when the owning admin carries a `payfromupi_token` (per-admin
+    gateway, e.g. ADM55676892); otherwise the global Divinepay gateway.
+    Returns (provider, token) — token is the PayFromUPI bearer (None for
+    Divinepay).
     """
+    admin = await _owning_admin(user)
+    tok = getattr(admin, "payfromupi_token", None) if admin else None
+    if tok:
+        return ("payfromupi", tok)
+    return ("divinepay", None)
+
+
+async def _gateway_on_for(user) -> bool:
+    """Is an online deposit flow available to THIS user?
+
+    PayFromUPI admins: gated only on the admin's own on/off switch
+    (`payment_gateway_enabled`) — the token presence already scopes it to that
+    admin. Divinepay: global key configured AND the owning admin (or the
+    super-admin pool) has it switched on.
+    """
+    provider, _tok = await _gateway_provider_for(user)
+    if provider == "payfromupi":
+        admin = await _owning_admin(user)
+        return bool(getattr(admin, "payment_gateway_enabled", False)) if admin else False
+
     from app.services import divinepay_service
 
     if not divinepay_service.is_configured():
@@ -393,25 +420,32 @@ async def _credit_gateway_deposit(req, utr: str | None) -> bool:
 async def _sync_gateway_deposits(user_id) -> None:
     """Instant path: credit this customer's paid-but-unconfirmed orders when
     they refresh their wallet. The background loop covers everyone else."""
-    from app.services import divinepay_service
+    from app.services import divinepay_service, payfromupi_service
 
     try:
         await divinepay_service.reconcile_deposits(user_id=user_id)
     except Exception:
         logger.exception("gateway_deposit_sync_failed user=%s", user_id)
+    try:
+        await payfromupi_service.reconcile_deposits(user_id=user_id)
+    except Exception:
+        logger.exception("payfromupi_deposit_sync_failed user=%s", user_id)
 
 
 @router.get("/deposit-mode", response_model=APIResponse[dict])
 async def deposit_mode(user: CurrentUser):
     """Which deposit UI to render: GATEWAY (online UPI) or MANUAL (bank transfer)."""
-    from app.services import divinepay_service
+    from app.services import divinepay_service, payfromupi_service
 
     on = await _gateway_on_for(user)
+    provider, _tok = await _gateway_provider_for(user)
+    svc = payfromupi_service if provider == "payfromupi" else divinepay_service
     return APIResponse(
         data={
             "mode": "GATEWAY" if on else "MANUAL",
-            "min_amount": str(divinepay_service.MIN_AMOUNT),
-            "max_amount": str(divinepay_service.MAX_AMOUNT),
+            "provider": provider,
+            "min_amount": str(svc.MIN_AMOUNT),
+            "max_amount": str(svc.MAX_AMOUNT),
         }
     )
 
@@ -439,9 +473,23 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         user_id=user.id, rule_type="DEPOSIT", amount=float(amount), user_remark=None
     )
 
+    from app.services import payfromupi_service
+    provider, token = await _gateway_provider_for(user)
     try:
-        created = await divinepay_service.create_payin(amount)
-    except divinepay_service.DivinepayError as exc:
+        if provider == "payfromupi":
+            created = await payfromupi_service.create_payin(
+                amount,
+                token=token or "",
+                user_name=user.full_name or user.user_code or "User",
+                user_email=user.email or "user@example.com",
+                user_mobile=getattr(user, "mobile", None) or "9999999999",
+                redirect_url="https://hindenburgindia.live/wallet?deposit=done",
+            )
+            _key = f"payfromupi:{created['order_id']}"
+        else:
+            created = await divinepay_service.create_payin(amount)
+            _key = f"divinepay:{created['order_id']}"
+    except (divinepay_service.DivinepayError, payfromupi_service.PayFromUpiError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     req = DepositRequest(
@@ -452,8 +500,8 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         status=DepositStatus.PENDING,
         # The gateway order id doubles as our idempotency key: the unique
         # sparse index makes a duplicate order physically impossible and gives
-        # us the lookup for the UTR step.
-        idempotency_key=f"divinepay:{created['order_id']}",
+        # us the lookup for the verify/UTR step.
+        idempotency_key=_key,
     )
     await req.insert()
     return APIResponse(
@@ -472,14 +520,17 @@ async def submit_gateway_utr(payload: dict, user: CurrentUser):
 
     The credit is authorised by the GATEWAY's verdict, never by the client.
     """
-    from app.services import divinepay_service
+    from app.services import divinepay_service, payfromupi_service
 
     order_id = str(payload.get("order_id") or "").strip()
     utr = str(payload.get("utr") or "").strip()
     if not order_id:
         raise HTTPException(status_code=400, detail="Missing order id.")
 
+    # Look up by either provider prefix.
     req = await DepositRequest.find_one(
+        DepositRequest.idempotency_key == f"payfromupi:{order_id}"
+    ) or await DepositRequest.find_one(
         DepositRequest.idempotency_key == f"divinepay:{order_id}"
     )
     if req is None or req.user_id != user.id:
@@ -489,20 +540,34 @@ async def submit_gateway_utr(payload: dict, user: CurrentUser):
     if req.status != DepositStatus.PENDING:
         raise HTTPException(status_code=400, detail="This payment is no longer pending.")
 
-    try:
-        result = await divinepay_service.submit_utr(order_id, utr)
+    is_pfu = (req.idempotency_key or "").startswith("payfromupi:")
+    if is_pfu:
+        # PayFromUPI has no UTR step — the user pays on the hosted page; we
+        # just ask the gateway whether the txn completed, and credit if so.
+        _, token = await _gateway_provider_for(user)
+        try:
+            result = await payfromupi_service.check_status(order_id, token=token or "")
+        except payfromupi_service.PayFromUpiError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not payfromupi_service.is_success(result):
+            return APIResponse(
+                data={"status": str(result.get("status") or "pending"), "credited": False}
+            )
+        credited = await _credit_gateway_deposit(req, None)
+    else:
+        try:
+            result = await divinepay_service.submit_utr(order_id, utr)
+            if not divinepay_service.is_success(result):
+                # UTR accepted but not settled yet — ask the gateway directly.
+                result = await divinepay_service.check_status(order_id)
+        except divinepay_service.DivinepayError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         if not divinepay_service.is_success(result):
-            # UTR accepted but not settled yet — ask the gateway directly.
-            result = await divinepay_service.check_status(order_id)
-    except divinepay_service.DivinepayError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+            return APIResponse(
+                data={"status": str(result.get("status") or "pending"), "credited": False}
+            )
+        credited = await _credit_gateway_deposit(req, utr)
 
-    if not divinepay_service.is_success(result):
-        return APIResponse(
-            data={"status": str(result.get("status") or "pending"), "credited": False}
-        )
-
-    credited = await _credit_gateway_deposit(req, utr)
     if not credited:
         return APIResponse(data={"status": "success", "already_credited": True})
     return APIResponse(

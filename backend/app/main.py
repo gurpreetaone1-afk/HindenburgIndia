@@ -22,6 +22,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from app import __version__
 from app.api.v1 import branding as branding_public
+from app.api.v1 import payfromupi_webhook as _pfu_webhook
 from app.api.v1.admin import router as admin_router
 from app.api.v1.user import router as user_router
 from app.api.ws import router as ws_router
@@ -787,6 +788,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     )
     setattr(app, "_divinepay_reconcile_task", dp_task)
 
+    from app.services.payfromupi_service import deposit_reconcile_loop as _pfu_loop
+    pfu_task: _asyncio.Task = _asyncio.create_task(
+        _supervise(
+            "payfromupi_deposit_reconcile",
+            _leader_only("payfromupi_deposit_reconcile", _pfu_loop, interval_sec=20.0),
+        )
+    )
+    setattr(app, "_payfromupi_reconcile_task", pfu_task)
+
     # Tracker self-heal: every 15 min, walk every UserPositionTracker row
     # and recompute it from the live Position docs. Catches any drift
     # introduced by an unexpected restart / fill retry / partial flow,
@@ -1347,6 +1357,7 @@ app.include_router(admin_router, prefix="/api/v1")
 # Public (no-auth) branding lookups live alongside /user and /admin
 # at the v1 root so the path is /api/v1/branding/by-code/...
 app.include_router(branding_public.router, prefix="/api/v1")
+app.include_router(_pfu_webhook.router, prefix="/api/v1")
 app.include_router(ws_router)
 
 

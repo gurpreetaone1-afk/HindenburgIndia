@@ -238,6 +238,18 @@ async def list_deposits(
             )
         q["user_id"] = {"$in": allow}
 
+    # Hide online-gateway deposits that are still PENDING — they are NOT
+    # manual action items. The UPI gateway auto-credits on payment; an unpaid
+    # one must NEVER be hand-approved into free money, and if the user never
+    # pays the reconcile loop auto-rejects it. Gateway deposits surface here
+    # only once credited (APPROVED) or auto-rejected — records, not requests.
+    q["$nor"] = [
+        {
+            "status": DepositStatus.PENDING.value,
+            "idempotency_key": {"$regex": "^(divinepay|payfromupi):"},
+        }
+    ]
+
     total = await DepositRequest.find(q).count()
     rows = (
         await DepositRequest.find(q)
@@ -300,6 +312,17 @@ async def approve_deposit(
     if r is None:
         raise HTTPException(status_code=404, detail="Deposit not found")
     await assert_user_in_scope(admin, r.user_id)
+    # Online-gateway deposits credit automatically when the user actually pays
+    # (verified against the gateway) — they can NEVER be hand-approved, else an
+    # admin could credit a payment the user never made.
+    if (r.idempotency_key or "").split(":", 1)[0] in {"divinepay", "payfromupi"}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Ye online UPI gateway payment hai — user ke pay karne par ye "
+                "khud credit hoti hai. Ise manually approve nahi kar sakte."
+            ),
+        )
     if r.status != DepositStatus.PENDING:
         raise HTTPException(status_code=400, detail="Already processed")
 

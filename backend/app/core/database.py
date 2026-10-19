@@ -90,6 +90,7 @@ def _document_models() -> list[type["Document"]]:
     from app.models.user import User, UserSegment
     from app.models.wallet import Wallet
     from app.models.push_subscription import PushSubscription
+    from app.models.expo_push_token import ExpoPushToken
     from app.models.watchlist import Watchlist, WatchlistItem
     from app.models.zerodha_auto_login import ZerodhaAutoLogin
     from app.models.zerodha_feed_routing import ZerodhaFeedRouting
@@ -138,6 +139,7 @@ def _document_models() -> list[type["Document"]]:
         PositionSettlement,
         Watchlist,
         PushSubscription,
+        ExpoPushToken,
         WatchlistItem,
         # Ops
         AuditLog,
