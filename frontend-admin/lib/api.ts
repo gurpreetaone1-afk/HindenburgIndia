@@ -691,14 +691,6 @@ export type ZerodhaAutoLoginStatus = {
   username_masked: string;
 };
 
-export type ZerodhaAutoLoginTestResult = {
-  success: boolean;
-  error?: string;
-  stage?: string;
-  duration_ms?: number;
-  access_token_obtained?: boolean;
-};
-
 export const ZerodhaAutoLoginAPI = {
   status: (account = 0) =>
     api
@@ -723,14 +715,11 @@ export const ZerodhaAutoLoginAPI = {
       .put("/admin/zerodha/auto-login/schedule", { schedule_time_ist }, { params: { account } })
       .then((r) => r.data?.status as ZerodhaAutoLoginStatus),
 
+  // Only queues the login on the feed server — the outcome lands in status().
   testNow: (account = 0) =>
-    api.post("/admin/zerodha/auto-login/test", null, { params: { account } }).then(
-      (r) =>
-        r.data as {
-          result: ZerodhaAutoLoginTestResult;
-          status: ZerodhaAutoLoginStatus;
-        },
-    ),
+    api
+      .post("/admin/zerodha/auto-login/test", null, { params: { account } })
+      .then((r) => r.data?.status as ZerodhaAutoLoginStatus),
 
   resetLock: (account = 0) =>
     api
