@@ -48,6 +48,19 @@ function parseDate(v: string | Date | null | undefined): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+// <input type="datetime-local"> in IST — the admin's clock — whatever zone
+// the browser runs in: "YYYY-MM-DDTHH:mm:ss" ↔ UTC instant.
+const IST_OFFSET_MS = 330 * 60_000;
+function toIstInput(v: string | Date | null | undefined): string {
+  const d = parseDate(v);
+  return d ? new Date(d.getTime() + IST_OFFSET_MS).toISOString().slice(0, 19) : "";
+}
+function fromIstInput(s: string): string | null {
+  if (!s) return null;
+  const d = new Date((s.length === 16 ? s + ":00" : s) + "Z");
+  return isNaN(d.getTime()) ? null : new Date(d.getTime() - IST_OFFSET_MS).toISOString();
+}
+
 // Color + label for the close_reason chip. Legal tags come from
 // Position.close_reason in marginplant_ind/backend/app/models/position.py.
 const CLOSE_REASON_META: Record<
@@ -461,6 +474,7 @@ function AdminPositionsInner() {
     realized_pnl: string;
     close_reason: string;
     close_price: string;  // ltp override for closed rows
+    closed_at: string;
   }>({
     avg_price: "",
     quantity: "",
@@ -470,6 +484,7 @@ function AdminPositionsInner() {
     realized_pnl: "",
     close_reason: "",
     close_price: "",
+    closed_at: "",
   });
   const [saving, setSaving] = useState(false);
 
@@ -478,14 +493,13 @@ function AdminPositionsInner() {
     setForm({
       avg_price: String(editing.avg_price ?? ""),
       quantity: String(editing.quantity ?? ""),
-      opened_at: editing.opened_at
-        ? new Date(parseDate(editing.opened_at) ?? editing.opened_at).toISOString().slice(0, 16)
-        : "",
+      opened_at: toIstInput(editing.opened_at),
       stop_loss: editing.stop_loss != null ? String(editing.stop_loss) : "",
       target: editing.target != null ? String(editing.target) : "",
       realized_pnl: editing.realized_pnl != null ? String(editing.realized_pnl) : "",
       close_reason: editing.close_reason ?? "",
       close_price: editing.ltp != null ? String(editing.ltp) : "",
+      closed_at: toIstInput(editing.closed_at),
     });
   }, [editing]);
 
@@ -502,10 +516,9 @@ function AdminPositionsInner() {
         patch.avg_price = form.avg_price;
       if (form.quantity !== "" && Number(form.quantity) !== Number(editing.quantity))
         patch.quantity = Number(form.quantity);
-      if (form.opened_at) {
-        const iso = new Date(form.opened_at).toISOString();
-        if (iso !== editing.opened_at) patch.opened_at = iso;
-      }
+      // Compared as the IST field strings: an untouched field sends nothing.
+      if (form.opened_at && form.opened_at !== toIstInput(editing.opened_at))
+        patch.opened_at = fromIstInput(form.opened_at);
       if (form.stop_loss === "") patch.stop_loss = null;
       else if (Number(form.stop_loss) !== Number(editing.stop_loss ?? 0))
         patch.stop_loss = Number(form.stop_loss);
@@ -532,6 +545,12 @@ function AdminPositionsInner() {
       if (form.close_reason !== (editing.close_reason ?? "")) {
         patch.close_reason = form.close_reason || null;
       }
+      // Time corrections — the backend moves the fills, orders and ledger
+      // rows too, so the user's closed list, tradebook and reports follow.
+      if (form.opened_at && form.opened_at !== toIstInput(editing.opened_at))
+        patch.opened_at = fromIstInput(form.opened_at);
+      if (form.closed_at && form.closed_at !== toIstInput(editing.closed_at))
+        patch.closed_at = fromIstInput(form.closed_at);
     }
 
     if (Object.keys(patch).length === 0) {
@@ -542,10 +561,14 @@ function AdminPositionsInner() {
     setSaving(true);
     try {
       await TradingAPI.editPosition(editing.id, patch);
+      const moneyChanged =
+        "avg_price" in patch || "close_price" in patch || "realized_pnl" in patch;
       toast.success(
-        isClosed
-          ? "Closed trade updated — wallet auto-adjusted via reversal"
-          : "Position updated — user terminal will refresh live",
+        !isClosed
+          ? "Position updated — user terminal will refresh live"
+          : moneyChanged
+            ? "Closed trade updated — wallet auto-adjusted via reversal"
+            : "Closed trade updated",
       );
       qc.invalidateQueries({ queryKey: ["admin", "positions"] });
       qc.invalidateQueries({ queryKey: ["admin", "accounts"] });
@@ -1411,6 +1434,34 @@ function AdminPositionsInner() {
                   Changing open/close price auto-recalculates Realised P&L and adjusts wallet via REVERSAL.
                 </p>
               </div>
+              <div className="space-y-1.5">
+                <Label>Open time (IST)</Label>
+                <Input
+                  type="datetime-local"
+                  step={1}
+                  value={form.opened_at}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, opened_at: e.target.value }))
+                  }
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Close time (IST)</Label>
+                <Input
+                  type="datetime-local"
+                  step={1}
+                  value={form.closed_at}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, closed_at: e.target.value }))
+                  }
+                />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <p className="text-[10px] text-muted-foreground">
+                  Changing a time also moves this trade&apos;s fills, orders and ledger entries — the
+                  user&apos;s closed list, tradebook and reports all show the new time.
+                </p>
+              </div>
               <div className="space-y-1.5 sm:col-span-2">
                 <Label>Realised P&L override <span className="text-muted-foreground">(only if not editing prices above)</span></Label>
                 <Input
@@ -1465,9 +1516,10 @@ function AdminPositionsInner() {
                 />
               </div>
               <div className="space-y-1.5 sm:col-span-2">
-                <Label>Opened at</Label>
+                <Label>Opened at (IST)</Label>
                 <Input
                   type="datetime-local"
+                  step={1}
                   value={form.opened_at}
                   onChange={(e) => setForm((p) => ({ ...p, opened_at: e.target.value }))}
                 />

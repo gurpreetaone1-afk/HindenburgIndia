@@ -8,6 +8,7 @@ and for CNC trades writes/updates the long-term Holding record.
 from __future__ import annotations
 
 from decimal import Decimal
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from beanie import PydanticObjectId
@@ -1282,6 +1283,191 @@ async def resync_position_orders(position: Position) -> int:
     return updated
 
 
+def _as_utc(dt: datetime | None) -> datetime | None:
+    """Mongo may hand back naive UTC; make it comparable with aware times."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _ist_label(dt: datetime) -> str:
+    return (dt + timedelta(minutes=330)).strftime("%d %b %Y %H:%M:%S IST")
+
+
+async def plan_closed_position_retime(
+    position: Position, new_opened_at: datetime, new_closed_at: datetime
+) -> dict[str, Any] | None:
+    """Work out — writing nothing — how an admin open/close-time correction
+    on a CLOSED position moves everything the user sees that time on.
+
+    The Closed tab, tradebook and reports read ``Trade.executed_at``; the
+    Orders tab reads the order's times; the ledger reads its CHARGES / PNL
+    rows' ``created_at``. Opening fills (``pnl_inr`` None) move by the
+    open-time change and closing fills by the close-time change; each order
+    and its ledger rows move with their fills (``Trade.order_id`` is an exact
+    link). Fills are found with the ORIGINAL times — every trading cycle is
+    its own Position doc, so its fills sit inside [opened_at, closed_at].
+
+    Returns None when neither time changes by a second or more. Raises
+    ValueError (→ 400) when the move would corrupt the history the FIFO
+    blotter replays: a closing fill landing before its opening fill, or the
+    cycle crossing the previous / next trade on the same instrument.
+    """
+    from app.models.order import Order
+    from app.models.trade import Trade
+    from app.models.transaction import TransactionType, WalletTransaction
+
+    old_open, old_close = _as_utc(position.opened_at), _as_utc(position.closed_at)
+    if old_open is None or old_close is None:
+        raise ValueError("This position has no open/close time to correct.")
+    new_open, new_close = _as_utc(new_opened_at), _as_utc(new_closed_at)
+    d_open, d_close = new_open - old_open, new_close - old_close
+    one_sec = timedelta(seconds=1)
+    if abs(d_open) < one_sec:
+        d_open, new_open = timedelta(0), old_open
+    if abs(d_close) < one_sec:
+        d_close, new_close = timedelta(0), old_close
+    if not d_open and not d_close:
+        return None
+    if getattr(position, "reopened_at", None):
+        raise ValueError(
+            "This position was reopened by an admin, so it holds more than one "
+            "trade cycle — its times can't be moved safely."
+        )
+    if new_open >= new_close:
+        raise ValueError("Open time must be before the close time.")
+    if new_close > now_utc():
+        raise ValueError("Close time can't be in the future.")
+    if d_close and position.close_reason == "WEEKLY_SETTLEMENT":
+        raise ValueError(
+            "This trade was closed by the weekly settlement, which runs at a "
+            "fixed time — its close time can't be moved."
+        )
+
+    key = {
+        "user_id": position.user_id,
+        "instrument.token": position.instrument.token,
+        "product_type": position.product_type.value,
+    }
+    slack = timedelta(seconds=10)
+    fills = (
+        await Trade.find({**key, "executed_at": {"$gte": old_open - slack, "$lte": old_close + slack}})
+        .sort("+executed_at")
+        .to_list()
+    )
+    if not fills:
+        raise ValueError("No fills found for this position — times not changed.")
+    moved = [
+        (t, _as_utc(t.executed_at) + (d_open if t.pnl_inr is None else d_close)) for t in fills
+    ]
+    new_times = [n for _t, n in moved]
+    if any(b < a for a, b in zip(new_times, new_times[1:])):
+        raise ValueError(
+            "These times would put a close before its own open fill — keep the "
+            "open time before every close of this trade."
+        )
+    prev = (
+        await Trade.find({**key, "executed_at": {"$lt": old_open - slack}})
+        .sort("-executed_at")
+        .limit(1)
+        .to_list()
+    )
+    if prev and _as_utc(prev[0].executed_at) >= new_times[0]:
+        raise ValueError(
+            "Open time can't go before the previous trade on this instrument "
+            f"({_ist_label(_as_utc(prev[0].executed_at))})."
+        )
+    nxt = (
+        await Trade.find({**key, "executed_at": {"$gt": old_close + slack}})
+        .sort("+executed_at")
+        .limit(1)
+        .to_list()
+    )
+    if nxt and _as_utc(nxt[0].executed_at) <= new_times[-1]:
+        raise ValueError(
+            "Close time can't go past the next trade on this instrument "
+            f"({_ist_label(_as_utc(nxt[0].executed_at))})."
+        )
+
+    # A cycle carried over a weekly settlement opens with NO fill (the
+    # engine re-opens the position at the settlement price), so the fill
+    # checks above can't see its start — keep it between the neighbouring
+    # Position docs as well.
+    prev_pos = (
+        await Position.find(
+            {**key, "_id": {"$ne": position.id}, "closed_at": {"$lte": old_open + slack}}
+        )
+        .sort("-closed_at")
+        .limit(1)
+        .to_list()
+    )
+    if prev_pos and new_open < _as_utc(prev_pos[0].closed_at):
+        raise ValueError(
+            "Open time can't go before the previous trade on this instrument "
+            f"closed ({_ist_label(_as_utc(prev_pos[0].closed_at))})."
+        )
+    next_pos = (
+        await Position.find(
+            {**key, "_id": {"$ne": position.id}, "opened_at": {"$gte": old_close - slack}}
+        )
+        .sort("+opened_at")
+        .limit(1)
+        .to_list()
+    )
+    if next_pos and new_close > _as_utc(next_pos[0].opened_at):
+        raise ValueError(
+            "Close time can't go past the next trade on this instrument "
+            f"({_ist_label(_as_utc(next_pos[0].opened_at))})."
+        )
+
+    order_delta: dict[Any, timedelta] = {}
+    for t in fills:
+        order_delta.setdefault(t.order_id, d_open if t.pnl_inr is None else d_close)
+    orders = await Order.find({"_id": {"$in": list(order_delta)}}).to_list()
+    txs = await WalletTransaction.find(
+        {
+            "user_id": position.user_id,
+            "reference_type": "ORDER",
+            "reference_id": {"$in": [str(oid) for oid in order_delta]},
+            "transaction_type": {"$in": [TransactionType.CHARGES.value, TransactionType.PNL.value]},
+        }
+    ).to_list()
+    by_ref = {str(oid): d for oid, d in order_delta.items()}
+    return {
+        "opened_at": new_open,
+        "closed_at": new_close,
+        "fills": moved,
+        "orders": [(o, order_delta[o.id]) for o in orders],
+        "txs": [(tx, by_ref[tx.reference_id]) for tx in txs],
+    }
+
+
+async def apply_closed_position_retime(plan: dict[str, Any]) -> dict[str, int]:
+    """Write a plan from ``plan_closed_position_retime``. Each fill takes its
+    new time; each order and ledger row shifts every time it carries by the
+    same amount, so placed→executed gaps and ordering inside them survive."""
+    for t, new_time in plan["fills"]:
+        shift = new_time - _as_utc(t.executed_at)
+        t.executed_at = new_time
+        t.created_at = _as_utc(t.created_at) + shift
+        await t.save()
+    for o, shift in plan["orders"]:
+        if not shift:
+            continue
+        for field in ("created_at", "executed_at", "updated_at"):
+            v = getattr(o, field, None)
+            if v is not None:
+                setattr(o, field, _as_utc(v) + shift)
+        await o.save()
+    for tx, shift in plan["txs"]:
+        if not shift:
+            continue
+        tx.created_at = _as_utc(tx.created_at) + shift
+        tx.updated_at = _as_utc(tx.updated_at) + shift
+        await tx.save()
+    return {"fills": len(plan["fills"]), "orders": len(plan["orders"]), "ledger": len(plan["txs"])}
+
+
 async def list_closed_trade_events_fifo(
     user_id: str | PydanticObjectId,
     *,
@@ -1365,6 +1551,7 @@ async def list_closed_trade_events_fifo(
             "instrument": _p.instrument,
             "product_type": _p.product_type,
             "pid": _p.id,
+            "opened_at": _p.opened_at,
         })
 
     def _charge(tr: Any) -> float:
@@ -1415,7 +1602,9 @@ async def list_closed_trade_events_fifo(
                 "qty": b["qty"],
                 "gross_pnl": gross,
                 "brokerage": 0.0,  # weekly settlement charges no brokerage
-                "opened_at": b["ts"],
+                # The cycle this settlement closed began at the position's
+                # own opened_at (an admin may have corrected it).
+                "opened_at": b["opened_at"] or b["ts"],
                 "closed_at": b["ts"],
                 "instrument_token": b["key"][0],
                 "close_reason": "WEEKLY_SETTLEMENT",
@@ -1433,6 +1622,7 @@ async def list_closed_trade_events_fifo(
                 "side": b["side"],
                 "open_brk": 0.0,
                 "original_qty": b["qty"],
+                "from_settle": True,
             })
             continue
 
@@ -1618,6 +1808,7 @@ async def list_closed_trade_events_fifo(
                 "gross_pnl": gross,
                 "brokerage": brk_alloc,
                 "opened_at": front["opened_at"],
+                "_open_from_settle": front.get("from_settle", False),
                 "closed_at": t.executed_at,
                 "instrument_token": t.instrument.token,
             })
@@ -1653,7 +1844,9 @@ async def list_closed_trade_events_fifo(
         for _p in closed_pos:
             _k = (_p.instrument.token, _p.product_type.value)
             if _p.closed_at:
-                _pos_map.setdefault(_k, []).append((_p.closed_at, _p.close_reason or "USER"))
+                _pos_map.setdefault(_k, []).append(
+                    (_p.closed_at, _p.close_reason or "USER", _p.opened_at)
+                )
         for ev in events:
             if ev.get("close_reason"):
                 continue  # already set (e.g. inline settlement rows)
@@ -1667,6 +1860,11 @@ async def list_closed_trade_events_fifo(
                 )
                 if abs((_best[0].replace(tzinfo=None) - _cat.replace(tzinfo=None)).total_seconds()) < 30:
                     ev["close_reason"] = _best[1]
+                    # A cycle carried over a weekly settlement has no opening
+                    # fill: its open is the settlement time, unless an admin
+                    # corrected the position's opened_at — show the position's.
+                    if ev.get("_open_from_settle") and _best[2] is not None:
+                        ev["opened_at"] = _best[2]
 
     # Newest-close first. Sort explicitly because the list mixes trade-derived
     # events with inline settlement events that were emitted at their own

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -1044,6 +1044,17 @@ async def list_positions(
     return APIResponse(data=out)
 
 
+def _parse_iso_dt(v: Any) -> datetime | None:
+    """Admin-sent ISO time (``…Z`` or with an offset) → aware UTC datetime."""
+    if v in (None, ""):
+        return None
+    try:
+        dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ValueError(f"Invalid time: {v}") from e
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def _pos_oid(position_id: str) -> PydanticObjectId:
     """Path ``position_id`` → ObjectId, raising a clean 400 (never a 500) when
     it isn't a real position id. The admin Closed tab's FIFO per-fill view
@@ -1157,6 +1168,7 @@ async def admin_edit_position(
         raise HTTPException(status_code=404, detail="Position not found")
     await assert_user_in_scope(admin, p.user_id)
 
+    orig_opened_at, orig_closed_at = p.opened_at, p.closed_at
     old_values: dict[str, Any] = {
         "avg_price": str(p.avg_price),
         # Close price (Position.ltp on a CLOSED row) so the Admin Actions
@@ -1166,6 +1178,7 @@ async def admin_edit_position(
         "close_price": str(p.ltp) if p.ltp is not None else None,
         "quantity": p.quantity,
         "opened_at": p.opened_at.isoformat() if p.opened_at else None,
+        "closed_at": p.closed_at.isoformat() if p.closed_at else None,
         "stop_loss": str(p.stop_loss) if p.stop_loss is not None else None,
         "target": str(p.target) if p.target is not None else None,
         "realized_pnl": str(p.realized_pnl) if p.realized_pnl is not None else None,
@@ -1183,7 +1196,12 @@ async def admin_edit_position(
             p.quantity = float(payload["quantity"])
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid quantity: {e}")
-    if "opened_at" in payload and payload["opened_at"] is not None:
+    # CLOSED rows move their times through the retime cascade below.
+    if (
+        "opened_at" in payload
+        and payload["opened_at"] is not None
+        and p.status != PositionStatus.CLOSED
+    ):
         try:
             p.opened_at = datetime.fromisoformat(str(payload["opened_at"]).replace("Z", "+00:00"))
         except Exception as e:
@@ -1268,6 +1286,30 @@ async def admin_edit_position(
     if "close_reason" in payload and p.status == PositionStatus.CLOSED:
         v = payload["close_reason"]
         p.close_reason = str(v) if v else None
+
+    # ── CLOSED-row open / close time correction ────────────────────────
+    # The user's Closed tab, tradebook, reports, Orders tab and ledger read
+    # the fills / orders / ledger rows, not this doc. Plan the move now
+    # (validated, nothing written — a bad time rejects the whole edit) with
+    # the ORIGINAL times, which is how this cycle's fills are found; it is
+    # written right after the save, before the price resyncs.
+    retime_plan: dict[str, Any] | None = None
+    if p.status == PositionStatus.CLOSED and (
+        payload.get("opened_at") is not None or payload.get("closed_at") is not None
+    ):
+        from app.services import position_service as _ps_rt
+
+        try:
+            retime_plan = await _ps_rt.plan_closed_position_retime(
+                p,
+                _parse_iso_dt(payload.get("opened_at")) or orig_opened_at,
+                _parse_iso_dt(payload.get("closed_at")) or orig_closed_at,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if retime_plan is not None:
+            p.opened_at = retime_plan["opened_at"]
+            p.closed_at = retime_plan["closed_at"]
 
     # Recompute margin_used at the new entry using the SAME formula the
     # order validator runs at order time — fixed-per-lot vs notional × pct
@@ -1364,6 +1406,19 @@ async def admin_edit_position(
         p.margin_used = Decimal128(str(new_margin))
 
     await p.save()
+
+    # Move the fills / orders / ledger rows to the corrected times BEFORE
+    # the price resyncs below, which find them by the position's times.
+    if retime_plan is not None:
+        from app.services import position_service as _ps_rt2
+
+        try:
+            moved = await _ps_rt2.apply_closed_position_retime(retime_plan)
+            logger.info("admin_edit_position_retimed", extra={"pos_id": str(p.id), **moved})
+        except Exception:
+            logger.exception(
+                "admin_edit_position_retime_failed", extra={"pos_id": str(p.id)}
+            )
 
     # ── Sync underlying Trade fills on a CLOSED price edit ────────────
     # The user's Closed blotter is rebuilt FIFO from Trade fills, so an
@@ -1501,6 +1556,7 @@ async def admin_edit_position(
         "close_price": str(p.ltp) if p.ltp is not None else None,
         "quantity": p.quantity,
         "opened_at": p.opened_at.isoformat() if p.opened_at else None,
+        "closed_at": p.closed_at.isoformat() if p.closed_at else None,
         "stop_loss": str(p.stop_loss) if p.stop_loss is not None else None,
         "target": str(p.target) if p.target is not None else None,
         "realized_pnl": str(p.realized_pnl) if p.realized_pnl is not None else None,

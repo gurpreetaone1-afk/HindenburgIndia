@@ -388,6 +388,7 @@ export const TradingAPI = {
       // Closed-position only — admin corrections + relabel
       realized_pnl: number | string;
       close_reason: string;
+      closed_at: string;
     }>,
   ) => unwrap<any>(api.patch(`/admin/positions/${id}`, body)),
   reopenPosition: (id: string) =>
