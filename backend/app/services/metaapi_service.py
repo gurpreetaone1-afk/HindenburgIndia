@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from app.core.config import settings
@@ -30,6 +31,14 @@ logger = logging.getLogger(__name__)
 # Reject a lone tick that jumps more than this fraction vs the last price —
 # mirrors infoway_service / binance_service spike guards.
 _MAX_TICK_SPIKE_PCT = 0.5
+# Connection down this long → its last prices are history, not quotes.
+_DEAD_FEED_SEC = 60.0
+# A symbol whose last broker tick is older than this is dead at the broker,
+# not closed for the weekend (Exness ADAUSD: 493 days). 7 days clears any
+# weekend + holiday.
+_DEAD_SYMBOL_SEC = 7 * 86400
+# Streaming reconnects itself; if it stays down this long, rebuild it.
+_STREAM_DOWN_RESET_SEC = 120.0
 
 
 def _f(v: Any, default: float = 0.0) -> float:
@@ -90,6 +99,9 @@ class MetaApiFeed:
         self._task: asyncio.Task[Any] | None = None
         self._stop = False
         self._last_rx = 0.0
+        # Last moment the connection was known good (monotonic) — get_tick
+        # serves nothing once this is _DEAD_FEED_SEC old.
+        self._alive_at = 0.0
         # RPC price fallback (used when the STREAMING sync hangs — fresh/demo
         # accounts — so terminal_state never fills). Polled into _rpc_prices.
         self._rpc: Any = None
@@ -152,6 +164,10 @@ class MetaApiFeed:
     def get_tick(self, symbol: str | None) -> dict[str, Any] | None:
         if not symbol or self._conn is None:
             return None
+        # A dead connection must not keep quoting: 2026-10-25 Infoway's key
+        # died and XAUUSD stayed priced — and tradable — at its last tick.
+        if time.monotonic() - self._alive_at > _DEAD_FEED_SEC:
+            return None
         sym = symbol.upper()
         mt = self._mt_symbol(sym)
         price = None
@@ -164,6 +180,16 @@ class MetaApiFeed:
         if not price:
             price = self._rpc_prices.get(mt)
         if not price:
+            return None
+        t = price.get("time")
+        if isinstance(t, str):
+            try:
+                t = datetime.fromisoformat(t.replace("Z", "+00:00"))
+            except ValueError:
+                t = None
+        if isinstance(t, datetime) and (
+            datetime.now(timezone.utc) - t
+        ).total_seconds() > _DEAD_SYMBOL_SEC:
             return None
         bid = _f(price.get("bid"))
         ask = _f(price.get("ask"))
@@ -342,6 +368,39 @@ class MetaApiFeed:
             await asyncio.sleep(min(backoff, 60))
             backoff = min(backoff * 2, 60)
 
+    async def _run_streaming(self, stream: Any, acc_id: str) -> None:
+        """Hold a synchronised STREAMING connection: subscribe the symbol list,
+        then watch its health. get_tick reads `terminal_state` directly, so
+        there is no polling. The SDK reconnects on its own; if it stays down
+        for _STREAM_DOWN_RESET_SEC the raise hands back to _run_loop, which
+        rebuilds the connection."""
+        self._conn = stream
+        self._connected = True
+        self._last_rx = self._alive_at = time.monotonic()
+        logger.info("metaapi_connected account=%s (streaming)", acc_id)
+        for s in list(self._symbols):
+            if self._looks_non_metaapi(s):
+                continue
+            broker = self._mt_symbol(s)
+            if broker in self._unavailable:
+                continue
+            try:
+                await stream.subscribe_to_market_data(broker)
+            except Exception as e:  # noqa: BLE001
+                self._note_sub_error(broker, e, "metaapi_subscribe_failed")
+        down_since: float | None = None
+        while not self._stop:
+            ts = stream.terminal_state
+            if ts.connected and ts.connected_to_broker:
+                self._alive_at = time.monotonic()
+                down_since = None
+            elif down_since is None:
+                down_since = time.monotonic()
+                logger.warning("metaapi_streaming_disconnected")
+            elif time.monotonic() - down_since > _STREAM_DOWN_RESET_SEC:
+                raise RuntimeError("metaapi streaming down for %ds" % _STREAM_DOWN_RESET_SEC)
+            await asyncio.sleep(1.0)
+
     async def _connect_once(self) -> None:
         from metaapi_cloud_sdk import MetaApi  # imported lazily so the dep is optional
 
@@ -363,7 +422,27 @@ class MetaApiFeed:
         except Exception as e:
             logger.warning("metaapi_deploy_wait_warning: %s", e)
 
-        # This account's STREAMING sync hangs (fresh / demo accounts), so drive
+        # STREAMING first: the broker pushes every quote. Measured 2026-10-26 on
+        # the Exness account — synchronised in 4 s, 30/30 symbols subscribed,
+        # XAUUSD ~2 price changes/s — against one refresh per symbol every ~3 s
+        # from the RPC poll below (RPC tops out near 10 requests/s).
+        stream = None
+        try:
+            stream = self._account.get_streaming_connection()
+            await stream.connect()
+            await asyncio.wait_for(stream.wait_synchronized(), timeout=60)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("metaapi_streaming_unavailable_using_rpc: %s", str(e)[:160])
+            if stream is not None:
+                try:
+                    await stream.close()
+                except Exception:
+                    pass
+        else:
+            await self._run_streaming(stream, acc_id)
+            return
+
+        # Some accounts' STREAMING sync hangs (fresh / demo accounts), so drive
         # the feed from the RPC connection: it synchronises fast and serves live
         # quotes on demand. get_tick reads _rpc_prices (an RPC connection has no
         # streaming terminal_state, so get_tick falls through to this cache).
@@ -373,6 +452,7 @@ class MetaApiFeed:
         self._rpc = self._conn
         self._connected = True
         self._last_rx = time.monotonic()
+        self._alive_at = time.monotonic()
         logger.info("metaapi_connected account=%s (rpc price feed)", acc_id)
 
         # Poll ALL symbols CONCURRENTLY each cycle so a full refresh costs ~1
@@ -429,6 +509,7 @@ class MetaApiFeed:
                         newest = t
                 if any(p is not None for p in prices):
                     self._last_rx = time.monotonic()
+                    self._alive_at = self._last_rx
             # The RPC connection can silently go STALE (get_symbol_price keeps
             # returning cached prices after the underlying sync dies — froze the
             # feed for days). If the freshest broker tick is old, recycle the
