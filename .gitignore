@@ -92,3 +92,6 @@ backend/.env.bak*
 .next.prev/
 .next.failed/
 .deploy/
+
+# MetaAPI SDK local history cache (account deals/orders)
+.metaapi/
