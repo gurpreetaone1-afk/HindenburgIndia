@@ -192,6 +192,10 @@ class Settings(BaseSettings):
     # Infoway/Zerodha, so enabling this can't make crypto worse.
     BINANCE_CRYPTO_FEED: bool = True
     BINANCE_CRYPTO_SYMBOLS: str = ""
+    # ── Binance USDT-M futures feed (free public WS, no API key) ─────────
+    # Metals, energy, US stocks and crypto: one `!bookTicker` subscription
+    # carries every contract Binance lists (XAUUSD → XAUUSDT, USOIL → CLUSDT).
+    BINANCE_FUTURES_FEED: bool = True
     # ── MetaAPI (MetaTrader) feed for forex / metals / indices / commodities ──
     # When True, those segments get their live price from a connected MT4/MT5
     # account via metaapi.cloud instead of Infoway (crypto stays on Binance).
@@ -299,6 +303,7 @@ class Settings(BaseSettings):
         "RUN_FEED_LOOP",
         "INFOWAY_AUTO_CONNECT",
         "BINANCE_CRYPTO_FEED",
+        "BINANCE_FUTURES_FEED",
         "METAAPI_FEED",
         "SMTP_TLS",
         "LOG_JSON",

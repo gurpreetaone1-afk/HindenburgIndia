@@ -392,6 +392,21 @@ async def _infoway_overlay(token: str, base_quote: dict[str, Any]) -> dict[str, 
                     source = "binance"
         except Exception:
             live = None
+        # METALS / ENERGY / US STOCKS / CRYPTO → Binance USDT-M futures. One
+        # socket carries every contract the exchange lists, so this resolves
+        # for anything Binance quotes (XAUUSD → XAUUSDT, USOIL → CLUSDT) and
+        # returns None for the rest (forex, CFD indices, NSE / MCX).
+        if live is None:
+            try:
+                from app.services.binance_futures_service import binance_futures
+
+                if binance_futures.is_enabled():
+                    m = binance_futures.get_tick(sym)
+                    if m and float(m.get("ltp") or 0) > 0:
+                        live = m
+                        source = "binance_futures"
+            except Exception:
+                live = None
         # FOREX / METALS / INDICES / COMMODITIES → MetaAPI when enabled. Only the
         # symbols the MT account actually streams resolve here; crypto / NSE
         # return None and fall through. Infoway stays the automatic fallback.
@@ -519,7 +534,7 @@ async def _overlay_all(
     except Exception:
         logger.exception("infoway_overlay_failed", extra={"token": token})
         after_infoway = base
-    if after_infoway.get("source") in ("infoway", "binance", "metaapi"):
+    if after_infoway.get("source") in ("infoway", "binance", "binance_futures", "metaapi"):
         return await _apply_admin_spread(token, after_infoway)
     # Per-token negative cache: a token with no live WS tick whose Kite REST
     # `/quote` snapshot just timed out is almost certainly illiquid / beyond
@@ -991,6 +1006,18 @@ async def _forward_feed_subscription(tokens: list[str]) -> None:
                 await metaapi.subscribe(infoway_codes)
         except Exception:  # pragma: no cover
             logger.debug("feed_forward_metaapi_failed", exc_info=True)
+        # Binance's all-market stream already carries every contract, but
+        # it is sampled (~0.2 updates/s per symbol): symbols somebody is
+        # watching go on the per-symbol fast lane (book + trades).
+        try:
+            from app.services.binance_futures_service import binance_futures
+
+            if binance_futures.is_enabled():
+                binance_futures.mark_hot(
+                    [await _resolve_symbol(t) or t for t in infoway_codes]
+                )
+        except Exception:  # pragma: no cover
+            logger.debug("feed_forward_binance_hot_failed", exc_info=True)
     if numeric:
         try:
             from app.services.zerodha_service import zerodha

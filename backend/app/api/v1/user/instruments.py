@@ -941,7 +941,7 @@ async def _fetch_yahoo_chart(
 
 
 async def _fetch_binance_klines(
-    symbol: str, interval: str, days: int
+    symbol: str, interval: str, days: int, *, futures: bool = False
 ) -> list[dict]:
     """Pull OHLC from Binance's public klines endpoint. No API key needed
     for spot klines — they're free and rate-limited per IP (we cache the
@@ -957,7 +957,12 @@ async def _fetch_binance_klines(
     per_day = {"1m": 1440, "3m": 480, "5m": 288, "15m": 96, "30m": 48,
                "1h": 24, "4h": 6, "1d": 1, "1w": 1}.get(bi, 288)
     limit = min(1000, max(50, per_day * days))
-    url = "https://api.binance.com/api/v3/klines"
+    # futures=True: USDT-M klines, for contracts priced by the futures feed.
+    url = (
+        "https://fapi.binance.com/fapi/v1/klines"
+        if futures
+        else "https://api.binance.com/api/v3/klines"
+    )
     params = {"symbol": symbol, "interval": bi, "limit": limit}
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
@@ -1062,6 +1067,22 @@ async def history(
         # Binance silently failed — fall through to the Zerodha branch
         # so an admin who's mapped a crypto token to Zerodha (rare) still
         # gets data instead of an empty chart.
+
+    # ── Source 1b: Binance USDT-M futures (metals / energy / US stocks) ──
+    # Candles from the very contract the live price comes from (XAUUSD →
+    # XAUUSDT, USOIL → CLUSDT), so the chart sits on the price line with no
+    # Yahoo shift. None until the feed has warmed → Yahoo below, as before.
+    if bn_symbol is None:
+        from app.services.binance_futures_service import binance_futures
+
+        fut_symbol = (
+            binance_futures.contract_name(token) if binance_futures.is_enabled() else None
+        )
+        if fut_symbol is not None:
+            candles = await _fetch_binance_klines(fut_symbol, interval, days, futures=True)
+            if candles:
+                _history_cache[cache_key] = (now_ms, candles)
+                return APIResponse(data=candles)
 
     # ── Source 2: Yahoo Finance (forex / spot metals) ─────────────────
     # Bridges the gap for FX_EURUSD / FX_USDINR / XAUUSD / etc. — these

@@ -459,6 +459,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             except Exception:
                 logger.exception("binance_feed_auto_start_failed")
 
+            # Binance USDT-M futures — metals, energy, US stocks and crypto on
+            # one `!bookTicker` subscription, no API key. Leader-only like the
+            # other feeds; start() self-skips when BINANCE_FUTURES_FEED is off.
+            try:
+                from app.services.binance_futures_service import binance_futures
+
+                await binance_futures.start()
+            except Exception:
+                logger.exception("binance_futures_feed_auto_start_failed")
+
             # MetaAPI (forex / metals / indices / commodities) feed — leader-only.
             # When METAAPI_FEED=true it supplies those segments in place of
             # Infoway (Infoway stays the automatic fallback). No-op when off.
@@ -1152,6 +1162,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         from app.services.binance_service import binance
 
         await binance.stop()
+    except Exception:
+        pass
+
+    # Stop the Binance futures feed cleanly
+    try:
+        from app.services.binance_futures_service import binance_futures
+
+        await binance_futures.stop()
     except Exception:
         pass
 

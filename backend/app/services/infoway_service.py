@@ -122,6 +122,10 @@ CHANNEL_COMMON = "common"  # forex / metals / energy / indices / futures
 _CRYPTO_BASES = {"BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "MATIC", "LINK", "AVAX", "LTC", "DOT", "TRX", "SHIB"}
 
 
+# A channel that is down and silent this long serves no prices (get_tick).
+_DEAD_CHANNEL_SEC = 60.0
+
+
 def _normalise_symbol(code: str) -> str:
     """`BTCUSD` ↔ `BTCUSDT` map (Infoway lists most cryptos as USDT pairs).
     All other symbols (EURUSD, XAUUSD, USOIL…) pass through unchanged."""
@@ -447,7 +451,19 @@ class InfowayService:
         }
 
     def get_tick(self, symbol: str) -> dict[str, Any] | None:
-        return self.ticks.get(_normalise_symbol(symbol))
+        sym = _normalise_symbol(symbol)
+        # A dead channel must not keep quoting its last tick as live: on
+        # 2026-10-25 the API key started returning 401 and XAUUSD stayed
+        # priced — and tradable — at its last tick for a day. A quiet but
+        # connected channel (weekend forex) still serves its last price.
+        ch = self._channels.get(_channel_for(sym))
+        if (
+            ch is not None
+            and not ch.is_connected
+            and time.monotonic() - ch._last_rx > _DEAD_CHANNEL_SEC
+        ):
+            return None
+        return self.ticks.get(sym)
 
     def get_all_ticks(self) -> dict[str, dict[str, Any]]:
         return dict(self.ticks)
