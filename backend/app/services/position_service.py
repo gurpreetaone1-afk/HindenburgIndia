@@ -1839,26 +1839,38 @@ async def list_closed_trade_events_fifo(
     # (Settlement events were already stamped WEEKLY_SETTLEMENT inline above;
     # the 30s match below leaves them untouched.)
     if events:
-        # (token, product_type) → [(closed_at, close_reason), ...]
+        import bisect as _bisect
+
+        # (token, product_type) → entries sorted by (naive) closed_at, plus
+        # their close times for a binary search. The nearest close used to
+        # be a scan of every closed position per event — rows × positions,
+        # the heaviest frame in a production profile (~5 % of the CPU).
         _pos_map: dict[tuple, list] = {}
         for _p in closed_pos:
             _k = (_p.instrument.token, _p.product_type.value)
             if _p.closed_at:
                 _pos_map.setdefault(_k, []).append(
-                    (_p.closed_at, _p.close_reason or "USER", _p.opened_at)
+                    (_p.closed_at.replace(tzinfo=None), _p.close_reason or "USER", _p.opened_at)
                 )
+        _pos_times: dict[tuple, list] = {}
+        for _k, _v in _pos_map.items():
+            _v.sort(key=lambda x: x[0])  # stable: equal times keep load order
+            _pos_times[_k] = [x[0] for x in _v]
         for ev in events:
             if ev.get("close_reason"):
                 continue  # already set (e.g. inline settlement rows)
             _k = (ev["instrument_token"], ev["product_type"].value)
             _entries = _pos_map.get(_k)
             if _entries:
-                _cat = ev["closed_at"]
-                _best = min(
-                    _entries,
-                    key=lambda x: abs((x[0].replace(tzinfo=None) - _cat.replace(tzinfo=None)).total_seconds()),
+                _cat = ev["closed_at"].replace(tzinfo=None)
+                _ts = _pos_times[_k]
+                _i = _bisect.bisect_left(_ts, _cat)
+                _j = min(
+                    (j for j in (_i - 1, _i) if 0 <= j < len(_ts)),
+                    key=lambda j: abs((_ts[j] - _cat).total_seconds()),
                 )
-                if abs((_best[0].replace(tzinfo=None) - _cat.replace(tzinfo=None)).total_seconds()) < 30:
+                _best = _entries[_j]
+                if abs((_best[0] - _cat).total_seconds()) < 30:
                     ev["close_reason"] = _best[1]
                     # A cycle carried over a weekly settlement has no opening
                     # fill: its open is the settlement time, unless an admin

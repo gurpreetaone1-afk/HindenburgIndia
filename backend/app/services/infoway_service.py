@@ -60,7 +60,11 @@ WS_BASE = "wss://data.infoway.io/ws"
 CMD_SUBSCRIBE = 10003
 CMD_UNSUBSCRIBE = 10004
 CMD_DEPTH_PUSH = 10005
-CMD_HEARTBEAT = 22000
+# Infoway answers 22000 with 506 "The code is out of range" and then
+# closes the socket (513 "Websocket heartbeat timeout", 1000 Bye) after
+# ~60 s — every channel reconnected once a minute (measured 2026-10-27).
+# 10010 is accepted: a probe stayed up 80 s+ with no errors.
+CMD_HEARTBEAT = 10010
 
 # Server drops the socket if it doesn't receive any frame from us for ~60s,
 # and protocol-level WS pings don't count — only the app-level code 22000
@@ -284,7 +288,7 @@ class _Channel:
         async with websockets.connect(
             url,
             ping_interval=None,  # Infoway ignores protocol PING frames; app-level
-            ping_timeout=None,   # heartbeat (code 22000 every 25 s) keeps link alive
+            ping_timeout=None,   # heartbeat (CMD_HEARTBEAT every 15 s) keeps link alive
             close_timeout=5,
             max_size=2**20,
         ) as ws:

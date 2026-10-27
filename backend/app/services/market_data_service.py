@@ -574,16 +574,27 @@ _SEGMENT_FOR_TOKEN_TTL = 300
 _SEGMENT_FOR_TOKEN_PREFIX = "spread_seg:"
 
 
+# ponytail: unbounded, but bounded by the instrument catalogue; an admin
+# re-segmenting an instrument shows after a restart.
+_SEG_MEMO: dict[str, tuple[str, str]] = {}
+
+
 async def _segment_for_token(token: str) -> tuple[str, str] | None:
     """Return `(segment_type, symbol_upper)` for a token, or None if the
-    instrument isn't in our collection."""
+    instrument isn't in our collection. Memoised in-process: asked for
+    every token on every pump pass."""
+    hit = _SEG_MEMO.get(token)
+    if hit is not None:
+        return hit
     cache_key = f"{_SEGMENT_FOR_TOKEN_PREFIX}{token}"
     try:
         from app.core.redis_client import cache_get, cache_set
 
         cached = await cache_get(cache_key)
         if cached is not None:
-            return (cached.get("seg") or "", cached.get("sym") or "")
+            hit = (cached.get("seg") or "", cached.get("sym") or "")
+            _SEG_MEMO[token] = hit
+            return hit
     except Exception:
         cache_set = None  # type: ignore[assignment]
 
@@ -598,6 +609,7 @@ async def _segment_for_token(token: str) -> tuple[str, str] | None:
             await cache_set(cache_key, payload, ttl_sec=_SEGMENT_FOR_TOKEN_TTL)
     except Exception:
         pass
+    _SEG_MEMO[token] = (str(seg_value), sym)
     return (str(seg_value), sym)
 
 

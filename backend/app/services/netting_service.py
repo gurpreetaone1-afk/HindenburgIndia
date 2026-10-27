@@ -8,6 +8,7 @@ Three resolvers:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from beanie import PydanticObjectId
@@ -110,6 +111,7 @@ async def _wipe_eff_cache_debounced() -> None:
     _last_eff_wipe = now
     try:
         await cache_delete_pattern("netting_eff:*")
+        _SPREAD_MEMO.clear()
         await cache_delete_pattern(f"{_SPREAD_KEY_PREFIX}*")
         # Strike-far cache (option chain filter) lives under its own key
         # prefix; same wipe semantics so an admin edit shows up on the
@@ -708,10 +710,17 @@ async def get_segment(segment_id: str | PydanticObjectId) -> NettingSegment:
 # propagates to the live feed within one tick after save.
 SPREAD_CACHE_TTL = 30
 _SPREAD_KEY_PREFIX = "spread:"
+# In-process memo in front of that Redis cache: the live overlay asks for
+# every token on every 100 ms pump pass, and the Redis round-trip + JSON
+# decode per call showed up as ~5 % of the backend's CPU. Cleared by the
+# same wipes that clear Redis, so an admin edit lands on the next tick.
+_SPREAD_MEMO: dict[str, tuple[float, dict[str, Any]]] = {}
+_SPREAD_MEMO_SEC = 5.0
 
 
 async def _wipe_spread_cache_debounced() -> None:
     try:
+        _SPREAD_MEMO.clear()
         await cache_delete_pattern(f"{_SPREAD_KEY_PREFIX}*")
     except Exception:
         logger.warning("spread_cache_invalidation_failed_redis_down")
@@ -911,9 +920,13 @@ async def resolve_spread(segment_name: str, symbol: str | None) -> dict[str, Any
     seg_name = (segment_name or "").strip()
     sym_key = (symbol or "").strip().upper() or "_"
     cache_key = f"{_SPREAD_KEY_PREFIX}{seg_name}:{sym_key}"
+    hit = _SPREAD_MEMO.get(cache_key)
+    if hit is not None and time.monotonic() - hit[0] < _SPREAD_MEMO_SEC:
+        return hit[1]
     try:
         cached = await cache_get(cache_key)
         if cached is not None:
+            _SPREAD_MEMO[cache_key] = (time.monotonic(), cached)
             return cached
     except Exception:
         pass
@@ -998,6 +1011,7 @@ async def resolve_spread(segment_name: str, symbol: str | None) -> dict[str, Any
                 spread_pips = float(override_pips)
 
     payload = {"spread_type": spread_type, "spread_pips": spread_pips}
+    _SPREAD_MEMO[cache_key] = (time.monotonic(), payload)
     try:
         await cache_set(cache_key, payload, ttl_sec=SPREAD_CACHE_TTL)
     except Exception:
