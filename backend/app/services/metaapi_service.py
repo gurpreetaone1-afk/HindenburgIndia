@@ -39,6 +39,24 @@ _DEAD_FEED_SEC = 60.0
 _DEAD_SYMBOL_SEC = 7 * 86400
 # Streaming reconnects itself; if it stays down this long, rebuild it.
 _STREAM_DOWN_RESET_SEC = 120.0
+# The stream can also report connected + connected_to_broker while no quote
+# arrives at all (measured 2026-10-27: prices froze after 60 s, flags stayed
+# True). With 30 symbols subscribed a live week never goes this long without
+# one, so silence this long on a market day means a dead stream: rebuild.
+_STREAM_QUIET_RESET_SEC = 90.0
+
+
+def _fx_market_open(now: datetime) -> bool:
+    """Spot FX / metals quote Sun ~21:00 UTC → Fri ~21:00 UTC.
+    ponytail: holidays count as open — a quiet holiday stream just rebuilds."""
+    wd, hour = now.weekday(), now.hour  # Monday = 0
+    if wd == 5:
+        return False
+    if wd == 4 and hour >= 21:
+        return False
+    if wd == 6 and hour < 21:
+        return False
+    return True
 
 
 def _f(v: Any, default: float = 0.0) -> float:
@@ -389,11 +407,20 @@ class MetaApiFeed:
             except Exception as e:  # noqa: BLE001
                 self._note_sub_error(broker, e, "metaapi_subscribe_failed")
         down_since: float | None = None
+        started = time.monotonic()
         while not self._stop:
             ts = stream.terminal_state
             if ts.connected and ts.connected_to_broker:
-                self._alive_at = time.monotonic()
                 down_since = None
+                now = datetime.now(timezone.utc)
+                lq = (ts.last_quote_time or {}).get("time")
+                quiet = (now - lq).total_seconds() if isinstance(lq, datetime) else None
+                if not _fx_market_open(now) or (quiet is not None and quiet <= _DEAD_FEED_SEC):
+                    self._alive_at = time.monotonic()
+                elif (quiet if quiet is not None else time.monotonic() - started) > _STREAM_QUIET_RESET_SEC:
+                    raise RuntimeError(
+                        "metaapi streaming connected but no quote for %ds" % _STREAM_QUIET_RESET_SEC
+                    )
             elif down_since is None:
                 down_since = time.monotonic()
                 logger.warning("metaapi_streaming_disconnected")

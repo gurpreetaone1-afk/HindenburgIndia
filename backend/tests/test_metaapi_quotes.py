@@ -65,3 +65,14 @@ def test_a_symbol_dead_at_the_broker_serves_nothing():
     """Exness still answers for ADAUSD — with a tick from 493 days ago."""
     f = _feed({"ADAUSD": {"bid": 0.59262, "ask": 0.59448, "time": NOW - timedelta(days=493)}})
     assert f.get_tick("ADAUSD") is None
+
+
+def test_fx_market_hours_gate_the_quiet_stream_check():
+    """A quiet stream only counts as dead while spot FX is trading."""
+    open_ = ms._fx_market_open
+    utc = timezone.utc
+    assert open_(datetime(2026, 10, 27, 10, tzinfo=utc))  # Tuesday
+    assert not open_(datetime(2026, 10, 31, 10, tzinfo=utc))  # Saturday
+    assert not open_(datetime(2026, 10, 30, 21, 30, tzinfo=utc))  # Friday after the close
+    assert not open_(datetime(2026, 11, 1, 20, tzinfo=utc))  # Sunday before the open
+    assert open_(datetime(2026, 11, 1, 21, 30, tzinfo=utc))  # Sunday after the open
