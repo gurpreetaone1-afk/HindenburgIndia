@@ -87,6 +87,12 @@ HEARTBEAT_INTERVAL_SEC = 15
 # heartbeat cycles, long enough not to trip on a brief gap, short enough that
 # a real stall self-heals in well under a minute instead of never.
 STALE_RX_TIMEOUT_SEC = 45
+# The 10010 heartbeat gets no reply (the old 22000 drew a 506 error frame
+# every beat, which is what kept this watchdog quiet). So a channel whose
+# symbols aren't trading is silent by design — US stocks outside US hours,
+# forex at the weekend — and was being torn down every 45-60 s. Only crypto
+# trades round the clock; the others get room before counting as wedged.
+_STALE_RX_BY_CHANNEL = {"crypto": 45, "common": 180, "stock": 900}
 
 # Reconnect backoff caps. A normal drop (network blip, half-open heal) retries
 # fast — exponential 1→2→… capped at 30 s.
@@ -342,7 +348,7 @@ class _Channel:
             # on the last good connect). This is what unfreezes a 0.00
             # watchlist instead of waiting on a drop that never comes.
             gap = time.monotonic() - self._last_rx
-            if gap > STALE_RX_TIMEOUT_SEC:
+            if gap > _STALE_RX_BY_CHANNEL.get(self.business, STALE_RX_TIMEOUT_SEC):
                 logger.warning(
                     "infoway_stale_rx_forcing_reconnect [%s] no frame for %.0fs",
                     self.business,
