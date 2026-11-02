@@ -131,7 +131,7 @@ def is_success(data: dict[str, Any]) -> bool:
 # the cashier's "order has expired" screen after paying) is still credited.
 
 
-async def credit_deposit(req, utr: str | None = None) -> bool:
+async def credit_deposit(req, utr: str | None = None, *, narration: str | None = None) -> bool:
     """Book a gateway-confirmed deposit into the wallet exactly once.
 
     The atomic PENDING->APPROVED claim is what makes this safe to call from
@@ -163,7 +163,7 @@ async def credit_deposit(req, utr: str | None = None) -> bool:
             req.user_id,
             to_decimal(req.amount),
             transaction_type=TransactionType.DEPOSIT,
-            narration=f"Deposit via UPI gateway{f' (UTR {utr})' if utr else ''}",
+            narration=narration or f"Deposit via UPI gateway{f' (UTR {utr})' if utr else ''}",
             reference_type="DEPOSIT",
             reference_id=str(req.id),
             actor_id=req.user_id,

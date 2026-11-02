@@ -106,6 +106,13 @@ PAYMENT_GATEWAY_POOL_KEY = "payment_gateway.super_admin_pool_enabled"
 # OFF: this sends real money the moment an admin approves, so it has to be
 # switched on deliberately.
 PAYOUT_AUTO_KEY = "payment_gateway.auto_payout_enabled"
+# Gateway 2 (OkPay) for the super admin's own users. Default OFF.
+OKPAY_POOL_KEY = "payment_gateway.okpay_pool_enabled"
+
+
+async def okpay_pool_on() -> bool:
+    row = await PlatformSetting.find_one(PlatformSetting.setting_key == OKPAY_POOL_KEY)
+    return False if row is None else bool(row.setting_value)
 
 
 @router.get("/settings/payment-gateway", response_model=APIResponse[dict])
@@ -123,6 +130,8 @@ async def get_payment_gateway_setting(admin: CurrentAdmin):
             "configured": divinepay_service.is_configured(),
             "enabled": True if row is None else bool(row.setting_value),
             "auto_payout": False if payout_row is None else bool(payout_row.setting_value),
+            "okpay_configured": _okpay_configured(),
+            "okpay_enabled": await okpay_pool_on(),
         }
     )
 
@@ -154,6 +163,41 @@ async def set_payment_gateway_setting(
         action=AuditAction.SETTING_CHANGE,
         entity_type="PlatformSetting",
         entity_id=PAYMENT_GATEWAY_POOL_KEY,
+        actor_id=admin.id,
+        new_values={"enabled": enabled},
+    )
+    return APIResponse(data={"enabled": enabled})
+
+
+def _okpay_configured() -> bool:
+    from app.services import okpay_service
+
+    return okpay_service.is_configured()
+
+
+@router.put("/settings/payment-gateway/okpay", response_model=APIResponse[dict])
+async def set_okpay_setting(payload: UpdatePlatformSettingRequest, admin: CurrentAdmin):
+    """Gateway 2 (OkPay) deposits for the super admin's OWN users."""
+    _require_super_admin(admin)
+    enabled = bool(payload.setting_value)
+    row = await PlatformSetting.find_one(PlatformSetting.setting_key == OKPAY_POOL_KEY)
+    if row is None:
+        row = PlatformSetting(
+            setting_key=OKPAY_POOL_KEY,
+            setting_value=enabled,
+            setting_type=SettingType.BOOL,
+            category="payments",
+            is_public=False,
+            description="OkPay (Gateway 2) deposits for users in the super-admin pool.",
+        )
+        await row.insert()
+    else:
+        row.setting_value = enabled
+        await row.save()
+    await log_event(
+        action=AuditAction.SETTING_CHANGE,
+        entity_type="PlatformSetting",
+        entity_id=OKPAY_POOL_KEY,
         actor_id=admin.id,
         new_values={"enabled": enabled},
     )

@@ -202,9 +202,14 @@ export function AddFundsWizard({
     enabled: open,
   });
   const isGateway = depMode?.mode === "GATEWAY";
-  // PayFromUPI is a HOSTED-page gateway: no UTR to type — the user pays on the
-  // opened page and we just confirm with the gateway. Divinepay needs the UTR.
-  const isPfu = depMode?.provider === "payfromupi";
+  // The super admin's users can be offered two gateways (Gateway 1 / 2) and
+  // pick one; everyone else gets their admin's single gateway.
+  const gateways = depMode?.gateways ?? [];
+  const [gwId, setGwId] = useState<string | null>(null);
+  const gw = gateways.find((g) => g.id === gwId) ?? gateways[0];
+  // HOSTED gateways (PayFromUPI, OkPay): no UTR to type — the user pays on the
+  // opened page and we just confirm. Divinepay needs the UTR.
+  const isPfu = gw ? gw.hosted : depMode?.provider === "payfromupi";
   const [gwOrder, setGwOrder] = useState<
     { order_id: string; payment_url: string; amount: string } | null
   >(null);
@@ -220,6 +225,7 @@ export function AddFundsWizard({
       setSelectedBankId(null);
       setGwOrder(null);
       setGwUtr("");
+      setGwId(null);
     }
   }, [open]);
 
@@ -270,13 +276,13 @@ export function AddFundsWizard({
     if (isGateway) {
       // Online payments have a hard gateway floor on top of the admin's own
       // deposit rule — tell the user up front instead of round-tripping.
-      const gwMin = Number(depMode?.min_amount ?? 0) || 0;
+      const gwMin = Number(gw?.min_amount ?? depMode?.min_amount ?? 0) || 0;
       const effMin = Math.max(minAmount, gwMin);
       if (amount < effMin) return toast.error(`Minimum online payment is ${formatINR(effMin)}`);
       if (gwBusy) return;
       setGwBusy(true);
       try {
-        const res = await WalletAPI.createGatewayDeposit(amount);
+        const res = await WalletAPI.createGatewayDeposit(amount, gw?.id);
         setGwOrder(res);
         window.open(res.payment_url, "_blank", "noopener");
         setStep(3);
@@ -468,6 +474,29 @@ export function AddFundsWizard({
               <p className="mb-4 text-xs text-muted-foreground">
                 Please confirm account before paying into same account.
               </p>
+
+              {isGateway && gateways.length > 1 && (
+                <div className="mb-4 grid grid-cols-2 gap-2" role="radiogroup" aria-label="Payment gateway">
+                  {gateways.map((g) => {
+                    const on = g.id === gw?.id;
+                    return (
+                      <button
+                        key={g.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={on}
+                        onClick={() => setGwId(g.id)}
+                        className={cn(
+                          "rounded-xl border p-3 text-left text-sm font-semibold transition",
+                          on ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-muted",
+                        )}
+                      >
+                        Pay via {g.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
 
               <button
                 onClick={payViaUpiApp}

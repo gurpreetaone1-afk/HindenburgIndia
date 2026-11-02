@@ -246,7 +246,7 @@ async def list_deposits(
     q["$nor"] = [
         {
             "status": DepositStatus.PENDING.value,
-            "idempotency_key": {"$regex": "^(divinepay|payfromupi):"},
+            "idempotency_key": {"$regex": "^(divinepay|payfromupi|okpay):"},
         }
     ]
 
@@ -315,7 +315,7 @@ async def approve_deposit(
     # Online-gateway deposits credit automatically when the user actually pays
     # (verified against the gateway) — they can NEVER be hand-approved, else an
     # admin could credit a payment the user never made.
-    if (r.idempotency_key or "").split(":", 1)[0] in {"divinepay", "payfromupi"}:
+    if (r.idempotency_key or "").split(":", 1)[0] in {"divinepay", "payfromupi", "okpay"}:
         raise HTTPException(
             status_code=400,
             detail=(

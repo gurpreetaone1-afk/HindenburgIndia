@@ -901,9 +901,16 @@ export const SettingsAPI = {
   // Online (UPI) deposits for the super admin's OWN users. `configured` is
   // false when no gateway key is set on the server (then nobody gets it).
   paymentGateway: () =>
-    unwrap<{ configured: boolean; enabled: boolean; auto_payout: boolean }>(
-      api.get("/admin/settings/payment-gateway"),
-    ),
+    unwrap<{
+      configured: boolean;
+      enabled: boolean;
+      auto_payout: boolean;
+      okpay_configured: boolean;
+      okpay_enabled: boolean;
+    }>(api.get("/admin/settings/payment-gateway")),
+  // Gateway 2 (OkPay) for the super admin's OWN users.
+  setOkpayGateway: (enabled: boolean) =>
+    unwrap<{ enabled: boolean }>(api.put("/admin/settings/payment-gateway/okpay", { setting_value: enabled })),
   // Auto-disburse approved withdrawals through the payout gateway.
   setAutoPayout: (enabled: boolean) =>
     unwrap<{ enabled: boolean }>(

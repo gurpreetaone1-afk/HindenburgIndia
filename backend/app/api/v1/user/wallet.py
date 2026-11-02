@@ -6,6 +6,7 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
+from typing import Any
 
 from beanie import PydanticObjectId
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -409,6 +410,44 @@ async def _gateway_on_for(user) -> bool:
     return bool(getattr(admin, "payment_gateway_enabled", False)) if admin else False
 
 
+async def _gateways_for(user) -> list[dict[str, Any]]:
+    """Online gateways THIS user can pay through, in display order.
+
+    An admin's users get that admin's one gateway (PayFromUPI or Divinepay).
+    The super admin's OWN users can have two, each switched separately in
+    Platform settings: Gateway 1 = Divinepay (UPI + UTR), Gateway 2 = OkPay
+    (hosted page, confirmed by its IPN).
+    """
+    from app.services import divinepay_service, okpay_service, payfromupi_service
+
+    def entry(gid: str, label: str, svc: Any, hosted: bool) -> dict[str, Any]:
+        return {
+            "id": gid,
+            "label": label,
+            "min_amount": str(svc.MIN_AMOUNT),
+            "max_amount": str(svc.MAX_AMOUNT),
+            # hosted = the payer finishes on the gateway's own page; no UTR.
+            "hosted": hosted,
+        }
+
+    if getattr(user, "assigned_admin_id", None):
+        if not await _gateway_on_for(user):
+            return []
+        provider, _tok = await _gateway_provider_for(user)
+        if provider == "payfromupi":
+            return [entry("payfromupi", "Online payment", payfromupi_service, True)]
+        return [entry("divinepay", "Online payment", divinepay_service, False)]
+
+    from app.api.v1.admin.settings import okpay_pool_on
+
+    out: list[dict[str, Any]] = []
+    if await _gateway_on_for(user):
+        out.append(entry("divinepay", "Gateway 1", divinepay_service, False))
+    if okpay_service.is_configured() and await okpay_pool_on():
+        out.append(entry("okpay", "Gateway 2", okpay_service, True))
+    return out
+
+
 async def _credit_gateway_deposit(req, utr: str | None) -> bool:
     """Thin alias — the real logic (and its atomic claim) lives in the
     service so the background reconciler shares exactly one code path."""
@@ -437,15 +476,19 @@ async def deposit_mode(user: CurrentUser):
     """Which deposit UI to render: GATEWAY (online UPI) or MANUAL (bank transfer)."""
     from app.services import divinepay_service, payfromupi_service
 
-    on = await _gateway_on_for(user)
+    gateways = await _gateways_for(user)
     provider, _tok = await _gateway_provider_for(user)
     svc = payfromupi_service if provider == "payfromupi" else divinepay_service
+    first = gateways[0] if gateways else None
     return APIResponse(
         data={
-            "mode": "GATEWAY" if on else "MANUAL",
-            "provider": provider,
-            "min_amount": str(svc.MIN_AMOUNT),
-            "max_amount": str(svc.MAX_AMOUNT),
+            "mode": "GATEWAY" if gateways else "MANUAL",
+            # provider / min / max describe the FIRST option, for app builds
+            # that predate the `gateways` list.
+            "provider": first["id"] if first else provider,
+            "min_amount": first["min_amount"] if first else str(svc.MIN_AMOUNT),
+            "max_amount": first["max_amount"] if first else str(svc.MAX_AMOUNT),
+            "gateways": gateways,
         }
     )
 
@@ -461,8 +504,13 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
 
     if getattr(user, "is_demo", False):
         raise HTTPException(status_code=403, detail="Demo accounts cannot deposit funds.")
-    if not await _gateway_on_for(user):
+    gateways = await _gateways_for(user)
+    if not gateways:
         raise HTTPException(status_code=400, detail="Online payment is not enabled for your account.")
+    wanted = str(payload.get("gateway") or "").strip()
+    pick = next((g for g in gateways if g["id"] == wanted), None) if wanted else gateways[0]
+    if pick is None:
+        raise HTTPException(status_code=400, detail="That payment option is not available.")
 
     amount = to_decimal(payload.get("amount"))
     if amount <= 0:
@@ -473,10 +521,16 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         user_id=user.id, rule_type="DEPOSIT", amount=float(amount), user_remark=None
     )
 
-    from app.services import payfromupi_service
-    provider, token = await _gateway_provider_for(user)
+    from app.services import okpay_service, payfromupi_service
+    _admin_provider, token = await _gateway_provider_for(user)
+    provider = pick["id"]
     try:
-        if provider == "payfromupi":
+        if provider == "okpay":
+            okpay_service.check_amount(amount)
+            _ref = okpay_service.new_ref()
+            created = {"order_id": _ref, "payment_url": okpay_service.pay_url(_ref)}
+            _key = f"okpay:{_ref}"
+        elif provider == "payfromupi":
             created = await payfromupi_service.create_payin(
                 amount,
                 token=token or "",
@@ -489,14 +543,18 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         else:
             created = await divinepay_service.create_payin(amount)
             _key = f"divinepay:{created['order_id']}"
-    except (divinepay_service.DivinepayError, payfromupi_service.PayFromUpiError) as exc:
+    except (
+        divinepay_service.DivinepayError,
+        payfromupi_service.PayFromUpiError,
+        okpay_service.OkPayError,
+    ) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     req = DepositRequest(
         user_id=user.id,
         amount=to_decimal128(amount),
         payment_mode=PaymentMode.UPI,
-        user_remark="Online payment (UPI gateway)",
+        user_remark="Online payment (OkPay)" if provider == "okpay" else "Online payment (UPI gateway)",
         status=DepositStatus.PENDING,
         # The gateway order id doubles as our idempotency key: the unique
         # sparse index makes a duplicate order physically impossible and gives
@@ -532,6 +590,8 @@ async def submit_gateway_utr(payload: dict, user: CurrentUser):
         DepositRequest.idempotency_key == f"payfromupi:{order_id}"
     ) or await DepositRequest.find_one(
         DepositRequest.idempotency_key == f"divinepay:{order_id}"
+    ) or await DepositRequest.find_one(
+        DepositRequest.idempotency_key == f"okpay:{order_id}"
     )
     if req is None or req.user_id != user.id:
         raise HTTPException(status_code=404, detail="Payment not found.")
@@ -539,6 +599,11 @@ async def submit_gateway_utr(payload: dict, user: CurrentUser):
         return APIResponse(data={"status": "success", "already_credited": True})
     if req.status != DepositStatus.PENDING:
         raise HTTPException(status_code=400, detail="This payment is no longer pending.")
+
+    # OkPay confirms only through its IPN (it has no status API): the IPN
+    # has either credited this already (APPROVED, above) or not yet.
+    if (req.idempotency_key or "").startswith("okpay:"):
+        return APIResponse(data={"status": "pending", "credited": False})
 
     is_pfu = (req.idempotency_key or "").startswith("payfromupi:")
     if is_pfu:

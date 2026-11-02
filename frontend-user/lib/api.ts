@@ -388,12 +388,20 @@ export const WalletAPI = {
   myWithdrawals: () => unwrap<any[]>(api.get("/user/wallet/withdrawals")),
   // Online (UPI gateway) deposits. MANUAL = the usual bank-transfer flow.
   depositMode: () =>
-    unwrap<{ mode: "GATEWAY" | "MANUAL"; provider?: string; min_amount: string; max_amount: string }>(
+    unwrap<{
+      mode: "GATEWAY" | "MANUAL";
+      provider?: string;
+      min_amount: string;
+      max_amount: string;
+      // The online options this user can pick from (Gateway 1 / Gateway 2…).
+      // `hosted` = paid on the gateway's own page, no UTR to type.
+      gateways?: { id: string; label: string; min_amount: string; max_amount: string; hosted: boolean }[];
+    }>(
       api.get("/user/wallet/deposit-mode"),
     ),
-  createGatewayDeposit: (amount: number) =>
+  createGatewayDeposit: (amount: number, gateway?: string) =>
     unwrap<{ deposit_id: string; order_id: string; payment_url: string; amount: string }>(
-      api.post("/user/wallet/deposits/gateway", { amount }),
+      api.post("/user/wallet/deposits/gateway", { amount, gateway }),
     ),
   submitGatewayUtr: (order_id: string, utr: string) =>
     unwrap<{ status: string; credited?: boolean; already_credited?: boolean; amount?: string }>(

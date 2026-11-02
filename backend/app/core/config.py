@@ -166,6 +166,14 @@ class Settings(BaseSettings):
     # that the super admin turns on from the admin list.
     DIVINEPAY_API_KEY: SecretStr = Field(default=SecretStr(""))
     DIVINEPAY_BASE_URL: str = "https://divinepay.us.cc"
+    # OkPay (okpay.co SCI) — "Gateway 2" for the super admin's own users.
+    # Off until both merchant id + password are set; IPN URL to give OkPay:
+    #   {OKPAY_PUBLIC_API_BASE}/api/v1/finance/deposit/okpay/ipn
+    OKPAY_MERCHANT_ID: str = ""
+    OKPAY_MERCHANT_PASSWORD: SecretStr = Field(default=SecretStr(""))
+    OKPAY_CURRENCY: str = "debit_base"
+    OKPAY_FORM_URL: str = "https://okpay.co/sci/form"
+    OKPAY_PUBLIC_API_BASE: str = "https://api.hindenburgindia.live"
 
     # Infoway — global forex / crypto / metals / energy / stocks / indices feed.
     INFOWAY_API_KEY: SecretStr = Field(default=SecretStr(""))

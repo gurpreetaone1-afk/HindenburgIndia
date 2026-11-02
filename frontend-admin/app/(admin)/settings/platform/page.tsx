@@ -552,6 +552,8 @@ function PaymentGatewayCard() {
   const [enabled, setEnabled] = useState(true);
   const [configured, setConfigured] = useState(true);
   const [autoPayout, setAutoPayout] = useState(false);
+  const [okpayEnabled, setOkpayEnabled] = useState(false);
+  const [okpayConfigured, setOkpayConfigured] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [toggling, setToggling] = useState(false);
 
@@ -563,6 +565,8 @@ function PaymentGatewayCard() {
         setEnabled(!!r.enabled);
         setConfigured(!!r.configured);
         setAutoPayout(!!r.auto_payout);
+        setOkpayEnabled(!!r.okpay_enabled);
+        setOkpayConfigured(!!r.okpay_configured);
       })
       .catch(() => {})
       .finally(() => alive && setLoaded(true));
@@ -586,12 +590,25 @@ function PaymentGatewayCard() {
     }
   }
 
+  async function toggleOkpay(next: boolean) {
+    setToggling(true);
+    try {
+      await SettingsAPI.setOkpayGateway(next);
+      setOkpayEnabled(next);
+      toast.success(next ? "Gateway 2 (OkPay) enabled" : "Gateway 2 (OkPay) disabled");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update setting");
+    } finally {
+      setToggling(false);
+    }
+  }
+
   async function toggle(next: boolean) {
     setToggling(true);
     try {
       await SettingsAPI.setPaymentGateway(next);
       setEnabled(next);
-      toast.success(next ? "Online payments enabled" : "Online payments disabled");
+      toast.success(next ? "Gateway 1 enabled" : "Gateway 1 disabled");
     } catch (e: any) {
       toast.error(e?.message || "Failed to update setting");
     } finally {
@@ -619,11 +636,11 @@ function PaymentGatewayCard() {
         ) : (
           <div className="flex items-center justify-between rounded-md border border-border bg-card p-3">
             <div className="min-w-0">
-              <div className="text-sm font-semibold">Online payments — my users</div>
+              <div className="text-sm font-semibold">Gateway 1 — online UPI (my users)</div>
               <div className="text-[11px] text-muted-foreground">
                 {enabled
                   ? "On — your users can pay by UPI and get credited automatically"
-                  : "Off — your users see manual bank transfer only"}
+                  : "Off — not offered to your users"}
               </div>
             </div>
             <button
@@ -646,6 +663,40 @@ function PaymentGatewayCard() {
             </button>
           </div>
         )}
+
+        {/* Gateway 2 — OkPay hosted checkout, credited by its signed IPN.
+            Your users pick Gateway 1 or 2 when both are on; with both off
+            they see manual bank transfer. */}
+        <div className="flex items-center justify-between rounded-md border border-border bg-card p-3">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold">Gateway 2 — OkPay (my users)</div>
+            <div className="text-[11px] text-muted-foreground">
+              {!okpayConfigured
+                ? "Not configured — OkPay merchant ID and password must be set on the server first"
+                : okpayEnabled
+                  ? "On — your users can pay on OkPay's page and get credited automatically"
+                  : "Off — not offered to your users"}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => toggleOkpay(!okpayEnabled)}
+            disabled={!loaded || toggling || !okpayConfigured}
+            aria-pressed={okpayEnabled}
+            aria-label={okpayEnabled ? "Disable Gateway 2" : "Enable Gateway 2"}
+            className={cn(
+              "relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:opacity-50",
+              okpayEnabled && okpayConfigured ? "bg-emerald-500" : "bg-muted",
+            )}
+          >
+            <span
+              className={cn(
+                "inline-block size-5 transform rounded-full bg-white shadow transition-transform",
+                okpayEnabled && okpayConfigured ? "translate-x-6" : "translate-x-1",
+              )}
+            />
+          </button>
+        </div>
 
         {/* Withdrawals — sends real money the moment you approve, so it is
             off until switched on deliberately. */}
