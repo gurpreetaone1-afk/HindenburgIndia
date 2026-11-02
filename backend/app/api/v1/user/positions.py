@@ -1109,6 +1109,67 @@ async def list_active_trades(user: CurrentUser):
                 remaining_qty[str(t.id)] = show
                 accum += show
 
+    # ── Lots carried over a weekly settlement ──────────────────────
+    # The Saturday settlement closes each open position at the settlement
+    # price (P&L to that point is booked to the wallet) and re-opens it there
+    # with NO fill. The passes above then find no fill for the carried qty and
+    # surface the most recent older same-side fills — often from unrelated
+    # earlier cycles — at their ORIGINAL prices, so the Active tab showed
+    # profit on lots the Positions tab (correctly) showed in loss (operator
+    # case CL16074832, Nov 2026). Rows from before the re-open now carry the
+    # position's remaining basis: whatever avg × qty the post-settlement
+    # fills don't account for, so the Active rows always add up to the
+    # position. Their brokerage was charged in the settled cycle → 0 here.
+    from datetime import timedelta as _td
+
+    def _naive(dt: Any) -> Any:
+        return dt.replace(tzinfo=None) if dt else None
+
+    _opens = [_naive(p.opened_at) for p in open_positions if p.opened_at]
+    _settled = (
+        await Position.find(
+            {
+                "user_id": user.id,
+                "status": PositionStatus.CLOSED.value,
+                "close_reason": "WEEKLY_SETTLEMENT",
+                "closed_at": {"$gte": min(_opens) - _td(minutes=2), "$lte": max(_opens) + _td(minutes=2)},
+            }
+        ).to_list()
+        if _opens
+        else []
+    )
+    trade_by_id = {str(t.id): t for t in trades}
+    carry_basis: dict[str, float] = {}  # position id → basis for carried rows
+    carried_ids: set[str] = set()
+    for p in open_positions:
+        if not p.opened_at or not any(
+            s.instrument.token == p.instrument.token
+            and str(s.product_type.value) == str(p.product_type.value)
+            and s.closed_at
+            and abs((_naive(s.closed_at) - _naive(p.opened_at)).total_seconds()) <= 60
+            for s in _settled
+        ):
+            continue
+        cutoff = _naive(p.opened_at) - _td(seconds=5)
+        own_cost = own_qty = car_qty = 0.0
+        car_ids = []
+        for tid, owner in trade_owner.items():
+            if owner is not p:
+                continue
+            t = trade_by_id[tid]
+            q = remaining_qty.get(tid, 0.0)
+            if _naive(t.executed_at or t.created_at) < cutoff:
+                car_qty += q
+                car_ids.append(tid)
+            else:
+                own_cost += float(str(t.price)) * q
+                own_qty += q
+        if car_qty > 1e-9:
+            carry_basis[str(p.id)] = (
+                float(str(p.avg_price)) * (car_qty + own_qty) - own_cost
+            ) / car_qty
+            carried_ids.update(car_ids)
+
     rows: list[dict[str, Any]] = []
     for t in trades:
         # Per-position attribution from the windowed-FIFO pass above.
@@ -1131,6 +1192,9 @@ async def list_active_trades(user: CurrentUser):
             continue
 
         price = float(str(t.price))
+        carried = str(t.id) in carried_ids
+        if carried:
+            price = carry_basis[str(p.id)]
         ltp = ltp_by_token.get(t.instrument.token, 0.0)
         is_usd = market_data_service.is_usd_quoted_segment(p.segment_type) or \
             market_data_service.is_usd_quoted_segment(p.instrument.segment)
@@ -1147,6 +1211,8 @@ async def list_active_trades(user: CurrentUser):
         try:
             brokerage_inr = float(str(t.brokerage)) if t.brokerage is not None else 0.0
         except (TypeError, ValueError):
+            brokerage_inr = 0.0
+        if carried:
             brokerage_inr = 0.0
         pnl_inr = gross_pnl_inr - brokerage_inr
 
@@ -1202,7 +1268,11 @@ async def list_active_trades(user: CurrentUser):
         rows.append({
             "id": str(t.id),
             "trade_number": t.trade_number,
-            "executed_at": t.executed_at.isoformat() if t.executed_at else None,
+            "executed_at": (
+                p.opened_at.isoformat()
+                if carried and p.opened_at
+                else (t.executed_at.isoformat() if t.executed_at else None)
+            ),
             "position_id": str(p.id),
             "symbol": p.instrument.symbol,
             "trading_symbol": getattr(p.instrument, "trading_symbol", None),
@@ -1222,7 +1292,7 @@ async def list_active_trades(user: CurrentUser):
             "stop_loss": str(p.stop_loss) if p.stop_loss is not None else None,
             "target": str(p.target) if p.target is not None else None,
             "pnl": f"{pnl_inr:.2f}",
-            "brokerage": str(t.brokerage),
+            "brokerage": "0" if carried else str(t.brokerage),
             # Per-fill margin (INR). `used_margin` = currently locked;
             # `holding_margin` = what would lock if rolled overnight.
             "used_margin": f"{used_margin_inr:.2f}",
