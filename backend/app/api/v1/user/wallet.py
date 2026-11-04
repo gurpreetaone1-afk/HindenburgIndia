@@ -549,7 +549,7 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
                 mobile=getattr(user, "mobile", None) or "",
                 return_url=f"https://{site}/wallet?deposit=done",
             )
-            _key = f"univepay:{created['order_id']}"
+            _key = f"univepay:{created['traceno']}"
         elif provider == "okpay":
             okpay_service.check_amount(amount)
             _ref = okpay_service.new_ref()
@@ -586,6 +586,7 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         # sparse index makes a duplicate order physically impossible and gives
         # us the lookup for the verify/UTR step.
         idempotency_key=_key,
+        gateway_order_id=created["order_id"] if provider == "univepay" else None,
     )
     await req.insert()
     return APIResponse(
@@ -620,6 +621,9 @@ async def submit_gateway_utr(payload: dict, user: CurrentUser):
         DepositRequest.idempotency_key == f"okpay:{order_id}"
     ) or await DepositRequest.find_one(
         DepositRequest.idempotency_key == f"univepay:{order_id}"
+    ) or await DepositRequest.find_one(
+        # Univepay shows the gateway's own order number (see create_gateway_deposit).
+        {"user_id": user.id, "gateway_order_id": order_id}
     )
     if req is None or req.user_id != user.id:
         raise HTTPException(status_code=404, detail="Payment not found.")
