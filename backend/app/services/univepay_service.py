@@ -28,7 +28,6 @@ import secrets
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -116,11 +115,7 @@ async def create_payin(
     if str(data.get("status")) != "00" or not data.get("payUrl"):
         logger.warning("univepay_create_rejected traceno=%s resp=%s", traceno, data)
         raise UnivepayError(f"Payment gateway: {data.get('msg') or 'could not create the payment'}")
-    pay_url = str(data["payUrl"])
-    # The gateway's own order number rides in the pay link (…?orderId=W6110…);
-    # that is what the user/admin see. Traceno stays our callback key.
-    gw_id = (parse_qs(urlparse(pay_url).query).get("orderId") or [""])[0].strip()
-    return {"order_id": gw_id or traceno, "traceno": traceno, "payment_url": pay_url}
+    return {"order_id": traceno, "payment_url": str(data["payUrl"])}
 
 
 def notify_problem(form: dict[str, str], merchno: str, key: str, *, want: Decimal) -> str | None:
@@ -168,10 +163,8 @@ async def handle_notify(form: dict[str, str]) -> str:
         return "already credited"
     if req.status != DepositStatus.PENDING:
         return f"deposit {req.status}"
-    # UTR = the gateway order number the user was shown, so the admin can paste
-    # it straight into the Univepay panel.
-    ref = req.gateway_order_id or str(form.get("SerialNo") or "").strip() or traceno
+    ref = str(form.get("SerialNo") or "").strip() or traceno
     credited = await divinepay_service.credit_deposit(
-        req, ref, narration=f"Deposit via Univepay (order {ref})"
+        req, f"UNIVEPAY-{ref}", narration=f"Deposit via Univepay (order {traceno})"
     )
     return "credited" if credited else "already credited"

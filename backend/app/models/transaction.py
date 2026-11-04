@@ -108,9 +108,6 @@ class DepositRequest(TimestampMixin):
     processed_at: datetime | None = None
 
     idempotency_key: Indexed(str, unique=True, sparse=True) | None = None  # type: ignore[valid-type]
-    # The gateway's OWN order number, shown to the user/admin so it matches
-    # the gateway's panel (Univepay only, for now). Lookups pair it with user_id.
-    gateway_order_id: str | None = None
 
     class Settings:
         name = "deposit_requests"
