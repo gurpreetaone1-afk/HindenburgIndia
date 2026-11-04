@@ -182,6 +182,19 @@ export default function SubAdminsPage() {
     },
     onError: (e: any) => toast.error(e?.message ?? "Could not update OTP setting"),
   });
+  const regOtpMut = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      ManagementAPI.setSubAdminRegisterOtp(id, enabled),
+    onSuccess: (_d, vars) => {
+      toast.success(
+        vars.enabled
+          ? "Register OTP ON — this admin's users verify email on signup"
+          : "Register OTP OFF — this admin's users sign up without OTP",
+      );
+      qc.invalidateQueries({ queryKey: ["admin", "sub-admins"] });
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Could not update register OTP"),
+  });
 
   // Online (UPI gateway) deposits for this admin's users. Off by default —
   // until this is on, their users only see manual bank transfer.
@@ -317,6 +330,17 @@ export default function SubAdminsPage() {
                   Turn OFF login OTP
                 </DropdownMenuItem>
               )}
+              {r.register_otp_enabled === false ? (
+                <DropdownMenuItem onSelect={() => regOtpMut.mutate({ id: r.id, enabled: true })}>
+                  <MailCheck className="size-4 text-emerald-500" />
+                  Turn ON register OTP (users)
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onSelect={() => regOtpMut.mutate({ id: r.id, enabled: false })}>
+                  <MailX className="size-4 text-amber-500" />
+                  Turn OFF register OTP (users)
+                </DropdownMenuItem>
+              )}
               {r.payment_gateway_enabled ? (
                 <DropdownMenuItem onSelect={() => gatewayMut.mutate({ id: r.id, enabled: false })}>
                   <CreditCard className="size-4 text-amber-500" />
@@ -420,6 +444,9 @@ export default function SubAdminsPage() {
                 onUnblock={() => unblockMut.mutate(r.id)}
                 onToggleOtp={() =>
                   otpMut.mutate({ id: r.id, enabled: r.login_otp_enabled === false })
+                }
+                onToggleRegisterOtp={() =>
+                  regOtpMut.mutate({ id: r.id, enabled: r.register_otp_enabled === false })
                 }
                 onResetPw={() =>
                   setResetPwTarget({
@@ -554,6 +581,7 @@ function SubAdminMobileCard({
   onBlock,
   onUnblock,
   onToggleOtp,
+  onToggleRegisterOtp,
   onResetPw,
   onDelete,
   loginAsBusy,
@@ -566,6 +594,7 @@ function SubAdminMobileCard({
   onBlock: () => void;
   onUnblock: () => void;
   onToggleOtp: () => void;
+  onToggleRegisterOtp: () => void;
   onResetPw: () => void;
   onDelete: () => void;
   loginAsBusy: boolean;
@@ -657,6 +686,17 @@ function SubAdminMobileCard({
                 <DropdownMenuItem onSelect={onToggleOtp}>
                   <MailX className="size-4 text-amber-500" />
                   Turn OFF login OTP
+                </DropdownMenuItem>
+              )}
+              {row.register_otp_enabled === false ? (
+                <DropdownMenuItem onSelect={onToggleRegisterOtp}>
+                  <MailCheck className="size-4 text-emerald-500" />
+                  Turn ON register OTP (users)
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onSelect={onToggleRegisterOtp}>
+                  <MailX className="size-4 text-amber-500" />
+                  Turn OFF register OTP (users)
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem onSelect={onResetPw}>

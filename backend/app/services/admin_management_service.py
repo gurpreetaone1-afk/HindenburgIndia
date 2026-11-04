@@ -171,11 +171,15 @@ async def set_login_otp(
     sub_admin_id: str | PydanticObjectId,
     enabled: bool,
     actor_id: PydanticObjectId,
+    field: str = "login_otp_enabled",
 ) -> User:
-    """Enable/disable the email login-OTP requirement for one sub-admin."""
+    """Enable/disable an email-OTP requirement for one sub-admin:
+    ``login_otp_enabled`` (their own login) or ``register_otp_enabled``
+    (signups of their users)."""
+    assert field in ("login_otp_enabled", "register_otp_enabled")
     sa = await _get_sub_admin_or_404(sub_admin_id)
-    old = getattr(sa, "login_otp_enabled", True)
-    sa.login_otp_enabled = bool(enabled)
+    old = getattr(sa, field, True)
+    setattr(sa, field, bool(enabled))
     await sa.save()
     await log_event(
         action=AuditAction.SUB_ADMIN_UPDATE,
@@ -183,9 +187,9 @@ async def set_login_otp(
         entity_id=sa.id,
         actor_id=actor_id,
         target_user_id=sa.id,
-        old_values={"login_otp_enabled": old},
-        new_values={"login_otp_enabled": bool(enabled)},
-        metadata={"kind": "SUB_ADMIN_LOGIN_OTP"},
+        old_values={field: old},
+        new_values={field: bool(enabled)},
+        metadata={"kind": f"SUB_ADMIN_{field.removesuffix('_enabled').upper()}"},
     )
     return sa
 

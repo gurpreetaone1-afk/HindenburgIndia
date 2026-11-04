@@ -217,6 +217,10 @@ class User(TimestampMixin):
     # sub-admins created via the super-admin flow get OTP by default; the
     # super-admin can turn it off per sub-admin from the sub-admins page.
     login_otp_enabled: bool = True
+    # Email-OTP on SIGNUP for this ADMIN's users (custom domain / admin or
+    # broker referral). Super-admin toggles it per admin; False = register
+    # without a code. Read in user/auth.py (/otp/request + /register).
+    register_otp_enabled: bool = True
 
     # Login telemetry
     last_login_at: datetime | None = None

@@ -835,6 +835,9 @@ export const ManagementAPI = {
     unwrap<any>(api.post(`/admin/management/sub-admins/${id}/unblock`)),
   setSubAdminOtp: (id: string, enabled: boolean) =>
     unwrap<any>(api.post(`/admin/management/sub-admins/${id}/otp`, { enabled })),
+  // Signup email-OTP for THIS admin's users (off = register without a code).
+  setSubAdminRegisterOtp: (id: string, enabled: boolean) =>
+    unwrap<any>(api.post(`/admin/management/sub-admins/${id}/register-otp`, { enabled })),
   // Online (UPI gateway) deposits for THIS admin's users. Off by default.
   setSubAdminPaymentGateway: (id: string, enabled: boolean) =>
     unwrap<{ id: string; payment_gateway_enabled: boolean }>(

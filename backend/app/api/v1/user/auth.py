@@ -43,23 +43,20 @@ router = APIRouter(prefix="/auth", tags=["user-auth"])
 logger = logging.getLogger(__name__)
 
 
-async def _register_otp_enabled_for(referral_code: str | None) -> bool:
-    """Resolve the owning ADMIN from a referral code (an admin OR broker
-    user_code) and return their ``register_otp_enabled`` flag.
+async def _register_otp_enabled_for(request_host: str, referral_code: str | None) -> bool:
+    """The owning ADMIN's ``register_otp_enabled`` flag, with the admin
+    resolved exactly like /register attributes the signup (broker ref >
+    custom domain > admin ref), so client and server agree on otp_required.
 
     Defaults to True (OTP required) when nothing resolves — the platform /
     super-admin pool always verifies. Super-admin toggles this per admin
-    from the sub-admins page; when False, that admin's referred signups
-    skip the email-OTP step.
+    from the sub-admins page.
     """
-    if not referral_code:
-        return True
     try:
-        admin = await branding_service.find_admin_by_user_code(referral_code)
-        if admin is None:
-            broker = await branding_service.find_broker_by_user_code(referral_code)
-            if broker is not None and broker.assigned_admin_id:
-                admin = await User.get(broker.assigned_admin_id)
+        admin_id, *_ = await branding_service.resolve_signup_attribution(
+            request_host=request_host, referral_code=referral_code
+        )
+        admin = await User.get(admin_id) if admin_id else None
         if admin is not None:
             return bool(getattr(admin, "register_otp_enabled", True))
     except Exception:  # pragma: no cover - never block signup on a lookup hiccup
@@ -246,7 +243,7 @@ async def logout(payload: LogoutRequest, user: CurrentUser, request: Request):
     response_model=APIResponse[dict],
     dependencies=[rate_limit("auth")],
 )
-async def request_otp(payload: OtpRequest):
+async def request_otp(payload: OtpRequest, request: Request):
     if payload.purpose not in {"register", "login", "reset_password", "withdrawal"}:
         raise ValidationFailedError("Invalid OTP purpose")
     ident = payload.identifier.lower().strip()
@@ -265,7 +262,7 @@ async def request_otp(payload: OtpRequest):
         # for a code we can't deliver. The register endpoint mirrors this exact
         # condition, so client and server always agree on otp_required.
         if not email_configured() or not await _register_otp_enabled_for(
-            payload.referral_code
+            _signup_host(request), payload.referral_code
         ):
             return APIResponse(
                 data={

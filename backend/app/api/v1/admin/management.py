@@ -50,6 +50,7 @@ async def _ser_sub_admin(sa: User) -> SubAdminDTO:
         permissions=sa.admin_permissions,
         pnl_share_pct=str(sa.pnl_share_pct) if sa.pnl_share_pct is not None else "0",
         login_otp_enabled=getattr(sa, "login_otp_enabled", True),
+        register_otp_enabled=getattr(sa, "register_otp_enabled", True),
         payment_gateway_enabled=getattr(sa, "payment_gateway_enabled", False),
         user_count=await mgmt.count_assigned_users(sa.id),
         broker_count=await mgmt.count_assigned_brokers(sa.id),
@@ -202,6 +203,20 @@ async def set_sub_admin_login_otp(
     (super-admin only). When off, that sub-admin logs in with just
     email/password (+ their own TOTP if they enabled it)."""
     sa = await mgmt.set_login_otp(sub_admin_id, payload.enabled, admin.id)
+    return APIResponse(data=await _ser_sub_admin(sa))
+
+
+@router.post(
+    "/sub-admins/{sub_admin_id}/register-otp", response_model=APIResponse[SubAdminDTO]
+)
+async def set_sub_admin_register_otp(
+    sub_admin_id: str, payload: SetLoginOtpRequest, admin: SuperAdmin
+):
+    """Turn the signup email-OTP on/off for one sub-admin's users
+    (super-admin only). When off, their users register without a code."""
+    sa = await mgmt.set_login_otp(
+        sub_admin_id, payload.enabled, admin.id, field="register_otp_enabled"
+    )
     return APIResponse(data=await _ser_sub_admin(sa))
 
 
