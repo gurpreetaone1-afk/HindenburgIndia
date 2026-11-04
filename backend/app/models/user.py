@@ -258,6 +258,10 @@ class User(TimestampMixin):
     # the global Divinepay gateway). When set, this admin's users route their
     # online UPI deposits through PayFromUPI instead. Deposit-only.
     payfromupi_token: str | None = None
+    # Per-admin Univepay merchant (services/univepay_service.py). When both
+    # are set, this admin's users pay online through Univepay. Deposit-only.
+    univepay_merchno: str | None = None
+    univepay_key: str | None = None
 
     # Sub-admin profile — only populated for role == ADMIN.
     admin_permissions: AdminPermissions | None = None

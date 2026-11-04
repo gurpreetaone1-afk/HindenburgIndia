@@ -24,6 +24,7 @@ from app import __version__
 from app.api.v1 import branding as branding_public
 from app.api.v1 import okpay_webhook as _okpay_webhook
 from app.api.v1 import payfromupi_webhook as _pfu_webhook
+from app.api.v1 import univepay_webhook as _univepay_webhook
 from app.api.v1.admin import router as admin_router
 from app.api.v1.user import router as user_router
 from app.api.ws import router as ws_router
@@ -1378,6 +1379,7 @@ app.include_router(admin_router, prefix="/api/v1")
 app.include_router(branding_public.router, prefix="/api/v1")
 app.include_router(_pfu_webhook.router, prefix="/api/v1")
 app.include_router(_okpay_webhook.router, prefix="/api/v1")
+app.include_router(_univepay_webhook.router, prefix="/api/v1")
 app.include_router(ws_router)
 
 

@@ -214,14 +214,15 @@ async def get_my_gateway(admin: CurrentAdmin):
     gateway is wired for them at all (PayFromUPI token, or the global
     Divinepay key).
     """
-    from app.services import divinepay_service
+    from app.services import divinepay_service, univepay_service
 
     has_pfu = bool(getattr(admin, "payfromupi_token", None))
+    has_uni = univepay_service.creds_of(admin) is not None
     return APIResponse(
         data={
             "enabled": bool(getattr(admin, "payment_gateway_enabled", False)),
-            "provider": "payfromupi" if has_pfu else "divinepay",
-            "configured": has_pfu or divinepay_service.is_configured(),
+            "provider": "payfromupi" if has_pfu else "univepay" if has_uni else "divinepay",
+            "configured": has_pfu or has_uni or divinepay_service.is_configured(),
         }
     )
 
