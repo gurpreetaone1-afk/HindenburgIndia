@@ -510,6 +510,26 @@ async def check_dns_a_record(domain: str) -> tuple[bool, str | None]:
     return True, None
 
 
+_NEXT_CHUNK_RE: Final = re.compile(r"/_next/static/[\w./-]+\.js")
+USER_FRONTEND_LOCAL: Final[str] = "http://127.0.0.1:3000/"
+
+
+async def proxied_to_us(domain: str) -> bool:
+    """True when ``http://<domain>/`` serves this host's own user frontend
+    (same hashed Next.js chunk URLs = same build). This is how a domain
+    behind a proxy (Cloudflare orange cloud) is verified: its A records
+    are the proxy's IPs, never ``PLATFORM_PUBLIC_IP``."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as c:
+            ours = (await c.get(USER_FRONTEND_LOCAL)).text
+            theirs = (await c.get(f"http://{domain}/")).text
+    except httpx.HTTPError:
+        return False
+    return bool(set(_NEXT_CHUNK_RE.findall(ours)) & set(_NEXT_CHUNK_RE.findall(theirs)))
+
+
 async def resolve_dns_preview(domain: str) -> dict:
     """Return a side-by-side preview of the apex + www A records vs the
     expected ``PLATFORM_PUBLIC_IP``. Used by the admin UI to show the
@@ -588,9 +608,34 @@ async def begin_domain_verification(admin: User) -> User:
         )
 
     ok, err = await check_dns_a_record(admin.custom_domain)
+    if not ok and await proxied_to_us(admin.custom_domain):
+        # Proxied (Cloudflare, SSL mode Flexible): the edge terminates TLS and
+        # nginx's catch-all :80 block serves every host, so nothing to provision.
+        admin.custom_domain_status = STATUS_READY
+        admin.custom_domain_last_error = None
+        admin.custom_domain_verified_at = now_utc()
+        await admin.save()
+        return admin
     if not ok:
         admin.custom_domain_status = STATUS_FAILED
-        admin.custom_domain_last_error = err or "DNS check failed"
+        admin.custom_domain_last_error = (err or "DNS check failed") + (
+            " If the records are Proxied (orange cloud) in Cloudflare, set "
+            "SSL/TLS encryption mode to Flexible for this domain, then Retry."
+        )
+        await admin.save()
+        return admin
+
+    from app.workers.branding_tasks import PROVISION_SCRIPT, _script_exists
+
+    if not _script_exists(PROVISION_SCRIPT):
+        # No certbot helper on this host (and no Celery worker to run it), so
+        # a direct (grey-cloud) record would sit in PROVISIONING forever.
+        admin.custom_domain_status = STATUS_FAILED
+        admin.custom_domain_last_error = (
+            "DNS points straight at the server, but this server gets SSL from "
+            "Cloudflare. In Cloudflare DNS turn Proxy ON (orange cloud) for "
+            "the domain and www, then click Retry."
+        )
         await admin.save()
         return admin
 
