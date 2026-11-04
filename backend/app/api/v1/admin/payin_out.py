@@ -243,12 +243,10 @@ async def list_deposits(
     # one must NEVER be hand-approved into free money, and if the user never
     # pays the reconcile loop auto-rejects it. Gateway deposits surface here
     # only once credited (APPROVED) or auto-rejected — records, not requests.
-    # Univepay is the exception: its admin's own merchant, so they see pending
-    # orders (UTR = our HB order no.) and approve once their panel shows paid.
     q["$nor"] = [
         {
             "status": DepositStatus.PENDING.value,
-            "idempotency_key": {"$regex": "^(divinepay|payfromupi|okpay):"},
+            "idempotency_key": {"$regex": "^(divinepay|payfromupi|okpay|univepay):"},
         }
     ]
 
@@ -316,10 +314,8 @@ async def approve_deposit(
     await assert_user_in_scope(admin, r.user_id)
     # Online-gateway deposits credit automatically when the user actually pays
     # (verified against the gateway) — they can NEVER be hand-approved, else an
-    # admin could credit a payment the user never made. (Univepay may be: it is
-    # the admin's own merchant; the atomic claim below and credit_deposit's
-    # keep a late callback from crediting it twice.)
-    if (r.idempotency_key or "").split(":", 1)[0] in {"divinepay", "payfromupi", "okpay"}:
+    # admin could credit a payment the user never made.
+    if (r.idempotency_key or "").split(":", 1)[0] in {"divinepay", "payfromupi", "okpay", "univepay"}:
         raise HTTPException(
             status_code=400,
             detail=(
