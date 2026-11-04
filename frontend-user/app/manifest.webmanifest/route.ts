@@ -102,17 +102,13 @@ function buildBrandedManifest(b: ResolvedBrand): Record<string, unknown> {
   // ignores cross-origin icons on api.hindenburgindia.live and falls back to the
   // platform leaf. `id` keeps each tenant's PWA distinct so installing
   // admin-A doesn't overwrite admin-B on the same origin.
+  // PNGs rendered from the logo (see api/brand-icon): round for "any", and a
+  // padded maskable one so Android's icon/splash mask never cuts the logo.
   const proxyIcon = `/api/brand-icon?u=${encodeURIComponent(code)}`;
-  const ext = ((logo ?? "").split(".").pop() || "").toLowerCase();
-  const mimeType =
-    ext === "jpg" || ext === "jpeg" ? "image/jpeg"
-    : ext === "svg" ? "image/svg+xml"
-    : ext === "webp" ? "image/webp"
-    : "image/png";
   const brandedIcons = [
-    { src: proxyIcon, sizes: "512x512", type: mimeType, purpose: "any" },
-    { src: proxyIcon, sizes: "192x192", type: mimeType, purpose: "any" },
-    { src: proxyIcon, sizes: "512x512", type: mimeType, purpose: "maskable" },
+    { src: `${proxyIcon}&v=round`, sizes: "512x512", type: "image/png", purpose: "any" },
+    { src: `${proxyIcon}&v=round&s=192`, sizes: "192x192", type: "image/png", purpose: "any" },
+    { src: `${proxyIcon}&v=maskable`, sizes: "512x512", type: "image/png", purpose: "maskable" },
   ];
   return {
     ...PLATFORM_DEFAULT,
