@@ -10,6 +10,8 @@ interface BrandLogoProps {
   href?: string | null;
   size?: "sm" | "md" | "lg";
   iconOnly?: boolean;
+  /** Hide the brand name when the admin uploaded a logo (mobile header). */
+  logoOnly?: boolean;
   className?: string;
 }
 
@@ -22,7 +24,7 @@ interface BrandLogoProps {
 //   Hindenburg India tricolour "H" mark + wordmark — keeping the
 //   existing UX byte-identical for the bulk of traffic that isn't on a
 //   branded link.
-export function BrandLogo({ href = "/dashboard", size = "md", iconOnly = false, className }: BrandLogoProps) {
+export function BrandLogo({ href = "/dashboard", size = "md", iconOnly = false, logoOnly = false, className }: BrandLogoProps) {
   const { branding } = useBranding();
   const customName = (branding?.brand_name ?? "").trim();
   // logo_url from the API is relative (e.g. "/static/branding/...");
@@ -31,26 +33,28 @@ export function BrandLogo({ href = "/dashboard", size = "md", iconOnly = false, 
   const logoSrc = branding?.logo_url ? `${API_URL}${branding.logo_url}` : null;
 
   const sizes = {
-    sm: { wrap: "text-sm", icon: "size-5", badge: "p-1", img: "size-5" },
-    md: { wrap: "text-lg", icon: "size-6", badge: "p-1.5", img: "size-6" },
-    lg: { wrap: "text-2xl", icon: "size-8", badge: "p-2", img: "size-8" },
+    sm: { wrap: "text-sm", icon: "size-5", logo: "size-9" },
+    md: { wrap: "text-lg", icon: "size-6", logo: "size-10" },
+    lg: { wrap: "text-2xl", icon: "size-8", logo: "size-12" },
   }[size];
 
   const content = (
     <span className={cn("inline-flex items-center gap-2 font-semibold tracking-tight", sizes.wrap, className)}>
       {logoSrc ? (
-        <span className={cn("rounded-md bg-primary/15 text-primary", sizes.badge)}>
+        // Logo fills the whole circle. Slight scale-up trims the thin
+        // margin most uploaded logos have around their own round emblem.
+        <span className={cn("block shrink-0 overflow-hidden rounded-full bg-background shadow-sm", sizes.logo)}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={logoSrc}
             alt={customName || "Logo"}
-            className={cn(sizes.img, "rounded object-contain")}
+            className="size-full scale-[1.05] object-cover"
           />
         </span>
       ) : (
         <HindenburgMark className={sizes.icon} />
       )}
-      {!iconOnly && (
+      {!iconOnly && !(logoOnly && logoSrc) && (
         customName ? (
           <span className="text-foreground">{customName}</span>
         ) : (

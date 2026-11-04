@@ -72,7 +72,7 @@ export function TopBar() {
     >
       {/* Mobile-only brand (sidebar is hidden ≤ md) */}
       <div className="md:hidden">
-        <BrandLogo size="sm" />
+        <BrandLogo size="sm" logoOnly />
       </div>
 
       {/* Desktop search */}
