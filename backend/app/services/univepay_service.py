@@ -154,6 +154,13 @@ async def handle_notify(form: dict[str, str]) -> str:
     if creds is None:
         return "admin has no univepay credentials"
     problem = notify_problem(form, *creds, want=Decimal(str(req.amount)))
+    if problem in ("status FAIL", "status FAILED"):
+        # Signed + right merchant (checked before status): the payment really
+        # failed, so the deposit shows as failed instead of pending forever.
+        from app.services.payfromupi_service import _reject_deposit
+
+        rejected = await _reject_deposit(req, "Payment failed at Univepay")
+        return "marked failed" if rejected else f"deposit {req.status}"
     if problem:
         # Field names only (never the key), so the signing rule can be checked
         # against a real callback.
