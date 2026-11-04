@@ -92,12 +92,10 @@ function DownloadInner() {
         {/* Brand logo — falls back to the bold first letter in a rounded
             tile when the broker hasn't uploaded a logo yet. */}
         {logo ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={logo}
-            alt={name}
-            className="h-20 w-20 rounded-2xl object-contain shadow-sm sm:h-24 sm:w-24"
-          />
+          <span className="block h-20 w-20 overflow-hidden rounded-full shadow-sm sm:h-24 sm:w-24">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={logo} alt={name} className="size-full scale-[1.05] object-cover" />
+          </span>
         ) : (
           <div className="grid h-20 w-20 place-items-center rounded-2xl bg-primary/10 text-3xl font-extrabold text-primary sm:h-24 sm:w-24">
             {name.charAt(0).toUpperCase()}

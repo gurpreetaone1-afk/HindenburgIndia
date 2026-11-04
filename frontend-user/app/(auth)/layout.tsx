@@ -23,7 +23,13 @@ import { cn } from "@/lib/utils";
 function BrandTile({ logoSrc, alt }: { logoSrc: string | null; alt: string }) {
   const [imgLoaded, setImgLoaded] = useState(false);
   return (
-    <span className="relative grid size-9 place-items-center overflow-hidden rounded-xl bg-gradient-to-br from-primary to-primary/80 text-primary-foreground">
+    <span
+      className={cn(
+        "relative grid place-items-center overflow-hidden bg-gradient-to-br from-primary to-primary/80 text-primary-foreground",
+        // A tenant logo fills a circle (same as the app header's BrandLogo).
+        logoSrc ? "size-10 rounded-full shadow-sm" : "size-9 rounded-xl",
+      )}
+    >
       <Sprout className="size-5" strokeWidth={2.5} />
       {logoSrc && (
         // eslint-disable-next-line @next/next/no-img-element
@@ -33,7 +39,8 @@ function BrandTile({ logoSrc, alt }: { logoSrc: string | null; alt: string }) {
           onLoad={() => setImgLoaded(true)}
           onError={() => setImgLoaded(false)}
           className={cn(
-            "absolute inset-0 rounded-xl bg-card object-contain p-1 transition-opacity",
+            // 5% scale trims the thin margin round-emblem logos have.
+            "absolute inset-0 size-full scale-[1.05] object-cover transition-opacity",
             imgLoaded ? "opacity-100" : "opacity-0",
           )}
         />

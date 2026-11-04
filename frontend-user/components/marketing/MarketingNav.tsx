@@ -85,12 +85,12 @@ export function MarketingNav() {
           <Link href="/" className="flex shrink-0 items-center gap-2.5">
             {logoSrc ? (
               <>
-                <span className="grid size-9 place-items-center rounded-xl bg-mp-primary/10">
+                <span className="block size-10 shrink-0 overflow-hidden rounded-full shadow-sm">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={logoSrc}
                     alt={customName || "Logo"}
-                    className="size-6 rounded object-contain"
+                    className="size-full scale-[1.05] object-cover"
                   />
                 </span>
                 <span className="font-display text-lg font-bold tracking-tight text-black">
