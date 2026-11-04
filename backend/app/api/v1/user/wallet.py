@@ -586,6 +586,9 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         # sparse index makes a duplicate order physically impossible and gives
         # us the lookup for the verify/UTR step.
         idempotency_key=_key,
+        # Univepay: the HB order no. as UTR, so the admin can match it in their
+        # Univepay panel before approving (the callback overwrites it on credit).
+        utr_number=created["order_id"] if provider == "univepay" else None,
     )
     await req.insert()
     return APIResponse(
