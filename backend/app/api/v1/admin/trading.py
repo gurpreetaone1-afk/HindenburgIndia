@@ -2639,7 +2639,8 @@ async def fold_pnl_correction(
 
     Operator: the client must not see "Admin BRK… corrected realised P&L"
     lines, only the trade's corrected "Realized profit/loss". The latest
-    P&L row of the position's closing fills in [lo, hi] takes the delta
+    P&L row (before the correction) of the position's closing fills in
+    [lo, hi] takes the delta
     (amount, balance_after, profit/loss wording). Rows written between the
     two shift their balance snapshots by it, so the bal column stays
     continuous. The correction row stays for the audit but is zeroed and
@@ -2659,13 +2660,15 @@ async def fold_pnl_correction(
     if corr is None or corr.status == TransactionStatus.REVERSED:
         return {"folded": False, "why": "missing or already folded"}
     delta = to_decimal(corr.amount)
+    # Superseded fills count too: a close the admin corrected and THEN
+    # reopened still owns that P&L row; "latest before the correction"
+    # (_id < corr.id) is what picks the right one.
     closing = await Trade.find(
         {
             "user_id": user_id,
             "instrument.token": token,
             "product_type": product_type,
             "pnl_inr": {"$ne": None},
-            "superseded_by_reopen": {"$ne": True},
             "executed_at": {"$gte": lo, "$lte": hi},
         }
     ).to_list()
