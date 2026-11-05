@@ -544,7 +544,8 @@ async def admin_force_cancel(order_id: str, *, reason: str = "ADMIN_FORCE_CANCEL
 async def list_for_user(
     user_id: PydanticObjectId, *, status: str | None = None, limit: int = 100, skip: int = 0
 ) -> list[Order]:
-    q: dict[str, Any] = {"user_id": user_id}
+    # Orders of an admin-deleted position are hidden from the user.
+    q: dict[str, Any] = {"user_id": user_id, "hidden_from_user": {"$ne": True}}
     if status:
         q["status"] = status
     return (

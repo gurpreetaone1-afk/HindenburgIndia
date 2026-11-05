@@ -2584,6 +2584,112 @@ async def position_netting_entries(
     )
 
 
+async def hide_deleted_position_footprint(
+    *,
+    user_id: PydanticObjectId,
+    token: Any,
+    product_type: str,
+    symbol: str,
+    lo: datetime,
+    hi: datetime,
+    position_ids: list[str],
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Take an admin-deleted position off every user-facing list.
+
+    Operator: a deleted trade must not show in ANY user section — not its
+    orders, its brokerage / P&L ledger rows, nor the reversal that undid
+    them. Collects the orders of the position's fills in [lo, hi] (the
+    window the delete supersedes), those orders' ledger rows, any
+    "Reopen {symbol}" reversal in the window, and rows referencing the
+    position itself (admin P&L corrections, the delete's own reversal and
+    settlement unwind).
+
+    Hides them ONLY if they net to zero on the available balance (the
+    delete really returned every rupee): rows -> REVERSED (user lists skip
+    it), orders -> hidden_from_user, and their P&L / charges come off the
+    wallet's realized_pnl / total_charges trackers. Otherwise nothing is
+    hidden — money that doesn't net out must stay visible. Rows already
+    REVERSED aren't counted again, so a re-run is a no-op.
+    """
+    from decimal import Decimal
+
+    from app.models.transaction import TransactionStatus, TransactionType, WalletTransaction
+    from app.models.wallet import Wallet
+    from app.utils.decimal_utils import to_decimal
+
+    fills = await Trade.find(
+        {
+            "user_id": user_id,
+            "instrument.token": token,
+            "product_type": product_type,
+            "executed_at": {"$gte": lo, "$lte": hi},
+        }
+    ).to_list()
+    order_ids = sorted({t.order_id for t in fills if t.order_id})
+    rows = await WalletTransaction.find(
+        {
+            "user_id": user_id,
+            "status": {"$ne": TransactionStatus.REVERSED.value},
+            "$or": [
+                {"reference_type": "ORDER", "reference_id": {"$in": [str(o) for o in order_ids]}},
+                {"reference_type": "Position", "reference_id": {"$in": position_ids}},
+                {
+                    "transaction_type": TransactionType.REVERSAL.value,
+                    "narration": {"$regex": f"^Reopen {re.escape(symbol)} "},
+                    "created_at": {"$gte": lo, "$lte": hi},
+                },
+            ],
+        }
+    ).to_list()
+    # Settlement rows park/unpark a shortfall without moving available cash.
+    settle = {
+        TransactionType.SETTLEMENT_OUTSTANDING_BOOKED,
+        TransactionType.SETTLEMENT_OUTSTANDING_RECOVERY,
+    }
+    net = sum((to_decimal(r.amount) for r in rows if r.transaction_type not in settle), Decimal("0"))
+    pnl = sum((to_decimal(r.amount) for r in rows if r.transaction_type == TransactionType.PNL), Decimal("0"))
+    charges = sum(
+        (abs(to_decimal(r.amount)) for r in rows if r.transaction_type == TransactionType.CHARGES),
+        Decimal("0"),
+    )
+    out = {
+        "rows": len(rows),
+        "orders": len(order_ids),
+        "net": str(net),
+        "pnl": str(pnl),
+        "charges": str(charges),
+        "hidden": False,
+    }
+    if not rows or abs(net) > Decimal("0.5"):
+        logger.warning("delete_footprint_not_hidden user=%s symbol=%s %s", user_id, symbol, out)
+        return out
+    if dry_run:
+        return out
+    await WalletTransaction.get_motor_collection().update_many(
+        {"_id": {"$in": [r.id for r in rows]}},
+        {"$set": {"status": TransactionStatus.REVERSED.value}},
+    )
+    if order_ids:
+        await Order.get_motor_collection().update_many(
+            {"_id": {"$in": order_ids}}, {"$set": {"hidden_from_user": True}}
+        )
+    # Bump version so a concurrent version-guarded wallet write retries
+    # instead of overwriting these trackers.
+    await Wallet.get_motor_collection().update_one(
+        {"user_id": user_id},
+        {
+            "$inc": {
+                "realized_pnl": Decimal128(str(-pnl)),
+                "total_charges": Decimal128(str(-charges)),
+                "version": 1,
+            }
+        },
+    )
+    out["hidden"] = True
+    return out
+
+
 @router.delete("/positions/{position_id}", response_model=APIResponse[dict])
 async def delete_position(
     position_id: str,
@@ -2894,6 +3000,25 @@ async def delete_position(
     except Exception:
         logger.exception("delete_supersede_trades_failed", extra={"pos_id": str(p.id)})
 
+    # ...and its orders + ledger rows off every user-facing list, once the
+    # reversal above has netted them to zero.
+    footprint: dict[str, Any] | None = None
+    if not is_open and p.closed_at is not None:
+        try:
+            from datetime import timedelta as _td_fp
+
+            footprint = await hide_deleted_position_footprint(
+                user_id=p.user_id,
+                token=p.instrument.token,
+                product_type=p.product_type.value,
+                symbol=p.instrument.symbol,
+                lo=(p.opened_at or p.closed_at) - _td_fp(seconds=5),
+                hi=p.closed_at + _td_fp(seconds=3),
+                position_ids=[str(p.id)],
+            )
+        except Exception:
+            logger.exception("delete_hide_footprint_failed", extra={"pos_id": str(p.id)})
+
     instrument_token = p.instrument.token
     segment_type = p.segment_type
     await p.delete()
@@ -2950,6 +3075,7 @@ async def delete_position(
                 "margin_released_inr": (
                     str(to_decimal(p.margin_used or 0)) if is_open else "0"
                 ),
+                "footprint": footprint,
             },
         )
     except Exception:

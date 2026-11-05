@@ -156,7 +156,8 @@ async def ledger(
     to_date: datetime | None = None,
     limit: int = Query(default=200, le=1000),
 ):
-    q: dict[str, Any] = {"user_id": user.id}
+    # REVERSED = rows of an admin-deleted position, hidden from the user.
+    q: dict[str, Any] = {"user_id": user.id, "status": {"$ne": "REVERSED"}}
     if from_date or to_date:
         q["created_at"] = {}
         if from_date:

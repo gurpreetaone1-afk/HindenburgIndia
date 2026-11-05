@@ -1053,8 +1053,11 @@ async def net_phantom_settlement_for_users(
 async def list_transactions(
     user_id: str | PydanticObjectId, *, limit: int = 50, skip: int = 0
 ) -> list[WalletTransaction]:
+    # REVERSED = rows of an admin-deleted position, hidden from the user.
     return (
-        await WalletTransaction.find(WalletTransaction.user_id == PydanticObjectId(user_id))
+        await WalletTransaction.find(
+            {"user_id": PydanticObjectId(user_id), "status": {"$ne": TransactionStatus.REVERSED.value}}
+        )
         .sort("-created_at")
         .skip(skip)
         .limit(limit)
@@ -1171,7 +1174,8 @@ async def recompute_realized_pnl_for_all() -> dict[str, int]:
 
     cursor = txn_coll.aggregate(
         [
-            {"$match": {"transaction_type": "PNL"}},
+            # REVERSED = an admin-deleted position's P&L, already taken off.
+            {"$match": {"transaction_type": "PNL", "status": {"$ne": TransactionStatus.REVERSED.value}}},
             {
                 "$group": {
                     "_id": "$user_id",

@@ -368,6 +368,7 @@ async def tradebook_full_pdf(
     # 2. Money transactions
     tx_q: dict[str, Any] = {
         "user_id": uid,
+        "status": {"$ne": "REVERSED"},  # an admin-deleted position's rows
         "transaction_type": {"$in": [
             TransactionType.DEPOSIT.value,
             TransactionType.WITHDRAWAL.value,
@@ -423,7 +424,7 @@ async def tradebook_full_pdf(
     closed_rows.sort(key=lambda r: r.get("time", ""))
 
     # 3. Money totals
-    all_tx_q: dict[str, Any] = {"user_id": uid}
+    all_tx_q: dict[str, Any] = {"user_id": uid, "status": {"$ne": "REVERSED"}}
     if q_time:
         all_tx_q["created_at"] = q_time
     all_txs = await WalletTransaction.find(all_tx_q).to_list()
