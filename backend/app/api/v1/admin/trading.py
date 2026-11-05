@@ -2599,6 +2599,32 @@ async def position_netting_entries(
     )
 
 
+_CORRECTION_RE = re.compile(r"^Admin \S+ corrected realised P&L on (\S+) \(delta [^)]*\)")
+
+
+async def rename_correction_shortfall_rows(corr) -> int:
+    """Rename the settlement BOOKED row(s) a correction created (its own
+    narration + " — shortfall … booked …") to read like a normal close's
+    shortfall row, so the client sees no "Admin … corrected" text."""
+    from app.models.transaction import TransactionType, WalletTransaction
+
+    coll = WalletTransaction.get_motor_collection()
+    n = 0
+    async for b in coll.find(
+        {
+            "user_id": corr.user_id,
+            "transaction_type": TransactionType.SETTLEMENT_OUTSTANDING_BOOKED.value,
+            "reference_type": corr.reference_type,
+            "reference_id": corr.reference_id,
+            "narration": {"$regex": _CORRECTION_RE.pattern},
+        }
+    ):
+        new = _CORRECTION_RE.sub(r"Realized P&L on \1 close", b["narration"])
+        await coll.update_one({"_id": b["_id"]}, {"$set": {"narration": new}})
+        n += 1
+    return n
+
+
 async def fold_pnl_correction(
     *,
     corr_id: PydanticObjectId,
@@ -2619,9 +2645,11 @@ async def fold_pnl_correction(
     continuous. The correction row stays for the audit but is zeroed and
     REVERSED, so no sum anywhere counts the delta twice. Wallet cash isn't
     touched (the correction already moved it); realized_pnl, which follows
-    the P&L rows, takes the delta. Not folded (correction left as is) when
-    there's no P&L row, or the correction didn't move cash by exactly its
-    amount (a settlement shortfall was involved).
+    the P&L rows, takes the delta. A correction bigger than the cash on hand
+    only debits the cash (its amount); the rest is a separate settlement
+    BOOKED row carrying the correction's narration, which is renamed like a
+    normal close's shortfall row. Not folded (left as is) when there's no
+    P&L row.
     """
     from app.models.transaction import TransactionStatus, TransactionType, WalletTransaction
     from app.models.wallet import Wallet
@@ -2631,8 +2659,6 @@ async def fold_pnl_correction(
     if corr is None or corr.status == TransactionStatus.REVERSED:
         return {"folded": False, "why": "missing or already folded"}
     delta = to_decimal(corr.amount)
-    if to_decimal(corr.balance_after) - to_decimal(corr.balance_before) != delta:
-        return {"folded": False, "why": "cash moved != delta (settlement)"}
     closing = await Trade.find(
         {
             "user_id": user_id,
@@ -2683,6 +2709,7 @@ async def fold_pnl_correction(
         {"user_id": user_id, "_id": {"$gt": pnl_row.id, "$lt": corr.id}},
         {"$inc": {"balance_before": d128, "balance_after": d128}},
     )
+    await rename_correction_shortfall_rows(corr)
     await coll.update_one(
         {"_id": corr.id},
         {
