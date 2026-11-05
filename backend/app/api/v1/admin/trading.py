@@ -1530,7 +1530,7 @@ async def admin_edit_position(
         from app.services import wallet_service as _ws
 
         try:
-            await _ws.adjust(
+            corr = await _ws.adjust(
                 p.user_id,
                 realized_delta,
                 transaction_type=TransactionType.REVERSAL,
@@ -1550,6 +1550,21 @@ async def admin_edit_position(
                 status_code=500,
                 detail=f"Position updated but wallet reversal failed: {e}",
             )
+        # The client sees the trade's corrected P&L line, not a correction.
+        try:
+            from datetime import timedelta as _td_fold
+
+            _now = datetime.now(timezone.utc)
+            await fold_pnl_correction(
+                corr_id=corr.id,
+                user_id=p.user_id,
+                token=p.instrument.token,
+                product_type=p.product_type.value,
+                lo=(p.opened_at or p.closed_at or _now) - _td_fold(seconds=5),
+                hi=(p.closed_at or _now) + _td_fold(seconds=3),
+            )
+        except Exception:
+            logger.exception("admin_edit_fold_correction_failed", extra={"pos_id": str(p.id)})
 
     new_values: dict[str, Any] = {
         "avg_price": str(p.avg_price),
@@ -2582,6 +2597,106 @@ async def position_netting_entries(
             "entries": entries,
         }
     )
+
+
+async def fold_pnl_correction(
+    *,
+    corr_id: PydanticObjectId,
+    user_id: PydanticObjectId,
+    token: Any,
+    product_type: str,
+    lo: datetime,
+    hi: datetime,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Fold an admin realised-P&L correction into the trade's own P&L row.
+
+    Operator: the client must not see "Admin BRK… corrected realised P&L"
+    lines, only the trade's corrected "Realized profit/loss". The latest
+    P&L row of the position's closing fills in [lo, hi] takes the delta
+    (amount, balance_after, profit/loss wording). Rows written between the
+    two shift their balance snapshots by it, so the bal column stays
+    continuous. The correction row stays for the audit but is zeroed and
+    REVERSED, so no sum anywhere counts the delta twice. Wallet cash isn't
+    touched (the correction already moved it); realized_pnl, which follows
+    the P&L rows, takes the delta. Not folded (correction left as is) when
+    there's no P&L row, or the correction didn't move cash by exactly its
+    amount (a settlement shortfall was involved).
+    """
+    from app.models.transaction import TransactionStatus, TransactionType, WalletTransaction
+    from app.models.wallet import Wallet
+    from app.utils.decimal_utils import to_decimal
+
+    corr = await WalletTransaction.get(corr_id)
+    if corr is None or corr.status == TransactionStatus.REVERSED:
+        return {"folded": False, "why": "missing or already folded"}
+    delta = to_decimal(corr.amount)
+    if to_decimal(corr.balance_after) - to_decimal(corr.balance_before) != delta:
+        return {"folded": False, "why": "cash moved != delta (settlement)"}
+    closing = await Trade.find(
+        {
+            "user_id": user_id,
+            "instrument.token": token,
+            "product_type": product_type,
+            "pnl_inr": {"$ne": None},
+            "superseded_by_reopen": {"$ne": True},
+            "executed_at": {"$gte": lo, "$lte": hi},
+        }
+    ).to_list()
+    refs = [str(t.order_id) for t in closing if t.order_id]
+    pnl_row = (
+        await WalletTransaction.find(
+            {
+                "user_id": user_id,
+                "transaction_type": TransactionType.PNL.value,
+                "reference_type": "ORDER",
+                "reference_id": {"$in": refs},
+                "status": {"$ne": TransactionStatus.REVERSED.value},
+                "_id": {"$lt": corr.id},
+            }
+        )
+        .sort("-_id")
+        .first_or_none()
+        if refs
+        else None
+    )
+    if pnl_row is None:
+        return {"folded": False, "why": "no P&L row for the position"}
+    new_amt = to_decimal(pnl_row.amount) + delta
+    narration = re.sub(
+        r"^Realized (profit|loss)",
+        "Realized loss" if new_amt < 0 else "Realized profit",
+        pnl_row.narration or "",
+    )
+    out = {"folded": not dry_run, "delta": str(delta), "pnl_row": pnl_row.narration, "new_amount": str(new_amt)}
+    if dry_run:
+        return out
+    coll = WalletTransaction.get_motor_collection()
+    d128 = Decimal128(str(delta))
+    await coll.update_one(
+        {"_id": pnl_row.id},
+        {"$set": {"amount": Decimal128(str(new_amt)), "narration": narration}, "$inc": {"balance_after": d128}},
+    )
+    # ponytail: a row inserted concurrently with the fold may miss the shift;
+    # it only affects that row's displayed balance snapshot.
+    await coll.update_many(
+        {"user_id": user_id, "_id": {"$gt": pnl_row.id, "$lt": corr.id}},
+        {"$inc": {"balance_before": d128, "balance_after": d128}},
+    )
+    await coll.update_one(
+        {"_id": corr.id},
+        {
+            "$set": {
+                "amount": Decimal128("0"),
+                "status": TransactionStatus.REVERSED.value,
+                "narration": f"{corr.narration} [folded into the P&L row]",
+            }
+        },
+    )
+    await Wallet.get_motor_collection().update_one(
+        {"user_id": user_id}, {"$inc": {"realized_pnl": d128, "version": 1}}
+    )
+    return out
 
 
 async def hide_deleted_position_footprint(
