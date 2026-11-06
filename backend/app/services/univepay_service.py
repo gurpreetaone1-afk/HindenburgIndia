@@ -168,6 +168,18 @@ async def handle_notify(form: dict[str, str]) -> str:
         return problem
     if req.status == DepositStatus.APPROVED:
         return "already credited"
+    if req.status == DepositStatus.REJECTED:
+        # The admin rejected it from the pay-in queue, but Univepay has now
+        # signed it as PAID: the user's money arrived, so it must still be
+        # credited. Atomic REJECTED -> PENDING, then the usual credit claim.
+        revived = await DepositRequest.get_motor_collection().find_one_and_update(
+            {"_id": req.id, "status": DepositStatus.REJECTED.value},
+            {"$set": {"status": DepositStatus.PENDING.value}},
+        )
+        if revived is None:
+            return "deposit changed meanwhile"
+        logger.warning("univepay_notify_paid_after_reject traceno=%s", traceno)
+        req.status = DepositStatus.PENDING
     if req.status != DepositStatus.PENDING:
         return f"deposit {req.status}"
     ref = str(form.get("SerialNo") or "").strip() or traceno

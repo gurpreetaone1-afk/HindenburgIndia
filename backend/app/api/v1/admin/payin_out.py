@@ -243,10 +243,13 @@ async def list_deposits(
     # one must NEVER be hand-approved into free money, and if the user never
     # pays the reconcile loop auto-rejects it. Gateway deposits surface here
     # only once credited (APPROVED) or auto-rejected — records, not requests.
+    # Univepay is the exception: its pending orders show (UTR = our HB order
+    # no.) so the admin can check them in the Univepay panel and REJECT the
+    # unpaid ones; approving stays blocked (only Univepay's callback credits).
     q["$nor"] = [
         {
             "status": DepositStatus.PENDING.value,
-            "idempotency_key": {"$regex": "^(divinepay|payfromupi|okpay|univepay):"},
+            "idempotency_key": {"$regex": "^(divinepay|payfromupi|okpay):"},
         }
     ]
 
@@ -286,6 +289,8 @@ async def list_deposits(
                     "admin_remark": r.admin_remark,
                     "created_at": r.created_at,
                     "processed_at": r.processed_at,
+                    # Online gateway (e.g. "univepay"): the UI hides Approve.
+                    "gateway": _gateway_of(r),
                     "user_settlement_outstanding": outstanding_map.get(str(r.user_id), "0"),
                     **owner_fields(owner_map.get(str(r.user_id))),
                 }
@@ -299,6 +304,15 @@ async def list_deposits(
             },
         }
     )
+
+
+_GATEWAYS = {"divinepay", "payfromupi", "okpay", "univepay"}
+
+
+def _gateway_of(r: DepositRequest) -> str | None:
+    """The online gateway a deposit went through ("univepay", ...), else None."""
+    prefix = (r.idempotency_key or "").split(":", 1)[0]
+    return prefix if prefix in _GATEWAYS else None
 
 
 @router.post("/deposits/{deposit_id}/approve", response_model=APIResponse[dict])
@@ -315,7 +329,7 @@ async def approve_deposit(
     # Online-gateway deposits credit automatically when the user actually pays
     # (verified against the gateway) — they can NEVER be hand-approved, else an
     # admin could credit a payment the user never made.
-    if (r.idempotency_key or "").split(":", 1)[0] in {"divinepay", "payfromupi", "okpay", "univepay"}:
+    if _gateway_of(r):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -422,12 +436,24 @@ async def reject_deposit(
     await assert_user_in_scope(admin, r.user_id)
     if r.status != DepositStatus.PENDING:
         raise HTTPException(status_code=400, detail="Already processed")
-    r.status = DepositStatus.REJECTED
-    r.admin_remark = payload.admin_remark
-    r.processed_by = admin.id
-    r.processed_at = now_utc()
+    # Atomic PENDING -> REJECTED: a whole-doc save() could overwrite a gateway
+    # callback that credited this deposit a moment ago (APPROVED, money moved).
+    processed_at = now_utc()
+    claimed = await DepositRequest.get_motor_collection().find_one_and_update(
+        {"_id": r.id, "status": DepositStatus.PENDING.value},
+        {
+            "$set": {
+                "status": DepositStatus.REJECTED.value,
+                "admin_remark": payload.admin_remark,
+                "processed_by": admin.id,
+                "processed_at": processed_at,
+                "updated_at": processed_at,
+            }
+        },
+    )
+    if claimed is None:
+        raise HTTPException(status_code=400, detail="Already processed")
     await asyncio.gather(
-        r.save(),
         log_event(
             action=AuditAction.REJECT,
             entity_type="DepositRequest",

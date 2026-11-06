@@ -238,16 +238,19 @@ export function DepositsPanel() {
       render: (r) =>
         r.status === "PENDING" ? (
           <div className="flex justify-end gap-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Approve"
-              disabled={!canMutate || busy.has(r.id)}
-              title={canMutate ? undefined : "View-only access"}
-              onClick={() => canMutate && approve(r.id)}
-            >
-              <Check className="size-4 text-primary" />
-            </Button>
+            {/* Online gateway deposits credit only from the gateway: no Approve. */}
+            {!r.gateway && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Approve"
+                disabled={!canMutate || busy.has(r.id)}
+                title={canMutate ? undefined : "View-only access"}
+                onClick={() => canMutate && approve(r.id)}
+              >
+                <Check className="size-4 text-primary" />
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon"
@@ -552,16 +555,19 @@ function DepositMobileCard({
         )}
         {isPending && (
           <>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-9 flex-1 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500 hover:text-white dark:text-emerald-400"
-              disabled={!canMutate || busy}
-              onClick={onApprove}
-              title={canMutate ? "Approve deposit" : "View-only access"}
-            >
-              <Check className="size-4" /> Approve
-            </Button>
+            {/* Online gateway deposits credit only from the gateway: no Approve. */}
+            {!r.gateway && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-9 flex-1 border-emerald-500/40 text-emerald-600 hover:bg-emerald-500 hover:text-white dark:text-emerald-400"
+                disabled={!canMutate || busy}
+                onClick={onApprove}
+                title={canMutate ? "Approve deposit" : "View-only access"}
+              >
+                <Check className="size-4" /> Approve
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"
