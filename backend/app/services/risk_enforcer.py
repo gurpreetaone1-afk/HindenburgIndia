@@ -303,15 +303,19 @@ async def _enforce_for_user(
         is_before_open,
         is_weekend,
         is_within_open_grace,
+        muhurat_open_now,
         now_ist,
     )
 
     now_now = now_ist()
     is_weekend_now = is_weekend(now_now.date())
+    mu_now = muhurat_open_now(now_now)  # None unless a muhurat day
 
     def _segment_closed(seg: str | None) -> bool:
         if not seg:
             return False
+        if mu_now is not None and seg.upper().startswith(("NSE", "BSE", "MCX", "NFO", "BFO")):
+            return not mu_now
         if is_weekend_now:
             # Indian exchanges + MCX are closed Sat/Sun. is_after_close
             # only handles weekday close-of-day, so OR with a prefix

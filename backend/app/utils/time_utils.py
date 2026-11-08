@@ -48,6 +48,27 @@ def is_weekend(d: date) -> bool:
     return d.weekday() >= 5  # Sat=5, Sun=6
 
 
+# Special sessions on an otherwise-closed day (Diwali Muhurat). On such a
+# date the Indian exchanges (NSE/BSE/NFO/BFO/MCX) are open ONLY inside the
+# window, overriding weekend/holiday/normal hours in every market gate;
+# forex/crypto are unaffected. Add a date here AND in frontend-user +
+# APK marketHours.ts (MUHURAT_SESSIONS).
+MUHURAT_SESSIONS: dict[date, tuple[time, time]] = {
+    date(2026, 11, 8): (time(14, 20), time(15, 40)),
+}
+
+
+def muhurat_window(d: date) -> tuple[time, time] | None:
+    return MUHURAT_SESSIONS.get(d)
+
+
+def muhurat_open_now(at: datetime) -> bool | None:
+    """None = not a muhurat day (use the normal rules); else open or not."""
+    ist = to_ist(at)
+    w = muhurat_window(ist.date())
+    return None if w is None else w[0] <= ist.time() <= w[1]
+
+
 def is_market_open(at: datetime | None = None) -> bool:
     """Naive check — does NOT consider holidays. The HolidayService overlays that."""
     now = to_ist(at or now_ist())

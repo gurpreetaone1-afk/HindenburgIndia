@@ -37,6 +37,18 @@ function _istDay(date: Date): number {
   return ist.getUTCDay();
 }
 
+/** Special sessions (Diwali Muhurat): Indian exchanges are open ONLY inside
+ *  this window that day (IST minutes). Mirror of backend
+ *  `time_utils.MUHURAT_SESSIONS` — add a date in both. */
+const MUHURAT_SESSIONS: Record<string, [number, number]> = {
+  "2026-11-08": [14 * 60 + 20, 15 * 60 + 40],
+};
+
+/** IST calendar date as "YYYY-MM-DD". */
+function _istDateKey(date: Date): string {
+  return new Date(date.getTime() + (5 * 60 + 30) * 60_000).toISOString().slice(0, 10);
+}
+
 /**
  * Returns true when the segment's exchange is currently accepting trades.
  *
@@ -77,6 +89,10 @@ export function isInstrumentMarketOpen(
     if (day === 0 && min < 21 * 60) return false; // Sun before 21:00 IST
     return true;
   }
+
+  // Muhurat day: the special window decides for NSE/BSE/MCX.
+  const mu = MUHURAT_SESSIONS[_istDateKey(now)];
+  if (mu) return min >= mu[0] && min <= mu[1];
 
   // MCX commodities: Mon-Fri 09:00-23:30 IST (evening session merged).
   if (seg.startsWith("MCX") || exch === "MCX") {

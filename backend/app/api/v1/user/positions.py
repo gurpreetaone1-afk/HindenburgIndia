@@ -81,6 +81,11 @@ def _is_segment_market_open_now(segment_type: str | None) -> bool:
             return False
         return True
     now2 = now_ist()
+    from app.utils.time_utils import muhurat_open_now
+
+    _mu = muhurat_open_now(now2)  # muhurat day: its window decides
+    if _mu is not None:
+        return _mu
     wd2 = now2.weekday()
     if wd2 >= 5:  # Weekend
         return False

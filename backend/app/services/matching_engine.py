@@ -684,15 +684,19 @@ async def trigger_pending_orders() -> int:
         is_before_open,
         is_weekend,
         is_within_open_grace,
+        muhurat_open_now,
         now_ist as _now_ist_pend,
     )
 
     _now_pend = _now_ist_pend()
     _is_weekend_pend = is_weekend(_now_pend.date())
+    _mu_pend = muhurat_open_now(_now_pend)  # None unless a muhurat day
 
     def _order_segment_closed(seg: str | None) -> bool:
         if not seg:
             return False
+        if _mu_pend is not None and seg.upper().startswith(("NSE", "BSE", "MCX", "NFO", "BFO")):
+            return not _mu_pend
         if _is_weekend_pend and seg.upper().startswith(("NSE", "BSE", "MCX", "NFO", "BFO")):
             return True
         # Out of session = past close (15:30→midnight) OR before open

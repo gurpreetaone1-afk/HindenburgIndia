@@ -31,6 +31,8 @@ from app.services.instrument_service import infer_instrument_type_from_symbol
 from app.utils.decimal_utils import to_decimal
 from app.utils.time_utils import (
     is_weekend,
+    muhurat_open_now,
+    muhurat_window,
     is_within_open_grace,
     market_open_time_for_segment,
     now_ist,
@@ -993,10 +995,18 @@ async def validate(
             if wd == 5 or (wd == 6 and ist.hour < 4):
                 raise MarketClosedError("Forex market is closed for the weekend.")
         else:
-            if is_weekend(ist.date()):
+            # Muhurat / special session: its window replaces weekend, holiday
+            # and normal-hours rules for the day.
+            _mu = muhurat_open_now(ist)
+            if _mu is False:
+                _w = muhurat_window(ist.date())
+                raise MarketClosedError(
+                    f"Muhurat session: {_w[0]:%H:%M}–{_w[1]:%H:%M} IST only today."
+                )
+            if _mu is None and is_weekend(ist.date()):
                 raise MarketClosedError("Market is closed (weekend). Place AMO instead.")
             # holiday lookup (only Indian exchanges)
-            h = await TradingHoliday.find_one(
+            h = None if _mu else await TradingHoliday.find_one(
                 TradingHoliday.holiday_date == ist.date(),
                 TradingHoliday.exchange == instrument.exchange,
             )
@@ -1030,7 +1040,9 @@ async def validate(
 
             from app.core.config import settings as cfg
 
-            if is_mcx:
+            if _mu:
+                pass  # inside the muhurat window (checked above)
+            elif is_mcx:
                 # MCX: 09:00 – 23:30 IST (winter) / 23:55 IST (summer evening session)
                 # We use a generous 09:00 – 23:30 window.
                 from datetime import time as _t
