@@ -1,11 +1,11 @@
-"""Regression: a weekly-settlement loss parked in settlement_outstanding while
-the user's money sat in carried margin is a phantom, recovered from the
-user's own funds (CL30021620, 2026-W45: ₹20,493.34 stayed "owed" after
-Monday's margin release left a ₹58k balance).
+"""Regression: a shortfall booked while the user's own money sits in LOCKED
+margin is a phantom and is recovered from the user's own funds (released
+margin, a later trading profit). A shortfall beyond the user's margin is
+genuine and keeps the "user nahi bharega" policy; deposits never recover.
 
-Replays that week: NIFTY NOV short settles at -24,895 with only 4,401.66
-free cash (≈53k in carried margin), NIFTY DEC long settles at +9,483.50,
-then Monday's close releases one position's margin.
+CL30021620, 2026-W45: weekly settlement parked ₹20,493.34 while their cash
+was in carried margin; Monday's margin release left a ₹58k balance with the
+"debt" untouched.
 """
 from decimal import Decimal
 
@@ -17,6 +17,14 @@ from app.models.wallet import Wallet
 from app.services import wallet_service
 
 D = lambda v: Decimal(str(v))  # noqa: E731
+PNL = TransactionType.PNL
+
+
+async def _set(wallet, avail, used):
+    await Wallet.get_motor_collection().update_one(
+        {"_id": wallet.id},
+        {"$set": {"available_balance": Decimal128(avail), "used_margin": Decimal128(used)}},
+    )
 
 
 async def _state(user):
@@ -25,43 +33,56 @@ async def _state(user):
 
 
 @pytest.mark.asyncio
-async def test_weekly_settlement_phantom_is_recovered_from_own_funds(db, user, wallet):
-    await Wallet.get_motor_collection().update_one(
-        {"_id": wallet.id},
-        {"$set": {"available_balance": Decimal128("4401.66"), "used_margin": Decimal128("53000")}},
-    )
+async def test_weekly_settlement_week_replay(db, user, wallet):
+    await _set(wallet, "4401.66", "53000")
     equity_before = D("4401.66") + D("53000")
 
-    # NOV loss: only free cash is debited; the rest is parked as outstanding.
-    w0 = await wallet_service.get_or_create(user.id)
-    await wallet_service.adjust(user.id, D("-24895"), transaction_type=TransactionType.PNL, narration="NOV loss")
-    tracked = await wallet_service.track_weekly_phantom(user.id, w0.settlement_outstanding, w0.used_margin)
-    assert tracked == D("20493.34")
-    assert await wallet_service.net_weekly_phantom(user.id) is None  # no free cash yet
+    # NOV loss hits free cash only (margin carries): the rest is a phantom.
+    await wallet_service.adjust(user.id, D("-24895"), transaction_type=PNL, narration="NOV loss")
+    assert await _state(user) == (D("0"), D("53000"), D("20493.34"), D("20493.34"))
 
-    # DEC profit later in the same batch covers part of it right away.
-    await wallet_service.adjust(user.id, D("9483.50"), transaction_type=TransactionType.PNL, narration="DEC profit")
-    assert await wallet_service.net_weekly_phantom(user.id) is not None
+    # DEC profit later in the same batch is recovered from right away.
+    await wallet_service.adjust(user.id, D("9483.50"), transaction_type=PNL, narration="DEC profit")
     assert await _state(user) == (D("0"), D("53000"), D("11009.84"), D("11009.84"))
 
-    # Monday: a carried position closes, its margin is released -> rest recovered.
+    # Monday: a carried position closes, its margin comes back -> the rest.
     await wallet_service.release_margin(user.id, D("26500"))
     avail, used, out, phantom = await _state(user)
     assert (out, phantom) == (D("0"), D("0"))
-    # Equity-neutral: only the two trades' net P&L moved the user's money.
-    assert avail + used - out == equity_before - D("24895") + D("9483.50")
+    assert avail + used - out == equity_before - D("24895") + D("9483.50")  # equity-neutral
 
 
 @pytest.mark.asyncio
-async def test_genuine_shortfall_beyond_margin_is_not_tracked(db, user, wallet):
-    # No margin locked: a loss beyond the cash is a real shortfall (policy:
-    # "user nahi bharega") and must not be recovered from later money.
-    await Wallet.get_motor_collection().update_one(
-        {"_id": wallet.id}, {"$set": {"available_balance": Decimal128("1000"), "used_margin": Decimal128("0")}}
-    )
-    w0 = await wallet_service.get_or_create(user.id)
-    await wallet_service.adjust(user.id, D("-3000"), transaction_type=TransactionType.PNL, narration="loss")
-    assert await wallet_service.track_weekly_phantom(user.id, w0.settlement_outstanding, w0.used_margin) == D("0")
-    await wallet_service.adjust(user.id, D("5000"), transaction_type=TransactionType.PNL, narration="profit")
-    assert await wallet_service.net_weekly_phantom(user.id) is None
-    assert (await _state(user))[2] == D("2000")  # outstanding untouched
+async def test_close_before_margin_heavy_sibling(db, user, wallet):
+    # Closing a losing position while a sibling still holds 5,000 margin.
+    await _set(wallet, "1000", "5000")
+    await wallet_service.adjust(user.id, D("-3000"), transaction_type=PNL, narration="loss")
+    assert await _state(user) == (D("0"), D("5000"), D("2000"), D("2000"))
+    await wallet_service.release_margin(user.id, D("5000"))  # sibling closes
+    assert await _state(user) == (D("3000"), D("0"), D("0"), D("0"))
+
+
+@pytest.mark.asyncio
+async def test_force_debit_shortfall_is_tracked_too(db, user, wallet):
+    await _set(wallet, "500", "4000")
+    await wallet_service.force_debit(user.id, D("2000"), transaction_type=PNL, narration="stop-out loss")
+    assert await _state(user) == (D("0"), D("4000"), D("1500"), D("1500"))
+    await wallet_service.release_margin(user.id, D("4000"))
+    assert await _state(user) == (D("2500"), D("0"), D("0"), D("0"))
+
+
+@pytest.mark.asyncio
+async def test_genuine_shortfall_is_never_recovered(db, user, wallet):
+    # No margin locked: a loss beyond the cash is a real shortfall.
+    await _set(wallet, "1000", "0")
+    await wallet_service.adjust(user.id, D("-3000"), transaction_type=PNL, narration="loss")
+    await wallet_service.adjust(user.id, D("5000"), transaction_type=PNL, narration="profit")
+    assert await _state(user) == (D("5000"), D("0"), D("2000"), D("0"))
+
+
+@pytest.mark.asyncio
+async def test_deposit_does_not_recover_phantom(db, user, wallet):
+    await _set(wallet, "1000", "5000")
+    await wallet_service.adjust(user.id, D("-3000"), transaction_type=PNL, narration="loss")
+    await wallet_service.adjust(user.id, D("10000"), transaction_type=TransactionType.DEPOSIT, narration="dep")
+    assert await _state(user) == (D("10000"), D("5000"), D("2000"), D("2000"))  # policy: deposits untouched

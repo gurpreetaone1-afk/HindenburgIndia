@@ -173,9 +173,11 @@ async def _settle_one_position(
         return "duplicate"
 
     try:
-        # Snapshot for the phantom-shortfall bookkeeping below.
-        _w_before = await wallet_service.get_or_create(pos.user_id)
         # ── Book realized P&L into the wallet via the existing service ──
+        # (Margin carries here, so a loss only hits free cash; the shortfall
+        # the user's own carried margin covers is tracked as a phantom by
+        # adjust / force_debit and recovered from a later profit in this
+        # batch or the next margin release — wallet_service._phantom_with.)
         if realized != Decimal(0):
             narration = (
                 f"Weekly settlement {batch.week_key}: "
@@ -204,19 +206,6 @@ async def _settle_one_position(
                     )
                 else:
                     raise
-
-        # A loss can only hit free cash here (margin carries), so a shortfall
-        # the user's own carried margin covers is a phantom: track it, and
-        # recover it from the user's cash as it frees up — right away from a
-        # later profit in this batch, else on the margin release.
-        try:
-            if realized < Decimal(0):
-                await wallet_service.track_weekly_phantom(
-                    pos.user_id, _w_before.settlement_outstanding, _w_before.used_margin
-                )
-            await wallet_service.net_weekly_phantom(pos.user_id)
-        except Exception:  # noqa: BLE001 — never fail the settlement on this
-            logger.exception("weekly_settlement_phantom_failed pos=%s", pos.id)
 
         # ── Close the old position (no margin release — margin carries) ──
         now = now_utc()
