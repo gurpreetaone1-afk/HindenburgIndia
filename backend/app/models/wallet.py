@@ -35,6 +35,11 @@ class Wallet(TimestampMixin):
     # for the user; modified only by wallet_service.force_debit and the
     # DEPOSIT recovery branch in wallet_service.adjust.
     settlement_outstanding: Money = Field(default_factory=_zero)
+    # Part of settlement_outstanding a WEEKLY SETTLEMENT booked only because
+    # the user's cash sat in carried margin at that moment. It is netted from
+    # the user's own money as that frees up (a later profit in the batch,
+    # released margin) — see wallet_service.net_weekly_phantom.
+    phantom_settlement: Money = Field(default_factory=_zero)
 
     total_deposits: Money = Field(default_factory=_zero)
     total_withdrawals: Money = Field(default_factory=_zero)

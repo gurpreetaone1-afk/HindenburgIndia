@@ -921,6 +921,13 @@ async def release_margin(user_id: str | PydanticObjectId, amount: Decimal | floa
             balance_after=new_avail,
         )
     )
+    # The freed margin is the user's own money a weekly settlement couldn't
+    # reach: recover any tracked phantom shortfall from it.
+    if to_decimal(getattr(w, "phantom_settlement", None) or 0) > ZERO:
+        try:
+            await net_weekly_phantom(user_id)
+        except Exception:  # pragma: no cover - never fail a release on this
+            logger.exception("net_weekly_phantom_failed user=%s", user_id)
 
 
 async def net_phantom_settlement(
@@ -1023,6 +1030,103 @@ async def net_phantom_settlement(
         new_avail,
         outstanding,
         new_out,
+    )
+    return txn
+
+
+async def track_weekly_phantom(
+    user_id: str | PydanticObjectId,
+    outstanding_before: Decimal | Decimal128 | float | str,
+    used_margin_before: Decimal | Decimal128 | float | str,
+) -> Decimal:
+    """After a weekly-settlement LOSS is booked: mark the shortfall it parked
+    in settlement_outstanding that the user's own locked margin covers.
+
+    Weekly settlement closes + re-opens positions WITHOUT releasing margin,
+    so a loss is debited from free cash only; with the user's money sitting
+    in carried margin, the rest became settlement_outstanding although the
+    user had it (CL30021620: ₹20,493 parked, then Monday's margin release
+    left a ₹58k balance with the "debt" untouched). That much — capped by
+    the margin that will come back — is a phantom, recovered by
+    `net_weekly_phantom`. A shortfall beyond the user's margin is genuine
+    and keeps the "user nahi bharega" policy (never tracked here).
+    """
+    w = await get_or_create(user_id)
+    booked = sub(to_decimal(w.settlement_outstanding), to_decimal(outstanding_before))
+    eligible = min(booked, to_decimal(used_margin_before))
+    if eligible <= ZERO:
+        return ZERO
+    await Wallet.get_motor_collection().update_one(
+        {"_id": w.id},
+        {"$inc": {"phantom_settlement": to_decimal128(eligible), "version": 1}},
+    )
+    return eligible
+
+
+async def net_weekly_phantom(user_id: str | PydanticObjectId) -> WalletTransaction | None:
+    """Recover the tracked weekly-settlement phantom from the user's own cash
+    as it frees up (a later profit in the same batch, released margin).
+
+    Equity-neutral: available_balance and settlement_outstanding drop by the
+    same amount (one SETTLEMENT_OUTSTANDING_RECOVERY row). Never touches
+    settlement that wasn't tracked as phantom.
+    """
+    coll = Wallet.get_motor_collection()
+    for _ in range(8):
+        w = await get_or_create(user_id)
+        phantom = to_decimal(getattr(w, "phantom_settlement", None) or 0)
+        if phantom <= ZERO:
+            return None
+        avail = to_decimal(w.available_balance)
+        outstanding = to_decimal(w.settlement_outstanding)
+        recover = min(phantom, outstanding, avail)
+        if outstanding <= ZERO:
+            # Cleared some other way — stop tracking.
+            await coll.update_one(
+                {"_id": w.id, "version": w.version},
+                {"$set": {"phantom_settlement": to_decimal128(ZERO)}, "$inc": {"version": 1}},
+            )
+            return None
+        if recover <= ZERO:
+            return None
+        new_avail = sub(avail, recover)
+        res = await coll.update_one(
+            {"_id": w.id, "version": w.version},
+            {
+                "$set": {
+                    "available_balance": to_decimal128(new_avail),
+                    "settlement_outstanding": to_decimal128(sub(outstanding, recover)),
+                    "phantom_settlement": to_decimal128(sub(phantom, recover)),
+                },
+                "$inc": {"version": 1},
+            },
+        )
+        if res.modified_count == 1:
+            break
+    else:
+        logger.error("net_weekly_phantom_contended user=%s (gave up after retries)", user_id)
+        return None
+
+    txn = WalletTransaction(
+        user_id=w.user_id,
+        transaction_type=TransactionType.SETTLEMENT_OUTSTANDING_RECOVERY,
+        amount=Decimal128(str(-recover)),
+        balance_before=Decimal128(str(avail)),
+        balance_after=Decimal128(str(new_avail)),
+        reference_type="WEEKLY_SETTLEMENT",
+        narration=(
+            f"Weekly settlement shortfall ₹{recover} recovered from your own funds "
+            f"(margin released / profit)"
+        ),
+        status=TransactionStatus.COMPLETED,
+    )
+    await txn.insert()
+    asyncio.create_task(
+        _publish_wallet_event(user_id, reason="SETTLEMENT_NETTED", amount=-recover, balance_after=new_avail)
+    )
+    logger.info(
+        "weekly_phantom_netted user=%s recover=%s avail=%s->%s outstanding=%s->%s",
+        user_id, recover, avail, new_avail, outstanding, sub(outstanding, recover),
     )
     return txn
 
