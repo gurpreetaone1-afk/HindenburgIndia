@@ -130,6 +130,11 @@ function CloseReasonChip({ reason }: { reason?: string | null }) {
 // "17 May, 22:34" (DD MMM, HH:mm in IST 24-h). Backend serialises
 // opened_at as naive UTC; parseDate() pins the `Z` so the conversion to
 // Asia/Kolkata happens correctly.
+/** Opening side of a position row ("BUY" / "SELL"). */
+function sideOf(r: any): string {
+  return String(r.opened_side || (Number(r.quantity) >= 0 ? "BUY" : "SELL")).toUpperCase();
+}
+
 function fmtOpenedAt(v: string | Date | null | undefined): string {
   const d = parseDate(v);
   if (!d) return "—";
@@ -787,7 +792,18 @@ function AdminPositionsInner() {
       key: "avg_price",
       header: "Open Price",
       align: "right" as const,
-      render: (r: any) => fmtFeedPrice(r.avg_price, r.currency_quote),
+      // Closed tab: the opening leg's side + time under the price, so the
+      // admin sees when each price traded (operator ask).
+      render: (r: any) => (
+        <div className="whitespace-nowrap">
+          <div>{fmtFeedPrice(r.avg_price, r.currency_quote)}</div>
+          {tab === "closed" && (
+            <div className="text-[11px] text-muted-foreground font-tabular">
+              {sideOf(r)} · {fmtOpenedAt(r.opened_at)}
+            </div>
+          )}
+        </div>
+      ),
     },
     {
       // For closed positions, `ltp` was set to the actual close price by
@@ -799,9 +815,14 @@ function AdminPositionsInner() {
       header: tab === "closed" ? "Close" : "LTP",
       align: "right" as const,
       render: (r: any) => (
-        <span title={r.status === "CLOSED" ? "Closing price" : "Live LTP"}>
-          {fmtFeedPrice(r.ltp, r.currency_quote)}
-        </span>
+        <div className="whitespace-nowrap" title={r.status === "CLOSED" ? "Closing price" : "Live LTP"}>
+          <div>{fmtFeedPrice(r.ltp, r.currency_quote)}</div>
+          {tab === "closed" && (
+            <div className="text-[11px] text-muted-foreground font-tabular">
+              {sideOf(r) === "BUY" ? "SELL" : "BUY"} · {fmtOpenedAt(r.closed_at)}
+            </div>
+          )}
+        </div>
       ),
     },
     {
