@@ -97,12 +97,11 @@ async def execute_market_order(
     except Exception:
         logger.exception("matching_engine_quote_fetch_failed")
 
-    # Choose the live close-side price for this action.
-    live_side: Decimal | None
-    if order.action == OrderAction.BUY:
-        live_side = ask if (ask is not None and ask > 0) else None
-    else:
-        live_side = bid if (bid is not None and bid > 0) else None
+    # Choose the live close-side price for this action — ignoring a junk
+    # depth level more than 25% off the last trade (falls back to LTP).
+    live_side: Decimal | None = market_data_service.safe_close_side(
+        raw_ltp, ask if order.action == OrderAction.BUY else bid
+    )
 
     # Admin "Manual" entry — an operator-supplied fill price that must be
     # honoured EXACTLY. No slippage cap, no live-side override: the admin

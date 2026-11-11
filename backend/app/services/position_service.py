@@ -1932,14 +1932,13 @@ async def refresh_unrealized_pnl(
     # `prefetched_quote` lets the risk enforcer pass in the WS-state dict
     # directly (zero network), bypassing get_quote / _overlay_all / REST.
     try:
-        if prefetched_quote is not None:
-            q = prefetched_quote
-        else:
-            from app.services.market_data_service import get_quote
-            q = await get_quote(position.instrument.token)
-        side_raw = q.get("bid") if qty > 0 else q.get("ask")
-        side = to_decimal(side_raw) if side_raw not in (None, 0, "0") else None
-        if side is not None and side > 0:
+        from app.services.market_data_service import get_quote, safe_close_side
+
+        q = prefetched_quote if prefetched_quote is not None else await get_quote(position.instrument.token)
+        # Junk depth (> 25% off the last trade) is ignored → mark at LTP. This
+        # mark drives M2M, SL/TP and the stop-out decision AND its fill price.
+        side = safe_close_side(ltp, q.get("bid") if qty > 0 else q.get("ask"))
+        if side is not None:
             mark = side
     except Exception:
         pass

@@ -729,6 +729,30 @@ def is_infoway_lot_segment(segment: str | None) -> bool:
     )
 
 
+# A bid/ask further than this from the last traded price is a junk / stale
+# depth level, never a real price to mark or fill at.
+CLOSE_SIDE_MAX_DEVIATION = Decimal("0.25")
+
+
+def safe_close_side(ltp: Any, side: Any) -> Decimal | None:
+    """`side` (bid/ask) when it is a usable price within 25% of `ltp`, else
+    None — the caller then uses the LTP. Backend twin of the APK's
+    `safeCloseSide` (same 25% rule).
+
+    2026-11-10 16:45 IST, MCX evening-only session with no trade yet: illiquid
+    options carried junk depth (SILVER26NOV240000CE bid 25 vs LTP 216.5,
+    CRUDEOIL26NOV12000CE bid 0.10 vs 6.3, CRUDEOIL26NOV13000CE ask 20 vs 5.4).
+    Marking M2M on it stopped out 5 users, and the closes filled there.
+    """
+    s = to_decimal(side) if side not in (None, 0, "0", "") else None
+    if s is None or s <= 0:
+        return None
+    last = to_decimal(ltp) if ltp not in (None, "") else Decimal(0)
+    if last <= 0:
+        return s  # no trade price to compare against — depth is all we have
+    return s if abs(s - last) / last <= CLOSE_SIDE_MAX_DEVIATION else None
+
+
 def is_usd_quoted_segment(segment: str | None) -> bool:
     """Whether the segment's P&L / margin needs USD→INR conversion.
 
