@@ -55,48 +55,69 @@ def _ser_user_override(s) -> dict:
 
 
 # ── Segment matrix ────────────────────────────────────────────────
-def _merge_with_override(seg, override, scope: str) -> dict:
-    """Returns the platform segment dict with this pool's overrides
-    layered on top. Override-null fields fall back to the platform value
-    so the UI shows what the pool's users actually see. `scope` is one of
-    ``GLOBAL`` / ``SUPER_ADMIN`` / ``SUB_ADMIN`` / ``BROKER``."""
+def _merge_with_override(seg, overrides: list, scope: str) -> dict:
+    """Returns the platform segment dict with the caller's pool cascade
+    layered on top — `overrides` is most specific first (own tier, then
+    every tier above it), first non-null per field wins, platform value
+    last. That is exactly what `get_effective_settings` applies to the
+    pool's users, so the matrix shows what they actually get. Showing only
+    the own tier over the bare platform seed hid the admin / super-admin
+    values (e.g. option buy/sell margin) that users really got, so a
+    broker's edits looked like they never reached the users. `scope` is
+    one of ``SUPER_ADMIN`` / ``SUB_ADMIN`` / ``BROKER``."""
     base = _ser_segment(seg)
     base["scope"] = scope
-    if override is None:
-        return base
-    over = override.model_dump(
-        exclude={
-            "id",
-            "revision_id",
-            "sub_admin_id",
-            "super_admin_id",
-            "broker_id",
-            "segment_name",
-            "created_at",
-            "updated_at",
-        }
-    )
-    for k, v in over.items():
-        if v is not None:
-            base[k] = v
-    base["override_id"] = str(override.id)
+    for override in reversed(overrides):
+        if override is None:
+            continue
+        over = override.model_dump(
+            exclude={
+                "id",
+                "revision_id",
+                "sub_admin_id",
+                "super_admin_id",
+                "broker_id",
+                "segment_name",
+                "created_at",
+                "updated_at",
+            }
+        )
+        for k, v in over.items():
+            if v is not None:
+                base[k] = v
+    if overrides and overrides[0] is not None:
+        base["override_id"] = str(overrides[0].id)
     return base
 
 
-async def _load_pool_overrides(admin) -> tuple[dict, str]:
-    """Returns `(overrides_by_segment_name, scope_label)` for the caller's
-    tier. Each tier owns its own override table; the resolver applies
-    them independently so super-admin's edits never leak into admin /
-    broker pools (and vice-versa)."""
-    if admin.role == UserRole.SUPER_ADMIN:
-        rows = await svc.list_super_admin_segment_overrides(admin.id)
-        return {o.segment_name: o for o in rows}, "SUPER_ADMIN"
+def _by_name(rows) -> dict:
+    return {o.segment_name: o for o in rows}
+
+
+async def _load_pool_overrides(admin) -> tuple[list[dict], str]:
+    """Returns `(chain, scope_label)`: override maps (segment_name → row)
+    for the caller's own tier first, then each tier above it — broker →
+    its admin → super-admin. Writes still go only to the caller's own
+    table; the upper tiers are read so the matrix shows the values the
+    caller's users inherit for every field the caller hasn't set."""
+    chain: list[dict] = []
     if admin.role == UserRole.BROKER:
-        rows = await svc.list_broker_segment_overrides(admin.id)
-        return {o.segment_name: o for o in rows}, "BROKER"
-    # ADMIN
-    rows = await svc.list_sub_admin_segment_overrides(admin.id)
-    return {o.segment_name: o for o in rows}, "SUB_ADMIN"
+        chain.append(_by_name(await svc.list_broker_segment_overrides(admin.id)))
+    admin_id = admin.id if admin.role not in (UserRole.SUPER_ADMIN, UserRole.BROKER) else (
+        admin.assigned_admin_id if admin.role == UserRole.BROKER else None
+    )
+    if admin_id is not None:
+        chain.append(_by_name(await svc.list_sub_admin_segment_overrides(admin_id)))
+    sa_id = admin.id if admin.role == UserRole.SUPER_ADMIN else await svc._resolve_super_admin_id()
+    if sa_id is not None:
+        chain.append(_by_name(await svc.list_super_admin_segment_overrides(sa_id)))
+    scope = {UserRole.SUPER_ADMIN: "SUPER_ADMIN", UserRole.BROKER: "BROKER"}.get(admin.role, "SUB_ADMIN")
+    return chain, scope
+
+
+async def _merged(admin, seg) -> dict:
+    chain, scope = await _load_pool_overrides(admin)
+    return _merge_with_override(seg, [m.get(seg.name) for m in chain], scope)
 
 
 @router.get("/segments", response_model=APIResponse[list])
@@ -105,9 +126,9 @@ async def list_segments(
     _: None = Depends(require_perm("segment_settings", "read")),
 ):
     rows = await svc.list_segments()
-    by_name, scope = await _load_pool_overrides(admin)
+    chain, scope = await _load_pool_overrides(admin)
     return APIResponse(
-        data=[_merge_with_override(r, by_name.get(r.name), scope) for r in rows]
+        data=[_merge_with_override(r, [m.get(r.name) for m in chain], scope) for r in rows]
     )
 
 
@@ -150,14 +171,7 @@ async def get_segment(
     _: None = Depends(require_perm("segment_settings", "read")),
 ):
     seg = await svc.get_segment(segment_id)
-    if admin.role == UserRole.SUPER_ADMIN:
-        over = await svc.get_super_admin_segment_override(admin.id, seg.name)
-        return APIResponse(data=_merge_with_override(seg, over, "SUPER_ADMIN"))
-    if admin.role == UserRole.BROKER:
-        over = await svc.get_broker_segment_override(admin.id, seg.name)
-        return APIResponse(data=_merge_with_override(seg, over, "BROKER"))
-    over = await svc.get_sub_admin_segment_override(admin.id, seg.name)
-    return APIResponse(data=_merge_with_override(seg, over, "SUB_ADMIN"))
+    return APIResponse(data=await _merged(admin, seg))
 
 
 @router.put("/segments/{segment_id}", response_model=APIResponse[dict])
@@ -183,15 +197,12 @@ async def update_segment(
 
     seg = await svc.get_segment(segment_id)
     if admin.role == UserRole.SUPER_ADMIN:
-        over = await svc.upsert_super_admin_segment_override(admin.id, seg.name, patch)
-        scope = "SUPER_ADMIN"
+        await svc.upsert_super_admin_segment_override(admin.id, seg.name, patch)
     elif admin.role == UserRole.BROKER:
-        over = await svc.upsert_broker_segment_override(admin.id, seg.name, patch)
-        scope = "BROKER"
+        await svc.upsert_broker_segment_override(admin.id, seg.name, patch)
     else:
-        over = await svc.upsert_sub_admin_segment_override(admin.id, seg.name, patch)
-        scope = "SUB_ADMIN"
-    return APIResponse(data=_merge_with_override(seg, over, scope))
+        await svc.upsert_sub_admin_segment_override(admin.id, seg.name, patch)
+    return APIResponse(data=await _merged(admin, seg))
 
 
 @router.get("/diagnose", response_model=APIResponse[dict])
