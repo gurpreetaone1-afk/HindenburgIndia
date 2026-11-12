@@ -262,6 +262,10 @@ class User(TimestampMixin):
     # are set, this admin's users pay online through Univepay. Deposit-only.
     univepay_merchno: str | None = None
     univepay_key: str | None = None
+    # Per-admin Monepay merchant (services/monepay_service.py): when both are
+    # set, this admin's deposits above ₹3,000 go to Monepay instead.
+    monepay_api_key: str | None = None
+    monepay_api_secret: str | None = None
 
     # Sub-admin profile — only populated for role == ADMIN.
     admin_permissions: AdminPermissions | None = None

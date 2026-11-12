@@ -527,19 +527,35 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         user_id=user.id, rule_type="DEPOSIT", amount=float(amount), user_remark=None
     )
 
-    from app.services import okpay_service, payfromupi_service, univepay_service
+    from app.services import monepay_service, okpay_service, payfromupi_service, univepay_service
     _admin_provider, token = await _gateway_provider_for(user)
     provider = pick["id"]
+    admin = await _owning_admin(user) if provider == "univepay" else None
+    # Same "Online payment" option in the app: above ₹3,000 it goes to the
+    # admin's Monepay merchant when one is wired (sharemarket only).
+    mp_creds = monepay_service.creds_of(admin) if admin is not None else None
+    if mp_creds and amount > monepay_service.ROUTE_ABOVE:
+        provider = "monepay"
+    # Back to the admin's own site when it has a live custom domain.
+    site = (
+        admin.custom_domain
+        if admin is not None and admin.custom_domain and admin.custom_domain_status == "READY"
+        else "hindenburgindia.live"
+    )
     try:
-        if provider == "univepay":
-            admin = await _owning_admin(user)
-            merchno, ukey = univepay_service.creds_of(admin) or ("", "")
-            # Back to the admin's own site when it has a live custom domain.
-            site = (
-                admin.custom_domain
-                if admin is not None and admin.custom_domain and admin.custom_domain_status == "READY"
-                else "hindenburgindia.live"
+        if provider == "monepay":
+            created = await monepay_service.create_payin(
+                amount,
+                api_key=mp_creds[0],
+                secret=mp_creds[1],
+                name=user.full_name or user.user_code or "User",
+                email=user.email or "",
+                mobile=getattr(user, "mobile", None) or "",
+                return_url=f"https://{site}/wallet?deposit=done",
             )
+            _key = f"monepay:{created['order_id']}"
+        elif provider == "univepay":
+            merchno, ukey = univepay_service.creds_of(admin) or ("", "")
             created = await univepay_service.create_payin(
                 amount,
                 merchno=merchno,
@@ -573,6 +589,7 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         payfromupi_service.PayFromUpiError,
         okpay_service.OkPayError,
         univepay_service.UnivepayError,
+        monepay_service.MonepayError,
     ) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -588,7 +605,7 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         idempotency_key=_key,
         # Univepay: our HB order no. as UTR so the admin can look it up in the
         # Univepay panel (the paid callback overwrites it with Univepay's ref).
-        utr_number=created["order_id"] if provider == "univepay" else None,
+        utr_number=created["order_id"] if provider in ("univepay", "monepay") else None,
     )
     await req.insert()
     return APIResponse(
@@ -623,6 +640,8 @@ async def submit_gateway_utr(payload: dict, user: CurrentUser):
         DepositRequest.idempotency_key == f"okpay:{order_id}"
     ) or await DepositRequest.find_one(
         DepositRequest.idempotency_key == f"univepay:{order_id}"
+    ) or await DepositRequest.find_one(
+        DepositRequest.idempotency_key == f"monepay:{order_id}"
     )
     if req is None or req.user_id != user.id:
         raise HTTPException(status_code=404, detail="Payment not found.")
@@ -631,6 +650,17 @@ async def submit_gateway_utr(payload: dict, user: CurrentUser):
     if req.status != DepositStatus.PENDING:
         raise HTTPException(status_code=400, detail="This payment is no longer pending.")
 
+    if (req.idempotency_key or "").startswith("monepay:"):
+        # Monepay has a status API: ask it now instead of waiting for the callback.
+        from app.services import monepay_service
+
+        try:
+            outcome = await monepay_service.confirm(order_id)
+        except monepay_service.MonepayError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if outcome in ("credited", "already credited"):
+            return APIResponse(data={"status": "success", "credited": True})
+        return APIResponse(data={"status": "failed" if outcome == "marked failed" else "pending", "credited": False})
     # OkPay / Univepay confirm only through their callback (no status API):
     # it has either credited this already (APPROVED, above) or not yet.
     if (req.idempotency_key or "").startswith(("okpay:", "univepay:")):

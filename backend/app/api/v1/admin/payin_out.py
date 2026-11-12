@@ -243,7 +243,7 @@ async def list_deposits(
     # one must NEVER be hand-approved into free money, and if the user never
     # pays the reconcile loop auto-rejects it. Gateway deposits surface here
     # only once credited (APPROVED) or auto-rejected — records, not requests.
-    # Univepay is the exception: its pending orders show (UTR = our HB order
+    # Univepay / Monepay are the exception: their pending orders show (UTR = our HB order
     # no.) so the admin can check them in the Univepay panel and REJECT the
     # unpaid ones; approving stays blocked (only Univepay's callback credits).
     q["$nor"] = [
@@ -306,7 +306,7 @@ async def list_deposits(
     )
 
 
-_GATEWAYS = {"divinepay", "payfromupi", "okpay", "univepay"}
+_GATEWAYS = {"divinepay", "payfromupi", "okpay", "univepay", "monepay"}
 
 
 def _gateway_of(r: DepositRequest) -> str | None:

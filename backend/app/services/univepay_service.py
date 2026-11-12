@@ -140,9 +140,8 @@ def notify_problem(form: dict[str, str], merchno: str, key: str, *, want: Decima
 async def handle_notify(form: dict[str, str]) -> str:
     """Verify a pay-in callback and credit its deposit exactly once. Returns a
     short outcome for the log; never raises on a bad callback."""
-    from app.models.transaction import DepositRequest, DepositStatus
+    from app.models.transaction import DepositRequest
     from app.models.user import User
-    from app.services import divinepay_service
 
     traceno = str(form.get("Traceno") or "").strip()
     req = await DepositRequest.find_one(DepositRequest.idempotency_key == f"{KEY_PREFIX}:{traceno}")
@@ -157,20 +156,38 @@ async def handle_notify(form: dict[str, str]) -> str:
     if problem in ("status FAIL", "status FAILED"):
         # Signed + right merchant (checked before status): the payment really
         # failed, so the deposit shows as failed instead of pending forever.
-        from app.services.payfromupi_service import _reject_deposit
-
-        rejected = await _reject_deposit(req, "Payment failed at Univepay")
-        return "marked failed" if rejected else f"deposit {req.status}"
+        return await reject_failed(req, "Payment failed at Univepay")
     if problem:
         # Field names only (never the key), so the signing rule can be checked
         # against a real callback.
         logger.warning("univepay_notify_rejected traceno=%s: %s fields=%s", traceno, problem, sorted(form))
         return problem
+    ref = str(form.get("SerialNo") or "").strip() or traceno
+    return await credit_paid(
+        req, f"UNIVEPAY-{ref}", narration=f"Deposit via Univepay (order {traceno})", tag="univepay"
+    )
+
+
+async def reject_failed(req, reason: str) -> str:
+    """The gateway itself reported the payment FAILED: show the deposit as
+    failed instead of pending forever (also used by Monepay)."""
+    from app.services.payfromupi_service import _reject_deposit
+
+    rejected = await _reject_deposit(req, reason)
+    return "marked failed" if rejected else f"deposit {req.status}"
+
+
+async def credit_paid(req, utr: str, *, narration: str, tag: str) -> str:
+    """Credit a deposit the gateway has confirmed PAID, exactly once (also
+    used by Monepay)."""
+    from app.models.transaction import DepositRequest, DepositStatus
+    from app.services import divinepay_service
+
     if req.status == DepositStatus.APPROVED:
         return "already credited"
     if req.status == DepositStatus.REJECTED:
-        # The admin rejected it from the pay-in queue, but Univepay has now
-        # signed it as PAID: the user's money arrived, so it must still be
+        # The admin rejected it from the pay-in queue, but the gateway has now
+        # confirmed it PAID: the user's money arrived, so it must still be
         # credited. Atomic REJECTED -> PENDING, then the usual credit claim.
         revived = await DepositRequest.get_motor_collection().find_one_and_update(
             {"_id": req.id, "status": DepositStatus.REJECTED.value},
@@ -178,12 +195,9 @@ async def handle_notify(form: dict[str, str]) -> str:
         )
         if revived is None:
             return "deposit changed meanwhile"
-        logger.warning("univepay_notify_paid_after_reject traceno=%s", traceno)
+        logger.warning("%s_paid_after_reject key=%s", tag, req.idempotency_key)
         req.status = DepositStatus.PENDING
     if req.status != DepositStatus.PENDING:
         return f"deposit {req.status}"
-    ref = str(form.get("SerialNo") or "").strip() or traceno
-    credited = await divinepay_service.credit_deposit(
-        req, f"UNIVEPAY-{ref}", narration=f"Deposit via Univepay (order {traceno})"
-    )
+    credited = await divinepay_service.credit_deposit(req, utr, narration=narration)
     return "credited" if credited else "already credited"
