@@ -531,10 +531,10 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
     _admin_provider, token = await _gateway_provider_for(user)
     provider = pick["id"]
     admin = await _owning_admin(user) if provider == "univepay" else None
-    # Same "Online payment" option in the app: above ₹3,000 it goes to the
+    # Same "Online payment" option in the app: ₹3,000 and up goes to the
     # admin's Monepay merchant when one is wired (sharemarket only).
     mp_creds = monepay_service.creds_of(admin) if admin is not None else None
-    if mp_creds and amount > monepay_service.ROUTE_ABOVE:
+    if mp_creds and amount >= monepay_service.ROUTE_FROM:
         provider = "monepay"
     # Back to the admin's own site when it has a live custom domain.
     site = (

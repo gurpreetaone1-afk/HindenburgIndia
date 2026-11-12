@@ -1,8 +1,8 @@
-"""Monepay (india-pay 4.0) — per-admin online UPI deposits ABOVE ``ROUTE_ABOVE``.
+"""Monepay (india-pay 4.0) — per-admin online UPI deposits of ``ROUTE_FROM`` and up.
 
 Wired for admins carrying ``monepay_api_key`` + ``monepay_api_secret`` on
 their User doc (first: ADM94904072, sharemarket). That admin's users still pay
-up to ₹3,000 through Univepay; a larger deposit is routed here by
+up to ₹2,999 through Univepay; ₹3,000 and above is routed here by
 ``user/wallet.py`` — the app sees one "Online payment" option either way.
 
 Flow, per the merchant integration guide (v1.0, 2025-10-25):
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 PROD_URL = "https://pay.monepay.xyz"
 KEY_PREFIX = "monepay"  # DepositRequest.idempotency_key = "monepay:<clientId>"
-ROUTE_ABOVE = Decimal("3000")  # deposits above this go to Monepay, the rest to Univepay
+ROUTE_FROM = Decimal("3000")  # deposits of this and above go to Monepay, below it to Univepay
 
 
 class MonepayError(Exception):
