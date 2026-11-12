@@ -209,3 +209,40 @@ async def confirm(client_id: str) -> str:
     if str(data.get("clientId") or client_id) != client_id:
         return "wrong order"
     return await _settle(req, data, client_id)
+
+
+async def reconcile_deposits(*, max_age_hours: int = 24) -> int:
+    """Ask Monepay about every PENDING Monepay deposit of the last day and
+    settle it, so a paid deposit lands even when its callback never arrived
+    (Cloudflare 403s a bare Java User-Agent) and the user never taps Check."""
+    from datetime import timedelta
+
+    from app.models.transaction import DepositRequest, DepositStatus
+    from app.utils.time_utils import now_utc
+
+    pending = await DepositRequest.find({
+        "status": DepositStatus.PENDING.value,
+        "idempotency_key": {"$regex": f"^{KEY_PREFIX}:"},
+        "created_at": {"$gte": now_utc() - timedelta(hours=max_age_hours)},
+    }).to_list()
+    credited = 0
+    for req in pending:
+        try:
+            if await confirm(req.idempotency_key.split(":", 1)[1]) == "credited":
+                credited += 1
+        except MonepayError:
+            continue  # gateway hiccup: next tick
+    return credited
+
+
+async def deposit_reconcile_loop(interval_sec: float = 60.0) -> None:
+    import asyncio
+
+    while True:
+        try:
+            n = await reconcile_deposits()
+            if n:
+                logger.info("monepay_reconcile credited=%d", n)
+        except Exception:
+            logger.exception("monepay_reconcile_loop tick failed")
+        await asyncio.sleep(interval_sec)

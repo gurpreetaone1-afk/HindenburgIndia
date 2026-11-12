@@ -810,6 +810,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     )
     setattr(app, "_payfromupi_reconcile_task", pfu_task)
 
+    # Monepay: no reliable callback path through Cloudflare for a Java client,
+    # so poll its status API for pending orders (no-op until an admin has keys).
+    from app.services.monepay_service import deposit_reconcile_loop as _mp_loop
+    mp_task: _asyncio.Task = _asyncio.create_task(
+        _supervise(
+            "monepay_deposit_reconcile",
+            _leader_only("monepay_deposit_reconcile", _mp_loop, interval_sec=60.0),
+        )
+    )
+    setattr(app, "_monepay_reconcile_task", mp_task)
+
     # Tracker self-heal: every 15 min, walk every UserPositionTracker row
     # and recompute it from the live Position docs. Catches any drift
     # introduced by an unexpected restart / fill retry / partial flow,
