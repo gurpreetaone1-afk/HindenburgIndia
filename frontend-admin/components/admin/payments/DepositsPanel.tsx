@@ -176,7 +176,17 @@ export function DepositsPanel() {
       },
     },
     { key: "payment_mode", header: "Mode" },
-    { key: "utr_number", header: "UTR", render: (r) => r.utr_number || "—" },
+    {
+      key: "utr_number",
+      header: "UTR",
+      // Gateway name under the order no. so the admin knows which panel to check.
+      render: (r) => (
+        <div>
+          <div>{r.utr_number || "—"}</div>
+          {r.gateway && <div className="text-[10px] uppercase text-muted-foreground">{r.gateway}</div>}
+        </div>
+      ),
+    },
     { key: "user_remark", header: "Remark", render: (r) => r.user_remark || "—", className: "max-w-[200px] truncate" },
     {
       key: "screenshot",
@@ -528,6 +538,7 @@ function DepositMobileCard({
           <div className="truncate font-mono text-[11px]" title={r.utr_number || "—"}>
             {r.utr_number || "—"}
           </div>
+          {r.gateway && <div className="text-[10px] uppercase text-muted-foreground">{r.gateway}</div>}
         </div>
         {r.user_remark && (
           <div className="col-span-2 min-w-0">
