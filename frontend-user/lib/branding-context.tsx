@@ -377,7 +377,7 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   useEffect(() => {
     if (branding?.signup_enabled === false && /^\/(register|demo)?(\/|$)/.test(pathname || "")) {
-      window.location.replace("/login");
+      window.location.replace("/login" + window.location.search); // keep ?ref=
     }
   }, [branding, pathname]);
 
