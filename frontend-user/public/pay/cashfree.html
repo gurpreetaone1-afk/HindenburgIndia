@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Opening payment…</title>
+<!-- Cashfree checkout for online deposits: backend/app/services/cashfree_service.py
+     sends the user here with ?s=<payment_session_id>. This domain must be
+     whitelisted in the Cashfree dashboard (Developers -> Whitelisting). -->
+<script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
+</head>
+<body style="margin:0;font-family:system-ui,sans-serif;background:#0b0f19;color:#e5e7eb;display:flex;min-height:100vh;align-items:center;justify-content:center;text-align:center;padding:16px">
+<p id="msg">Opening secure payment…</p>
+<script>
+  var s = new URLSearchParams(location.search).get("s");
+  if (!s || typeof Cashfree !== "function") {
+    document.getElementById("msg").textContent = "Could not open the payment page. Please go back and try again.";
+  } else {
+    Cashfree({ mode: "production" }).checkout({ paymentSessionId: s, redirectTarget: "_self" });
+  }
+</script>
+</body>
+</html>

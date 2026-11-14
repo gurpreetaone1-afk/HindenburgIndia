@@ -1,11 +1,14 @@
-"""Cashfree Payment Links — per-admin online UPI/card/netbanking deposits.
+"""Cashfree PG (Orders API) — per-admin online UPI/card/netbanking deposits.
 
 Wired for admins carrying ``cashfree_app_id`` + ``cashfree_secret_key`` on
-their User doc (first: ADM11973635). Their users' "Online payment" opens a
-Cashfree payment link (POST /pg/links); the user pays on Cashfree's page with
-any method it offers.
+their User doc (first: ADM11973635). Their users' "Online payment" creates a
+Cashfree order (POST /pg/orders) and opens ``PAY_PAGE`` — a static page on the
+main site that hands the order's payment_session_id to Cashfree's JS SDK
+checkout. That site must be whitelisted in the Cashfree dashboard
+(Developers -> Whitelisting). (Payment Links would skip the page, but that API
+needs Cashfree's separate approval on the merchant.)
 
-A deposit is credited ONLY when Cashfree's own ``GET /pg/links/{link_id}``
+A deposit is credited ONLY when Cashfree's own ``GET /pg/orders/{order_id}``
 (called with the admin's secret) says PAID for the full amount — triggered by
 the webhook, by the app's "I've paid — Check" button, or by the 60 s
 reconcile loop. The webhook body itself is never trusted, so a forged one can
@@ -20,6 +23,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -29,10 +33,11 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.cashfree.com/pg"
 API_VERSION = "2025-01-01"
-KEY_PREFIX = "cashfree"  # DepositRequest.idempotency_key = "cashfree:<link_id>"
+PAY_PAGE = "https://hindenburgindia.live/pay/cashfree.html"  # frontend-user/public/pay/cashfree.html
+KEY_PREFIX = "cashfree"  # DepositRequest.idempotency_key = "cashfree:<order_id>"
 MIN_AMOUNT = Decimal("10")
 MAX_AMOUNT = Decimal("200000")
-LINK_TTL = timedelta(hours=2)
+ORDER_TTL = timedelta(hours=2)
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -71,6 +76,7 @@ async def create_payin(
     amount: Decimal,
     *,
     creds: tuple[str, str],
+    customer_id: str,
     name: str,
     email: str,
     mobile: str,
@@ -80,38 +86,37 @@ async def create_payin(
         raise CashfreeError(f"Online payment needs at least ₹{MIN_AMOUNT:,.0f}.")
     if amount > MAX_AMOUNT:
         raise CashfreeError(f"Online payment allows up to ₹{MAX_AMOUNT:,.0f} per transaction.")
-    link_id = f"HB{int(time.time())}{secrets.randbelow(10**6):06d}"
+    order_id = f"HB{int(time.time())}{secrets.randbelow(10**6):06d}"
     customer: dict[str, str] = {
+        "customer_id": re.sub(r"[^A-Za-z0-9_-]", "", customer_id or "")[:50] or "USER",
         "customer_phone": re.sub(r"\D", "", mobile or "")[-10:] or "9999999999",
         "customer_name": (name or "User")[:100],
     }
     if email and "@" in email:
         customer["customer_email"] = email
     body = {
-        "link_id": link_id,
-        "link_amount": float(amount),
-        "link_currency": "INR",
-        "link_purpose": "Wallet deposit",
+        "order_id": order_id,
+        "order_amount": float(amount),
+        "order_currency": "INR",
         "customer_details": customer,
-        "link_partial_payments": False,
-        "link_expiry_time": (datetime.now(_IST) + LINK_TTL).isoformat(timespec="seconds"),
-        "link_notify": {"send_sms": False, "send_email": False},
-        "link_meta": {"return_url": return_url, "notify_url": notify_url()},
+        "order_expiry_time": (datetime.now(_IST) + ORDER_TTL).isoformat(timespec="seconds"),
+        "order_meta": {"return_url": return_url, "notify_url": notify_url()},
     }
-    data = await _call("POST", "/links", creds, link_id, body)
-    if not data.get("link_url"):
-        raise CashfreeError("Payment gateway: no payment link returned")
-    return {"order_id": link_id, "payment_url": str(data["link_url"])}
+    data = await _call("POST", "/orders", creds, order_id, body)
+    session = str(data.get("payment_session_id") or "")
+    if not session:
+        raise CashfreeError("Payment gateway: no payment session returned")
+    return {"order_id": order_id, "payment_url": f"{PAY_PAGE}?s={quote(session, safe='')}"}
 
 
-def paid_problem(link: dict[str, Any], *, want: Decimal) -> str | None:
-    """Why a Cashfree link entity must NOT credit a ``want``-rupee deposit,
-    or None when it is fully paid."""
-    status = str(link.get("link_status") or "").strip().upper()
+def paid_problem(order: dict[str, Any], *, want: Decimal) -> str | None:
+    """Why a Cashfree order entity must NOT credit a ``want``-rupee deposit,
+    or None when it is PAID in full."""
+    status = str(order.get("order_status") or "").strip().upper()
     if status != "PAID":
         return f"status {status or '?'}"
     try:
-        paid = Decimal(str(link.get("link_amount_paid")))
+        paid = Decimal(str(order.get("order_amount")))
     except (InvalidOperation, TypeError):
         return "bad amount"
     if paid + Decimal("0.01") < want:
@@ -119,11 +124,11 @@ def paid_problem(link: dict[str, Any], *, want: Decimal) -> str | None:
     return None
 
 
-async def _deposit_and_creds(link_id: str):
+async def _deposit_and_creds(order_id: str):
     from app.models.transaction import DepositRequest
     from app.models.user import User
 
-    req = await DepositRequest.find_one(DepositRequest.idempotency_key == f"{KEY_PREFIX}:{link_id}")
+    req = await DepositRequest.find_one(DepositRequest.idempotency_key == f"{KEY_PREFIX}:{order_id}")
     if req is None:
         return None, None
     user = await User.get(req.user_id)
@@ -131,33 +136,34 @@ async def _deposit_and_creds(link_id: str):
     return req, (creds_of(await User.get(admin_id)) if admin_id else None)
 
 
-async def confirm(link_id: str) -> str:
-    """Ask Cashfree for this link's status and settle its deposit once."""
+async def confirm(order_id: str) -> str:
+    """Ask Cashfree for this order's status and settle its deposit once."""
     from app.services import univepay_service
 
-    req, creds = await _deposit_and_creds(link_id)
+    req, creds = await _deposit_and_creds(order_id)
     if req is None or creds is None:
-        return "unknown link"
-    link = await _call("GET", f"/links/{link_id}", creds, link_id)
-    if str(link.get("link_id") or "") != link_id:
-        return "wrong link"
-    status = str(link.get("link_status") or "").upper()
-    if status in ("EXPIRED", "CANCELLED") and not Decimal(str(link.get("link_amount_paid") or 0)):
-        return await univepay_service.reject_failed(req, f"Cashfree payment link {status.lower()}")
-    problem = paid_problem(link, want=Decimal(str(req.amount)))
+        return "unknown order"
+    order = await _call("GET", f"/orders/{order_id}", creds, order_id)
+    if str(order.get("order_id") or "") != order_id:
+        return "wrong order"
+    status = str(order.get("order_status") or "").upper()
+    if status in ("EXPIRED", "TERMINATED"):
+        return await univepay_service.reject_failed(req, f"Cashfree order {status.lower()}")
+    problem = paid_problem(order, want=Decimal(str(req.amount)))
     if problem:
         return problem
     return await univepay_service.credit_paid(
-        req, f"CASHFREE-{link_id}", narration=f"Deposit via Cashfree (link {link_id})", tag="cashfree"
+        req, f"CASHFREE-{order_id}", narration=f"Deposit via Cashfree (order {order_id})", tag="cashfree"
     )
 
 
-def link_id_of(body: dict[str, Any]) -> str:
-    """The link_id in a webhook, whichever shape it arrives in."""
-    data = body.get("data") if isinstance(body.get("data"), dict) else {}
-    order = data.get("order") if isinstance(data.get("order"), dict) else {}
-    tags = order.get("order_tags") if isinstance(order.get("order_tags"), dict) else {}
-    return str(data.get("link_id") or tags.get("link_id") or body.get("link_id") or "").strip()
+def order_id_of(body: dict[str, Any]) -> str:
+    """Our order_id in a webhook, whichever shape it arrives in."""
+    data = body.get("data")
+    data = data if isinstance(data, dict) else {}
+    order = data.get("order")
+    order = order if isinstance(order, dict) else {}
+    return str(order.get("order_id") or data.get("order_id") or body.get("orderId") or body.get("order_id") or "").strip()
 
 
 async def reconcile_deposits(*, max_age_hours: int = 24) -> int:

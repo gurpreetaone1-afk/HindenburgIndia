@@ -562,6 +562,7 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
             created = await cashfree_service.create_payin(
                 amount,
                 creds=cashfree_service.creds_of(admin) or ("", ""),
+                customer_id=user.user_code or str(user.id),
                 name=user.full_name or user.user_code or "User",
                 email=user.email or "",
                 mobile=getattr(user, "mobile", None) or "",
