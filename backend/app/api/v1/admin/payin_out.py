@@ -306,7 +306,7 @@ async def list_deposits(
     )
 
 
-_GATEWAYS = {"divinepay", "payfromupi", "okpay", "univepay", "monepay"}
+_GATEWAYS = {"divinepay", "payfromupi", "okpay", "univepay", "monepay", "cashfree"}
 
 
 def _gateway_of(r: DepositRequest) -> str | None:

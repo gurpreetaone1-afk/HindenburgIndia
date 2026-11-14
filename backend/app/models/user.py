@@ -266,6 +266,10 @@ class User(TimestampMixin):
     # set, this admin's deposits of ₹3,000 and up go to Monepay instead.
     monepay_api_key: str | None = None
     monepay_api_secret: str | None = None
+    # Per-admin Cashfree merchant (services/cashfree_service.py): when both
+    # are set, this admin's users pay online through Cashfree payment links.
+    cashfree_app_id: str | None = None
+    cashfree_secret_key: str | None = None
 
     # Sub-admin profile — only populated for role == ADMIN.
     admin_permissions: AdminPermissions | None = None

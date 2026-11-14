@@ -369,7 +369,7 @@ async def _gateway_provider_for(user) -> tuple[str, str | None]:
     Returns (provider, token) — token is the PayFromUPI bearer (None for
     Divinepay).
     """
-    from app.services import univepay_service
+    from app.services import cashfree_service, univepay_service
 
     admin = await _owning_admin(user)
     tok = getattr(admin, "payfromupi_token", None) if admin else None
@@ -377,6 +377,8 @@ async def _gateway_provider_for(user) -> tuple[str, str | None]:
         return ("payfromupi", tok)
     if admin is not None and univepay_service.creds_of(admin):
         return ("univepay", None)
+    if admin is not None and cashfree_service.creds_of(admin):
+        return ("cashfree", None)
     return ("divinepay", None)
 
 
@@ -389,7 +391,7 @@ async def _gateway_on_for(user) -> bool:
     super-admin pool) has it switched on.
     """
     provider, _tok = await _gateway_provider_for(user)
-    if provider in ("payfromupi", "univepay"):
+    if provider in ("payfromupi", "univepay", "cashfree"):
         admin = await _owning_admin(user)
         return bool(getattr(admin, "payment_gateway_enabled", False)) if admin else False
 
@@ -422,7 +424,7 @@ async def _gateways_for(user) -> list[dict[str, Any]]:
     Platform settings: Gateway 1 = Divinepay (UPI + UTR), Gateway 2 = OkPay
     (hosted page, confirmed by its IPN).
     """
-    from app.services import divinepay_service, okpay_service, payfromupi_service, univepay_service
+    from app.services import cashfree_service, divinepay_service, okpay_service, payfromupi_service, univepay_service
 
     def entry(gid: str, label: str, svc: Any, hosted: bool) -> dict[str, Any]:
         return {
@@ -442,6 +444,8 @@ async def _gateways_for(user) -> list[dict[str, Any]]:
             return [entry("payfromupi", "Online payment", payfromupi_service, True)]
         if provider == "univepay":
             return [entry("univepay", "Online payment", univepay_service, True)]
+        if provider == "cashfree":
+            return [entry("cashfree", "Online payment", cashfree_service, True)]
         return [entry("divinepay", "Online payment", divinepay_service, False)]
 
     from app.api.v1.admin.settings import okpay_pool_on
@@ -527,10 +531,10 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         user_id=user.id, rule_type="DEPOSIT", amount=float(amount), user_remark=None
     )
 
-    from app.services import monepay_service, okpay_service, payfromupi_service, univepay_service
+    from app.services import cashfree_service, monepay_service, okpay_service, payfromupi_service, univepay_service
     _admin_provider, token = await _gateway_provider_for(user)
     provider = pick["id"]
-    admin = await _owning_admin(user) if provider == "univepay" else None
+    admin = await _owning_admin(user) if provider in ("univepay", "cashfree") else None
     # Same "Online payment" option in the app: ₹3,000 and up goes to the
     # admin's Monepay merchant when one is wired (sharemarket only).
     mp_creds = monepay_service.creds_of(admin) if admin is not None else None
@@ -554,6 +558,16 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
                 return_url=f"https://{site}/wallet?deposit=done",
             )
             _key = f"monepay:{created['order_id']}"
+        elif provider == "cashfree":
+            created = await cashfree_service.create_payin(
+                amount,
+                creds=cashfree_service.creds_of(admin) or ("", ""),
+                name=user.full_name or user.user_code or "User",
+                email=user.email or "",
+                mobile=getattr(user, "mobile", None) or "",
+                return_url=f"https://{site}/wallet?deposit=done",
+            )
+            _key = f"cashfree:{created['order_id']}"
         elif provider == "univepay":
             merchno, ukey = univepay_service.creds_of(admin) or ("", "")
             created = await univepay_service.create_payin(
@@ -590,6 +604,7 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         okpay_service.OkPayError,
         univepay_service.UnivepayError,
         monepay_service.MonepayError,
+        cashfree_service.CashfreeError,
     ) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -605,7 +620,7 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
         idempotency_key=_key,
         # Univepay: our HB order no. as UTR so the admin can look it up in the
         # Univepay panel (the paid callback overwrites it with Univepay's ref).
-        utr_number=created["order_id"] if provider in ("univepay", "monepay") else None,
+        utr_number=created["order_id"] if provider in ("univepay", "monepay", "cashfree") else None,
     )
     await req.insert()
     return APIResponse(
@@ -642,6 +657,8 @@ async def submit_gateway_utr(payload: dict, user: CurrentUser):
         DepositRequest.idempotency_key == f"univepay:{order_id}"
     ) or await DepositRequest.find_one(
         DepositRequest.idempotency_key == f"monepay:{order_id}"
+    ) or await DepositRequest.find_one(
+        DepositRequest.idempotency_key == f"cashfree:{order_id}"
     )
     if req is None or req.user_id != user.id:
         raise HTTPException(status_code=404, detail="Payment not found.")
@@ -650,13 +667,15 @@ async def submit_gateway_utr(payload: dict, user: CurrentUser):
     if req.status != DepositStatus.PENDING:
         raise HTTPException(status_code=400, detail="This payment is no longer pending.")
 
-    if (req.idempotency_key or "").startswith("monepay:"):
-        # Monepay has a status API: ask it now instead of waiting for the callback.
-        from app.services import monepay_service
+    if (req.idempotency_key or "").startswith(("monepay:", "cashfree:")):
+        # Monepay / Cashfree have a status API: ask it now instead of waiting
+        # for the callback.
+        from app.services import cashfree_service, monepay_service
 
+        svc = monepay_service if req.idempotency_key.startswith("monepay:") else cashfree_service
         try:
-            outcome = await monepay_service.confirm(order_id)
-        except monepay_service.MonepayError as exc:
+            outcome = await svc.confirm(order_id)
+        except (monepay_service.MonepayError, cashfree_service.CashfreeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         if outcome in ("credited", "already credited"):
             return APIResponse(data={"status": "success", "credited": True})

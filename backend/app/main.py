@@ -26,6 +26,7 @@ from app.api.v1 import okpay_webhook as _okpay_webhook
 from app.api.v1 import payfromupi_webhook as _pfu_webhook
 from app.api.v1 import univepay_webhook as _univepay_webhook
 from app.api.v1 import monepay_webhook as _monepay_webhook
+from app.api.v1 import cashfree_webhook as _cashfree_webhook
 from app.api.v1.admin import router as admin_router
 from app.api.v1.user import router as user_router
 from app.api.ws import router as ws_router
@@ -821,6 +822,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     )
     setattr(app, "_monepay_reconcile_task", mp_task)
 
+    # Cashfree payment links: same status-API poll (no-op until an admin has keys).
+    from app.services.cashfree_service import deposit_reconcile_loop as _cf_loop
+    cf_task: _asyncio.Task = _asyncio.create_task(
+        _supervise(
+            "cashfree_deposit_reconcile",
+            _leader_only("cashfree_deposit_reconcile", _cf_loop, interval_sec=60.0),
+        )
+    )
+    setattr(app, "_cashfree_reconcile_task", cf_task)
+
     # Tracker self-heal: every 15 min, walk every UserPositionTracker row
     # and recompute it from the live Position docs. Catches any drift
     # introduced by an unexpected restart / fill retry / partial flow,
@@ -1393,6 +1404,7 @@ app.include_router(_pfu_webhook.router, prefix="/api/v1")
 app.include_router(_okpay_webhook.router, prefix="/api/v1")
 app.include_router(_univepay_webhook.router, prefix="/api/v1")
 app.include_router(_monepay_webhook.router, prefix="/api/v1")
+app.include_router(_cashfree_webhook.router, prefix="/api/v1")
 app.include_router(ws_router)
 
 
