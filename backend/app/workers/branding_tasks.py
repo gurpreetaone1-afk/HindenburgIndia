@@ -1,6 +1,7 @@
 """Celery tasks for the white-label branding subsystem.
 
-Single task: ``provision_ssl(admin_id)`` orchestrates the full custom
+``provision_ssl_async(admin_id)`` (run in-process by the backend; the
+Celery ``provision_ssl`` task wraps it) orchestrates the full custom
 domain provisioning pipeline by shelling out to the deploy helper
 script ``marginplant-add-branded-domain.sh`` which:
 
@@ -37,8 +38,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
-import subprocess
 from typing import Final
 
 from app.workers.celery_app import celery_app
@@ -60,6 +61,101 @@ def _script_exists(path: str) -> bool:
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
+def _provision_cmd(domain: str, email: str) -> list[str]:
+    # The backend runs as root on the VPS (no sudoers entry needed); any
+    # other OS user goes through passwordless sudo for the helper only.
+    sudo = [] if os.geteuid() == 0 else ["sudo", "-n"]  # never prompt
+    return [*sudo, PROVISION_SCRIPT, domain, email]
+
+
+async def provision_ssl_async(admin_id: str) -> dict:
+    """Run certbot (via the helper) for an admin's custom_domain and flip
+    its status to READY / FAILED. Needs an initialised database. Runs
+    inside the backend process — there is no Celery worker on the VPS —
+    so certbot goes through an async subprocess, never blocking the loop.
+    """
+    from app.models.user import User
+    from app.services import branding_service
+    from beanie import PydanticObjectId
+
+    user = await User.get(PydanticObjectId(admin_id))
+    if user is None:
+        return {"ok": False, "error": "admin_not_found"}
+
+    # Idempotency: if status is already READY / not PROVISIONING,
+    # bail without touching certbot.
+    if user.custom_domain_status != branding_service.STATUS_PROVISIONING:
+        return {"ok": False, "error": f"unexpected_status={user.custom_domain_status}"}
+
+    domain = user.custom_domain
+    if not domain:
+        await branding_service.mark_domain_failed(user.id, "custom_domain unset on row")
+        return {"ok": False, "error": "no_domain"}
+
+    # The helper is the actual contract — a host with certbot but no
+    # helper is misconfigured, and the human-readable error says so.
+    if not _script_exists(PROVISION_SCRIPT):
+        await branding_service.mark_domain_failed(
+            user.id,
+            f"Provisioning helper not found at {PROVISION_SCRIPT}. "
+            "Deploy `deploy/scripts/marginplant-add-branded-domain.sh` "
+            "(see deploy/README.md).",
+        )
+        return {"ok": False, "error": "helper_missing"}
+    if shutil.which("certbot") is None:
+        await branding_service.mark_domain_failed(
+            user.id,
+            "certbot is not installed on this host. "
+            "Run `apt install certbot python3-certbot-nginx`.",
+        )
+        return {"ok": False, "error": "certbot_missing"}
+
+    # The admin's email gets the Let's Encrypt expiry notices for THEIR
+    # cert; otherwise the platform ops mailbox.
+    email = (user.email or "").strip() or CERTBOT_EMAIL_DEFAULT
+    logger.info("branding_provision_ssl_start admin_id=%s domain=%s", admin_id, domain)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *_provision_cmd(domain, email),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        await branding_service.mark_domain_failed(user.id, "sudo or provisioning helper not found in PATH")
+        return {"ok": False, "error": "binary_missing"}
+    try:
+        out, err_b = await asyncio.wait_for(proc.communicate(), timeout=CERTBOT_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await branding_service.mark_domain_failed(
+            user.id,
+            f"Provisioning timed out after {CERTBOT_TIMEOUT_SEC}s. "
+            "Check the server can reach Let's Encrypt.",
+        )
+        return {"ok": False, "error": "timeout"}
+
+    if proc.returncode != 0:
+        stderr = (err_b or b"").decode(errors="replace").strip()
+        stdout = (out or b"").decode(errors="replace").strip()
+        err = (stderr or stdout or "provisioning failed without output")[-500:]
+        logger.warning(
+            "branding_provision_ssl_failed admin_id=%s rc=%d err=%s", admin_id, proc.returncode, err
+        )
+        await branding_service.mark_domain_failed(user.id, err)
+        return {"ok": False, "error": "provision_failed", "rc": proc.returncode}
+
+    await branding_service.mark_domain_ready(user.id)
+    # Best-effort admin-events ping so an open admin UI sees the flip.
+    try:
+        from app.services.admin_events import publish_admin_event
+
+        await publish_admin_event("branding_domain_ready", {"admin_id": str(user.id), "domain": domain})
+    except Exception:  # pragma: no cover
+        pass
+    logger.info("branding_provision_ssl_ready admin_id=%s domain=%s", admin_id, domain)
+    return {"ok": True, "domain": domain}
+
+
 @celery_app.task(
     name="app.workers.branding_tasks.provision_ssl",
     bind=True,
@@ -67,130 +163,13 @@ def _script_exists(path: str) -> bool:
     max_retries=0,
 )
 def provision_ssl(self, admin_id: str) -> dict:
-    """Run certbot for an admin's custom_domain and flip status.
-
-    Returns a small dict the result backend can serialize so an
-    operator inspecting `celery events` sees what happened.
-    """
+    """Celery entry point (for hosts that do run a worker)."""
     from app.core.database import close_database, init_database
-    from app.models.user import User
-    from app.services import branding_service
-    from beanie import PydanticObjectId
 
     async def _run() -> dict:
         await init_database()
         try:
-            user = await User.get(PydanticObjectId(admin_id))
-            if user is None:
-                return {"ok": False, "error": "admin_not_found"}
-
-            # Idempotency: if status is already READY / not PROVISIONING,
-            # bail without touching certbot.
-            if user.custom_domain_status != branding_service.STATUS_PROVISIONING:
-                return {
-                    "ok": False,
-                    "error": f"unexpected_status={user.custom_domain_status}",
-                }
-
-            domain = user.custom_domain
-            if not domain:
-                await branding_service.mark_domain_failed(
-                    user.id, "custom_domain unset on row"
-                )
-                return {"ok": False, "error": "no_domain"}
-
-            # Sanity: provisioning helper deployed?
-            # We check the script presence rather than just the certbot
-            # binary because the helper is the actual contract — a host
-            # with certbot but no helper script is misconfigured for
-            # Phase 4 and the human-readable error helps the operator.
-            if not _script_exists(PROVISION_SCRIPT):
-                await branding_service.mark_domain_failed(
-                    user.id,
-                    f"Provisioning helper not found at {PROVISION_SCRIPT}. "
-                    "Deploy `deploy/scripts/marginplant-add-branded-domain.sh` "
-                    "and update sudoers (see deploy/README.md).",
-                )
-                return {"ok": False, "error": "helper_missing"}
-            if shutil.which("certbot") is None:
-                await branding_service.mark_domain_failed(
-                    user.id,
-                    "certbot is not installed on this host. "
-                    "Run `apt install certbot python3-certbot-nginx`.",
-                )
-                return {"ok": False, "error": "certbot_missing"}
-
-            # Use the admin's email when available so they receive the
-            # Let's Encrypt expiry notices for THEIR cert; otherwise
-            # fall back to the platform ops mailbox.
-            email = (user.email or "").strip() or CERTBOT_EMAIL_DEFAULT
-
-            cmd = [
-                "sudo",
-                "-n",  # never prompt for a password — fail fast if sudoers is wrong
-                PROVISION_SCRIPT,
-                domain,
-                email,
-            ]
-
-            logger.info(
-                "branding_provision_ssl_start admin_id=%s domain=%s", admin_id, domain
-            )
-            try:
-                result = subprocess.run(  # noqa: S603 — controlled args
-                    cmd,
-                    timeout=CERTBOT_TIMEOUT_SEC,
-                    capture_output=True,
-                    text=True,
-                )
-            except subprocess.TimeoutExpired:
-                await branding_service.mark_domain_failed(
-                    user.id,
-                    f"Provisioning timed out after {CERTBOT_TIMEOUT_SEC}s. "
-                    "Check the worker can reach Let's Encrypt.",
-                )
-                return {"ok": False, "error": "timeout"}
-            except FileNotFoundError:
-                await branding_service.mark_domain_failed(
-                    user.id, "sudo or provisioning helper not found in PATH"
-                )
-                return {"ok": False, "error": "binary_missing"}
-
-            if result.returncode != 0:
-                stderr = (result.stderr or "").strip()
-                stdout = (result.stdout or "").strip()
-                err = (stderr or stdout or "provisioning failed without output")[:500]
-                logger.warning(
-                    "branding_provision_ssl_failed admin_id=%s rc=%d err=%s",
-                    admin_id,
-                    result.returncode,
-                    err,
-                )
-                await branding_service.mark_domain_failed(user.id, err)
-                return {
-                    "ok": False,
-                    "error": "provision_failed",
-                    "rc": result.returncode,
-                }
-
-            await branding_service.mark_domain_ready(user.id)
-
-            # Best-effort admin-events ping so an open admin UI sees
-            # the live status flip without polling.
-            try:
-                from app.services.admin_events import publish_admin_event
-
-                await publish_admin_event(
-                    "branding_domain_ready",
-                    {"admin_id": str(user.id), "domain": domain},
-                )
-            except Exception:  # pragma: no cover
-                pass
-
-            logger.info(
-                "branding_provision_ssl_ready admin_id=%s domain=%s", admin_id, domain
-            )
-            return {"ok": True, "domain": domain}
+            return await provision_ssl_async(admin_id)
         finally:
             await close_database()
 

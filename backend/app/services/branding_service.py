@@ -17,6 +17,7 @@ import even on Phase-1 deploys where the feature is gated off.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime
@@ -512,6 +513,7 @@ async def check_dns_a_record(domain: str) -> tuple[bool, str | None]:
 
 _NEXT_CHUNK_RE: Final = re.compile(r"/_next/static/[\w./-]+\.js")
 USER_FRONTEND_LOCAL: Final[str] = "http://127.0.0.1:3000/"
+_PROVISION_TASKS: set[asyncio.Task] = set()
 
 
 async def proxied_to_us(domain: str) -> bool:
@@ -593,11 +595,11 @@ async def resolve_dns_preview(domain: str) -> dict:
 
 
 async def begin_domain_verification(admin: User) -> User:
-    """Trigger DNS check + enqueue cert-provisioning Celery task.
+    """Trigger DNS check + start cert provisioning in the background.
 
     Mutates the admin's status fields synchronously so the UI poll
     sees progress within the same tick. The actual ``certbot`` call
-    happens on a worker (see ``app.workers.branding_tasks``).
+    runs as an asyncio task (see ``app.workers.branding_tasks``).
     """
     _ensure_enabled()
     if admin.role != UserRole.ADMIN:
@@ -643,21 +645,14 @@ async def begin_domain_verification(admin: User) -> User:
     admin.custom_domain_last_error = None
     await admin.save()
 
-    # Enqueue the Celery task. We import lazily so that boot ordering
-    # (workers module imports models which imports services which
-    # could import workers...) stays acyclic.
-    try:
-        from app.workers.branding_tasks import provision_ssl
+    # Run certbot in the background inside this process — the VPS has no
+    # Celery worker, so a .delay() would sit in the queue forever. The UI
+    # polls the status, which flips to READY / FAILED when it finishes.
+    from app.workers.branding_tasks import provision_ssl_async
 
-        provision_ssl.delay(str(admin.id))
-    except Exception:  # pragma: no cover
-        logger.exception("branding_provision_ssl_enqueue_failed admin_id=%s", admin.id)
-        admin.custom_domain_status = STATUS_FAILED
-        admin.custom_domain_last_error = (
-            "Failed to enqueue SSL provisioning task. "
-            "Check Celery worker is running and CELERY_BROKER_URL is set."
-        )
-        await admin.save()
+    task = asyncio.create_task(provision_ssl_async(str(admin.id)))
+    _PROVISION_TASKS.add(task)  # keep a reference until it finishes
+    task.add_done_callback(_PROVISION_TASKS.discard)
     return admin
 
 
