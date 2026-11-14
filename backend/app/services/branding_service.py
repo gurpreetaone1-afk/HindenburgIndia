@@ -141,6 +141,8 @@ def to_branding_payload(admin: User) -> dict:
         "custom_domain": admin.custom_domain,
         "custom_domain_status": admin.custom_domain_status,
         "custom_domain_last_error": admin.custom_domain_last_error,
+        # False = login-only site: hide register + demo on this brand.
+        "signup_enabled": bool(getattr(admin, "signup_enabled", True)),
     }
 
 
@@ -349,8 +351,9 @@ async def update_branding(
     brand_name: str | None = None,
     custom_domain: str | None = None,
     clear_custom_domain: bool = False,
+    signup_enabled: bool | None = None,
 ) -> User:
-    """Update brand_name and/or custom_domain on an ADMIN user.
+    """Update brand_name, custom_domain and/or signup_enabled on an ADMIN user.
 
     Setting ``custom_domain`` to a new value flips status to
     ``PENDING_DNS`` and clears any prior cert error, so the verify
@@ -366,6 +369,9 @@ async def update_branding(
         # Empty string clears the brand name (frontend falls back to
         # the platform default), which is a deliberate user action.
         admin.brand_name = brand_name.strip() or None
+
+    if signup_enabled is not None:
+        admin.signup_enabled = signup_enabled
 
     if clear_custom_domain:
         admin.custom_domain = None

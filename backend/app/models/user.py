@@ -221,6 +221,13 @@ class User(TimestampMixin):
     # broker referral). Super-admin toggles it per admin; False = register
     # without a code. Read in user/auth.py (/otp/request + /register).
     register_otp_enabled: bool = True
+    # ADMIN rows. False = "login only": nobody can self-register into this
+    # admin's pool or start a demo from its custom domain (the admin adds
+    # users from the panel). Admin toggles it on the Branding page.
+    signup_enabled: bool = True
+    # ADMIN rows. False = this admin's users can't raise deposits (manual or
+    # online) — funds are only added by the admin. Payments page toggle.
+    user_deposits_enabled: bool = True
 
     # Login telemetry
     last_login_at: datetime | None = None

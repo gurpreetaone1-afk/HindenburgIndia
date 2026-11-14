@@ -134,6 +134,11 @@ async def register(payload: RegisterRequest, request: Request):
     if assigned_admin_id:
         owner_admin = await User.get(assigned_admin_id)
         if owner_admin is not None:
+            if not getattr(owner_admin, "signup_enabled", True):
+                # Login-only admin: accounts are created from the admin panel.
+                raise ValidationFailedError(
+                    "New registrations are closed. Please contact your admin for an account."
+                )
             otp_required = bool(getattr(owner_admin, "register_otp_enabled", True))
     # Never enforce an email OTP we can't deliver: with no SMTP provider wired
     # up, signup proceeds without verification (the /otp/request response
@@ -387,6 +392,9 @@ async def demo_login(request: Request):
     No signup required — returns a full JWT pair immediately. The shared demo
     account is flattened + re-funded to ₹50,00,000 every 24h (demo_reset_loop).
     """
+    site_admin = await branding_service.find_admin_by_domain(_signup_host(request))
+    if site_admin is not None and not getattr(site_admin, "signup_enabled", True):
+        raise ValidationFailedError("Demo is not available on this site.")
     pair = await auth_service.create_demo_session(
         ip=_client_ip(request),
         user_agent=request.headers.get("user-agent"),

@@ -245,6 +245,31 @@ async def set_my_gateway(payload: UpdatePlatformSettingRequest, admin: CurrentAd
     return APIResponse(data={"enabled": enabled})
 
 
+@router.get("/settings/user-deposits", response_model=APIResponse[dict])
+async def get_user_deposits(admin: CurrentAdmin):
+    """Can THIS admin's users raise deposits themselves? (Payments page.)"""
+    return APIResponse(data={"enabled": bool(getattr(admin, "user_deposits_enabled", True))})
+
+
+@router.put("/settings/user-deposits", response_model=APIResponse[dict])
+async def set_user_deposits(payload: UpdatePlatformSettingRequest, admin: CurrentAdmin):
+    """OFF = this admin's users can't add funds from the app/site (manual or
+    online); only the admin adds funds. Own pool only — sub-admins."""
+    if getattr(admin, "role", None) != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Only an admin can change this for their users.")
+    enabled = bool(payload.setting_value)
+    admin.user_deposits_enabled = enabled
+    await admin.save()
+    await log_event(
+        action=AuditAction.SETTING_CHANGE,
+        entity_type="User",
+        entity_id=admin.id,
+        actor_id=admin.id,
+        new_values={"user_deposits_enabled": enabled},
+    )
+    return APIResponse(data={"enabled": enabled})
+
+
 @router.put("/settings/payment-gateway/auto-payout", response_model=APIResponse[dict])
 async def set_auto_payout_setting(
     payload: UpdatePlatformSettingRequest, admin: CurrentAdmin

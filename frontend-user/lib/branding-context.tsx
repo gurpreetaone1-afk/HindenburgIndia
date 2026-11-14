@@ -38,7 +38,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { API_URL, APP_NAME, STORAGE_KEYS } from "./constants";
 import { buildWlSessionHash, consumeWlSessionHandoff } from "./wl-handoff";
 
@@ -49,6 +49,8 @@ export type Branding = {
   logo_url: string | null;
   custom_domain: string | null;
   custom_domain_status: string | null;
+  /** false = login-only brand: no register, no demo, no landing page. */
+  signup_enabled?: boolean;
 };
 
 type BrandingContextValue = {
@@ -370,6 +372,14 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     }
   }, [searchParams]);
+
+  // Login-only brand: the landing page, /register and /demo all go to /login.
+  const pathname = usePathname();
+  useEffect(() => {
+    if (branding?.signup_enabled === false && /^\/(register|demo)?(\/|$)/.test(pathname || "")) {
+      window.location.replace("/login");
+    }
+  }, [branding, pathname]);
 
   useEffect(() => {
     refresh();

@@ -63,6 +63,8 @@ class BrandingUpdateRequest(BaseModel):
     # Set true to explicitly disconnect — preferred over relying on
     # `custom_domain == ""` so the intent is unambiguous.
     clear_custom_domain: bool = False
+    # False = login-only site (no self-signup, no demo). Omit to leave as is.
+    signup_enabled: bool | None = None
 
 
 class DomainStatusOut(BaseModel):
@@ -89,6 +91,7 @@ async def update_branding(payload: BrandingUpdateRequest, admin: CurrentAdmin):
         brand_name=payload.brand_name,
         custom_domain=payload.custom_domain,
         clear_custom_domain=payload.clear_custom_domain,
+        signup_enabled=payload.signup_enabled,
     )
     return APIResponse(
         data=branding_service.to_branding_payload(updated),

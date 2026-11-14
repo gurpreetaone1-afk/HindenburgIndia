@@ -19,6 +19,15 @@ import { WalletAPI } from "@/lib/api";
 import { API_URL } from "@/lib/constants";
 import { useAuthStore } from "@/stores/authStore";
 import { DemoUpgradeDialog } from "@/components/wallet/DemoUpgradeDialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { UpiQR } from "@/components/common/UpiQR";
 import { cn, formatINR } from "@/lib/utils";
 import { buildWhatsappUrl, useSupportContacts } from "@/lib/useSupport";
@@ -260,6 +269,32 @@ export function AddFundsWizard({
   // Demo users cannot deposit — block at wizard level as a safety net
   if (user?.is_demo) {
     return <DemoUpgradeDialog open={open} onClose={onClose} />;
+  }
+
+  // The admin has switched user-side deposits OFF: funds come from the admin.
+  if (depMode?.deposits_enabled === false) {
+    return (
+      <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+        <DialogContent className="max-w-sm text-center">
+          <DialogHeader className="items-center gap-2">
+            <DialogTitle className="text-lg">Add funds</DialogTitle>
+            <DialogDescription className="text-sm leading-relaxed">
+              {depMode.deposits_off_message}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col gap-2 sm:flex-col">
+            {waUrl && (
+              <Button asChild className="w-full">
+                <a href={waUrl} target="_blank" rel="noreferrer">Contact on WhatsApp</a>
+              </Button>
+            )}
+            <Button variant="ghost" className="w-full" onClick={onClose}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
   }
 
   function bump(n: number) {

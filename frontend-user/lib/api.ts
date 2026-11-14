@@ -396,6 +396,9 @@ export const WalletAPI = {
       // The online options this user can pick from (Gateway 1 / Gateway 2…).
       // `hosted` = paid on the gateway's own page, no UTR to type.
       gateways?: { id: string; label: string; min_amount: string; max_amount: string; hosted: boolean }[];
+      // false = the user's admin adds funds; no deposit form at all.
+      deposits_enabled?: boolean;
+      deposits_off_message?: string;
     }>(
       api.get("/user/wallet/deposit-mode"),
     ),

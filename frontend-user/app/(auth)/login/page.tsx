@@ -11,6 +11,7 @@ import { Eye, EyeOff, Loader2, Smartphone, Zap } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
 import { ApiError, AuthAPI, ProfileAPI, setTokens } from "@/lib/api";
 import { STORAGE_KEYS } from "@/lib/constants";
+import { useBranding } from "@/lib/branding-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -56,6 +57,8 @@ function LoginPageInner() {
   const [showPwd, setShowPwd] = useState(false);
   const [needs2fa, setNeeds2fa] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
+  const { branding } = useBranding();
+  const signupOn = branding?.signup_enabled !== false;
 
   useEffect(() => {
     if (!hydrated || !currentUser) return;
@@ -238,7 +241,9 @@ function LoginPageInner() {
         </Button>
       </form>
 
-      {/* Demo account CTA — secondary to the navy submit above it. */}
+      {/* Demo account CTA — secondary to the navy submit above it. Hidden on
+          a login-only brand (its admin creates every account). */}
+      {signupOn && (
       <div className="space-y-3">
         <div className="relative flex items-center">
           <div className="flex-1 border-t border-border/60" />
@@ -280,15 +285,18 @@ function LoginPageInner() {
           )}
         </button>
       </div>
+      )}
 
       {/* Footer — "no account?" link + minimalist Install App CTA */}
       <div className="space-y-3">
-        <p className="text-center text-sm text-muted-foreground">
-          Don&apos;t have an account?{" "}
-          <Link href="/register" className="font-semibold text-foreground underline-offset-4 hover:underline">
-            Open one
-          </Link>
-        </p>
+        {signupOn && (
+          <p className="text-center text-sm text-muted-foreground">
+            Don&apos;t have an account?{" "}
+            <Link href="/register" className="font-semibold text-foreground underline-offset-4 hover:underline">
+              Open one
+            </Link>
+          </p>
+        )}
 
         <InstallAppBanner />
       </div>

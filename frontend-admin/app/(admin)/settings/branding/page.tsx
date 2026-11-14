@@ -449,7 +449,7 @@ export default function BrandingPage() {
 
   // ── Mutations ─────────────────────────────────────────────────────
   const saveBranding = useMutation({
-    mutationFn: (body: { brand_name?: string | null; custom_domain?: string | null }) =>
+    mutationFn: (body: { brand_name?: string | null; custom_domain?: string | null; signup_enabled?: boolean }) =>
       BrandingAPI.update(body),
     onSuccess: (data) => {
       qc.setQueryData(["admin", "branding", "me"], data);
@@ -750,6 +750,40 @@ export default function BrandingPage() {
               />
             </div>
           </div>
+
+          {/* Login-only switch: OFF hides Register + Try Demo on your site and
+              blocks self-signup into your pool (you add users from the panel). */}
+          {meQuery.data && (
+            <div className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">Signup &amp; demo on your site</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {meQuery.data.signup_enabled !== false
+                    ? "ON — visitors can register and try the demo."
+                    : "OFF — login page only. You create every user account from the panel."}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={meQuery.data.signup_enabled !== false}
+                aria-label="Signup and demo on your site"
+                disabled={saveBranding.isPending}
+                onClick={() => saveBranding.mutate({ signup_enabled: meQuery.data?.signup_enabled === false })}
+                className={cn(
+                  "relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:opacity-60",
+                  meQuery.data.signup_enabled !== false ? "bg-emerald-500" : "bg-muted",
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-block size-5 transform rounded-full bg-white shadow transition-transform",
+                    meQuery.data.signup_enabled !== false ? "translate-x-6" : "translate-x-1",
+                  )}
+                />
+              </button>
+            </div>
+          )}
         </CardContent>
       </Card>
 

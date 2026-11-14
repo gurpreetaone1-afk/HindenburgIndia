@@ -189,6 +189,7 @@ async def company_banks(user: CurrentUser):
 async def create_deposit(payload: DepositCreate, user: CurrentUser):
     if getattr(user, "is_demo", False):
         raise HTTPException(status_code=403, detail="Demo accounts cannot deposit funds. Open a real account to trade with real money.")
+    await _require_user_deposits(user)
     # Enforce the effective deposit rule for this user — min/max/daily
     # limit/day/time window/mandatory-remark. Tier cascade is resolved
     # inside the service (broker → admin → super-admin → global). Raises
@@ -361,6 +362,21 @@ async def _owning_admin(user):
     return await User.get(admin_id) if admin_id else None
 
 
+async def _user_deposits_on(user) -> bool:
+    """False when the owning admin has switched user-side deposits OFF
+    (funds are then only added by the admin)."""
+    admin = await _owning_admin(user)
+    return bool(getattr(admin, "user_deposits_enabled", True)) if admin else True
+
+
+_DEPOSITS_OFF_MSG = "Funds are added by your admin. Please contact them to add funds."
+
+
+async def _require_user_deposits(user) -> None:
+    if not await _user_deposits_on(user):
+        raise HTTPException(status_code=403, detail=_DEPOSITS_OFF_MSG)
+
+
 async def _gateway_provider_for(user) -> tuple[str, str | None]:
     """Pick the online-deposit provider for THIS user.
 
@@ -499,6 +515,9 @@ async def deposit_mode(user: CurrentUser):
             "min_amount": first["min_amount"] if first else str(svc.MIN_AMOUNT),
             "max_amount": first["max_amount"] if first else str(svc.MAX_AMOUNT),
             "gateways": gateways,
+            # False = the admin adds funds; the app shows a notice, no form.
+            "deposits_enabled": await _user_deposits_on(user),
+            "deposits_off_message": _DEPOSITS_OFF_MSG,
         }
     )
 
@@ -514,6 +533,7 @@ async def create_gateway_deposit(payload: dict, user: CurrentUser):
 
     if getattr(user, "is_demo", False):
         raise HTTPException(status_code=403, detail="Demo accounts cannot deposit funds.")
+    await _require_user_deposits(user)
     gateways = await _gateways_for(user)
     if not gateways:
         raise HTTPException(status_code=400, detail="Online payment is not enabled for your account.")

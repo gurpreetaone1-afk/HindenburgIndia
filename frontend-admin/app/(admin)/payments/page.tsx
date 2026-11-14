@@ -2,6 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { SettingsAPI } from "@/lib/api";
 import { PageHeader } from "@/components/common/PageHeader";
 import { DepositsPanel } from "@/components/admin/payments/DepositsPanel";
 import { WithdrawalsPanel } from "@/components/admin/payments/WithdrawalsPanel";
@@ -54,6 +57,54 @@ const TABS: TabDef[] = [
   { id: "rules", label: "Rules", description: "Deposit / withdrawal rules for your user pool — min, max, daily limit, allowed days, time window. Blank fields inherit from the tier above.", perm: "banks" },
 ];
 
+/** ADMIN only: let this admin's users add funds themselves (manual / online),
+ *  or switch it OFF so funds are only added by the admin. */
+function UserDepositsSwitch() {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["admin", "user-deposits"], queryFn: () => SettingsAPI.userDeposits() });
+  const save = useMutation({
+    mutationFn: (enabled: boolean) => SettingsAPI.setUserDeposits(enabled),
+    onSuccess: (data) => {
+      qc.setQueryData(["admin", "user-deposits"], data);
+      toast.success(data.enabled ? "Users can add funds again" : "Add funds is OFF for your users");
+    },
+    onError: (e: any) => toast.error(e?.message || "Failed to update setting"),
+  });
+  if (!q.data) return null;
+  const on = q.data.enabled;
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-card p-3">
+      <div className="min-w-0">
+        <p className="text-sm font-semibold">User add funds — {on ? "ON" : "OFF"}</p>
+        <p className="text-[11px] text-muted-foreground">
+          {on
+            ? "Your users can raise deposit requests from the app / site."
+            : "Users can't add funds themselves — only you add funds to their wallets."}
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label="User add funds"
+        disabled={save.isPending}
+        onClick={() => save.mutate(!on)}
+        className={cn(
+          "relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:opacity-60",
+          on ? "bg-emerald-500" : "bg-muted",
+        )}
+      >
+        <span
+          className={cn(
+            "inline-block size-5 transform rounded-full bg-white shadow transition-transform",
+            on ? "translate-x-6" : "translate-x-1",
+          )}
+        />
+      </button>
+    </div>
+  );
+}
+
 export default function PaymentsPage() {
   const sp = useSearchParams();
   const admin = useAdminAuthStore((s) => s.admin);
@@ -100,6 +151,7 @@ export default function PaymentsPage() {
         </div>
       </div>
 
+      {tab === "deposits" && admin?.role === "ADMIN" && <UserDepositsSwitch />}
       {tab === "deposits" && <DepositsPanel />}
       {tab === "withdrawals" && <WithdrawalsPanel />}
       {tab === "settlements" && <SettlementRequestsPanel />}

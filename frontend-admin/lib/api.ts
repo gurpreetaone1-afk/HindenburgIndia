@@ -929,6 +929,10 @@ export const SettingsAPI = {
     ),
   setMyGateway: (enabled: boolean) =>
     unwrap<{ enabled: boolean }>(api.put("/admin/settings/my-gateway", { setting_value: enabled })),
+  // Can this admin's users add funds themselves? OFF = admin adds funds only.
+  userDeposits: () => unwrap<{ enabled: boolean }>(api.get("/admin/settings/user-deposits")),
+  setUserDeposits: (enabled: boolean) =>
+    unwrap<{ enabled: boolean }>(api.put("/admin/settings/user-deposits", { setting_value: enabled })),
   holidays: (year?: number) => unwrap<any[]>(api.get("/admin/holidays", { params: { year } })),
   createHoliday: (body: any) => unwrap<any>(api.post("/admin/holidays", body)),
   deleteHoliday: (id: string) => unwrap<any>(api.delete(`/admin/holidays/${id}`)),
@@ -985,6 +989,8 @@ export type BrandingPayload = {
   // panel inline without a second /domain/status call. May be null at
   // any other status.
   custom_domain_last_error: string | null;
+  // false = login-only site: no self-signup, no demo.
+  signup_enabled?: boolean;
 };
 
 export type DomainStatus = {
@@ -1026,6 +1032,7 @@ export const BrandingAPI = {
     brand_name?: string | null;
     custom_domain?: string | null;
     clear_custom_domain?: boolean;
+    signup_enabled?: boolean;
   }) => unwrap<BrandingPayload>(api.put("/admin/branding", body)),
   uploadLogo: (file: File) => {
     const fd = new FormData();
