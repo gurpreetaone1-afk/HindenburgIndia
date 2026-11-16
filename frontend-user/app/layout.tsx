@@ -134,6 +134,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       suppressHydrationWarning
       className={`notranslate ${inter.variable} ${spaceGrotesk.variable} ${plexMono.variable}`}
     >
+      <head>
+        {/* Admin custom domain: keep the page hidden until BrandingProvider has
+            swapped the platform name for the admin's (lib/white-label-text.ts),
+            so "Hindenburg" never flashes. Platform / preview hosts skip this;
+            2.5 s safety net if branding never answers. */}
+        <style dangerouslySetInnerHTML={{ __html: "html.wl-pending body{visibility:hidden}" }} />
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){try{var h=location.hostname.toLowerCase();" +
+              "if(/^(www\\.)?hindenburgindia\\.live$|^localhost$|^127\\.0\\.0\\.1$|\\.(vercel|netlify|fly)\\.(app|dev)$/.test(h))return;" +
+              "var d=document.documentElement;d.classList.add('wl-pending');" +
+              "setTimeout(function(){d.classList.remove('wl-pending')},2500)}catch(e){}})();",
+          }}
+        />
+      </head>
       <body className="notranslate font-sans antialiased" translate="no">
         <PwaRegister />
         <ThemeColorSync />

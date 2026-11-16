@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { BRAND, EASE, EXIT_MS, MAX_VISIBLE_MS, MIN_VISIBLE_MS } from "./data";
 import { Spring, painter, prefersReducedMotion } from "./motion";
-import { BallMark } from "./ui";
+import { BallMark, TenantLogo } from "./ui";
+import { useTenantBrand } from "@/lib/branding-context";
 
 /**
  * Navy intro curtain. Holds scroll, fills a 1px progress bar, then slides up
@@ -11,6 +12,7 @@ import { BallMark } from "./ui";
  */
 export default function Loader({ onDone }: { onDone: () => void }) {
   const [gone, setGone] = useState(false);
+  const tenant = useTenantBrand();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const markRef = useRef<HTMLSpanElement | null>(null);
   const fillRef = useRef<HTMLDivElement | null>(null);
@@ -81,8 +83,8 @@ export default function Loader({ onDone }: { onDone: () => void }) {
   return (
     <div className="bl-portal bl-loader" ref={rootRef} role="status" aria-live="polite">
       <span className="bl-loader-mark" ref={markRef}>
-        <BallMark />
-        {BRAND}
+        {tenant?.logo ? <TenantLogo src={tenant.logo} /> : <BallMark />}
+        {tenant?.name ?? BRAND}
       </span>
       <div className="bl-loader-track">
         <div className="bl-loader-fill" ref={fillRef} />

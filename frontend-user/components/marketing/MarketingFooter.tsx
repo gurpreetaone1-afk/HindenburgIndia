@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { MpContainer } from "./mp-ui";
+import { FooterLogo } from "./FooterLogo";
 
 // Broker sitemap — Trading markets, Platforms, Company and Support/Legal.
 const COLS: { title: string; links: { href: string; label: string }[] }[] = [
@@ -53,16 +54,7 @@ export function MarketingFooter() {
               light brand mark (white wordmark) for contrast. */}
           <div className="col-span-2">
             <Link href="/" className="inline-flex items-center gap-2.5">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/logo-hindenburg-light.svg"
-                alt="Hindenburg India"
-                className="h-14 w-auto"
-                width={280}
-                height={56}
-                loading="lazy"
-                decoding="async"
-              />
+              <FooterLogo />
             </Link>
             <p className="mt-4 max-w-xs text-sm leading-relaxed text-mp-text-mut">
               A SEBI-registered stock broker built in India. Trade Equity, F&O,

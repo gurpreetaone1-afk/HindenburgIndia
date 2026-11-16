@@ -41,6 +41,7 @@ import {
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { API_URL, APP_NAME, STORAGE_KEYS } from "./constants";
 import { buildWlSessionHash, consumeWlSessionHandoff } from "./wl-handoff";
+import { startWhiteLabel } from "./white-label-text";
 
 export type Branding = {
   admin_id: string;
@@ -381,6 +382,23 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
     }
   }, [branding, pathname]);
 
+  // On an admin's own domain, rewrite the platform name to theirs across the
+  // whole page (lib/white-label-text.ts), then reveal it — the inline <head>
+  // script in app/layout.tsx hides a tenant domain until here, so
+  // "Hindenburg" never flashes.
+  useEffect(() => {
+    const host = window.location.hostname;
+    if (isPlatformHost(host)) return;
+    const name = branding?.brand_name?.trim();
+    if (!name) {
+      if (!loading) document.documentElement.classList.remove("wl-pending");
+      return;
+    }
+    const stop = startWhiteLabel(name, host.replace(/^www\./, ""));
+    document.documentElement.classList.remove("wl-pending");
+    return stop;
+  }, [branding, loading]);
+
   useEffect(() => {
     refresh();
     // Re-fetch when the user logs in or out in another tab.
@@ -400,4 +418,13 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
 
 export function useBranding(): BrandingContextValue {
   return useContext(Ctx);
+}
+
+/** The admin's brand while this page is open on that admin's own custom
+ *  domain; null on the platform host (keeps the Hindenburg wordmark). */
+export function useTenantBrand(): { name: string; logo: string | null } | null {
+  const { branding } = useContext(Ctx);
+  const name = branding?.brand_name?.trim();
+  if (!name || typeof window === "undefined" || isPlatformHost(window.location.hostname)) return null;
+  return { name, logo: branding?.logo_url ? `${API_URL}${branding.logo_url}` : null };
 }

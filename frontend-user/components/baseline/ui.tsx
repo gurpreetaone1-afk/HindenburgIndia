@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useTenantBrand } from "@/lib/branding-context";
 import { Spring, canHover, tween } from "./motion";
 import type { SpringValues } from "./motion";
 
@@ -100,11 +101,19 @@ export function Eyebrow({ children, tone = "dark" }: { children: React.ReactNode
 }
 
 export function Brand() {
+  const tenant = useTenantBrand(); // admin's own domain → their logo + name
   return (
     <span className="bl-brand">
-      <BallMark />
-      Hindenburg India
+      {tenant?.logo ? <TenantLogo src={tenant.logo} /> : <BallMark />}
+      {tenant?.name ?? "Hindenburg India"}
     </span>
+  );
+}
+
+export function TenantLogo({ src }: { src: string }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={src} alt="" style={{ height: "1.75em", width: "auto", maxWidth: "3.5em", borderRadius: 6, objectFit: "contain" }} />
   );
 }
 

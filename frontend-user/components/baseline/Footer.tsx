@@ -4,8 +4,11 @@ import Link from "next/link";
 import { CONTACT, FOOTER_COLUMNS, SOCIALS } from "./data";
 import { useInview, useLineReveal } from "./hooks";
 import { Brand, Eyebrow, PillButton } from "./ui";
+import { useTenantBrand } from "@/lib/branding-context";
 
 export default function Footer({ onOpenModal }: { onOpenModal: () => void }) {
+  // On an admin's own domain the platform's Mumbai desk contacts don't belong.
+  const tenant = useTenantBrand();
   const ctaRef = useLineReveal<HTMLParagraphElement>({ stagger: 120, duration: 950 });
   const pillRef = useInview<HTMLDivElement>(
     { opacity: 0, y: 20 },
@@ -45,11 +48,13 @@ export default function Footer({ onOpenModal }: { onOpenModal: () => void }) {
             A multi-segment Indian trading platform — equity, F&amp;O, commodities and currency on
             one account, with flat pricing and transparent margin.
           </p>
-          <address className="bl-foot-addr">
-            <a href={`mailto:${CONTACT.email}`}>{CONTACT.email}</a>
-            <a href={`tel:${CONTACT.phone.replace(/[^\d+]/g, "")}`}>{CONTACT.phone}</a>
-            <span className="muted">{CONTACT.address}</span>
-          </address>
+          {!tenant && (
+            <address className="bl-foot-addr">
+              <a href={`mailto:${CONTACT.email}`}>{CONTACT.email}</a>
+              <a href={`tel:${CONTACT.phone.replace(/[^\d+]/g, "")}`}>{CONTACT.phone}</a>
+              <span className="muted">{CONTACT.address}</span>
+            </address>
+          )}
         </div>
 
         {FOOTER_COLUMNS.map((col) => (
