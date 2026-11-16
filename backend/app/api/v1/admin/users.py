@@ -16,6 +16,7 @@ from app.core.dependencies import (
     require_perm,
     scoped_user_filter,
 )
+from app.core.exceptions import ConflictError
 from app.core.security import hash_password
 from app.models.audit_log import AuditAction
 from app.models.transaction import TransactionType
@@ -535,6 +536,26 @@ async def create_user(
             broker_ancestry_for_new = (
                 list(target_broker.broker_ancestry or []) + [target_broker.id]
             )
+
+    # Email / mobile already used: say WHERE, not just "already exists" — an
+    # account in another admin's pool never shows in this admin's list, so
+    # the bare message read like a phantom user. Other pools' details stay
+    # hidden; only the owner (or super admin) is told the user code.
+    taken = await user_service.find_taken(payload.email, payload.mobile)
+    if taken is not None:
+        field = "email" if taken.email == payload.email.lower().strip() else "mobile number"
+        try:
+            await assert_user_in_scope(admin, taken.id)
+            visible = True
+        except Exception:
+            visible = admin.role == UserRole.SUPER_ADMIN
+        raise ConflictError(
+            f"This {field} is already used by {taken.user_code} ({taken.full_name}) — find it in All users."
+            if visible
+            else f"This {field} is already registered with another admin's account, so it is not in "
+            "your user list. Ask the super admin to transfer that account to you.",
+            details={"field": "email" if field == "email" else "mobile"},
+        )
 
     user = await user_service.create_user(
         email=payload.email,

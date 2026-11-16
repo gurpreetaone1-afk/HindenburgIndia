@@ -57,6 +57,16 @@ async def find_by_identifier(identifier: str) -> User | None:
     return await User.find_one(User.user_code == ident.upper())
 
 
+async def find_taken(email: str, mobile: str) -> User | None:
+    """The live (non-CLOSED) user already holding this email or mobile."""
+    return await User.find_one(
+        {
+            "$or": [{"email": email.lower().strip()}, {"mobile": normalize_mobile_in(mobile)}],
+            "status": {"$ne": UserStatus.CLOSED.value},
+        }
+    )
+
+
 async def email_or_mobile_taken(email: str, mobile: str) -> str | None:
     """Returns the field name that conflicts, or None.
 
