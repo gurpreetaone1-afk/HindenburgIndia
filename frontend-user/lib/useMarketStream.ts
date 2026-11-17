@@ -97,6 +97,19 @@ function send(msg: object): boolean {
   }
 }
 
+let syncQueued = false;
+/** Coalesce: a panel that unmounts + remounts in the same render (list rows
+ *  re-keyed on refresh) nets to zero and sends nothing, instead of an
+ *  unsubscribe + subscribe pair that makes the server rebuild snapshots. */
+function scheduleSync() {
+  if (syncQueued) return;
+  syncQueued = true;
+  setTimeout(() => {
+    syncQueued = false;
+    syncSubscriptions();
+  }, 0);
+}
+
 /** Bring the socket's subscription set in line with the ref-counted union. */
 function syncSubscriptions() {
   const desired = new Set<string>();
@@ -278,7 +291,7 @@ function releaseConsumer(tokens: Iterable<string>) {
     else S.refs.delete(t);
   }
   S.consumers = Math.max(0, S.consumers - 1);
-  syncSubscriptions();
+  scheduleSync();
   if (S.consumers === 0 && !S.lingerTimer) {
     S.lingerTimer = setTimeout(() => {
       S.lingerTimer = null;
@@ -383,7 +396,7 @@ export function useMarketStream(tokens: string[]): Map<string, MarketQuote> {
         return m;
       });
     }
-    syncSubscriptions();
+    scheduleSync();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tokensKey]);
 
