@@ -24,6 +24,8 @@ const schema = z
   .object({
     full_name: z.string().min(2),
     mobile: z.string().regex(/^[6-9]\d{9}$/, "10-digit Indian mobile"),
+    // Optional — blank keeps the mobile-based placeholder (see onSubmit).
+    email: z.union([z.literal(""), z.string().trim().email("Enter a valid email")]).optional(),
     password: z.string().min(8),
     // Confirmation field — added after a sub-admin typo'd the initial
     // password (Prachi / 18-May-2026) and the new user couldn't log in.
@@ -52,6 +54,7 @@ export default function NewUserPage() {
     defaultValues: {
       full_name: "",
       mobile: "",
+      email: "",
       password: "",
       confirm_password: "",
       initial_balance: 0,
@@ -86,15 +89,15 @@ export default function NewUserPage() {
     // this field) doesn't reject the request as `extra=forbid`.
     const { confirm_password: _confirm, assign_to_broker_id, ...rest } = v;
     void _confirm;
-    // Email field removed from the form (operator: clients log in with mobile /
-    // user_code — no email needed). The backend still wants a unique email for
-    // its index, so synthesize a deterministic placeholder from the mobile.
-    // Never shown to or used by the user; the mobile's own uniqueness keeps it
-    // unique.
+    // Email is optional (clients log in with mobile / user_code). The backend
+    // still wants a unique email for its index, so a blank one becomes a
+    // deterministic placeholder from the mobile — never shown to or used by
+    // the user; the mobile's own uniqueness keeps it unique.
+    const email = v.email?.trim().toLowerCase();
     const payload: any = {
       ...rest,
       role: "CLIENT",
-      email: `${v.mobile}@noemail.hindenburgindia.live`,
+      email: email || `${v.mobile}@noemail.hindenburgindia.live`,
     };
     if (assign_to_broker_id) payload.assign_to_broker_id = assign_to_broker_id;
     try {
@@ -135,13 +138,19 @@ export default function NewUserPage() {
               <Input {...form.register("full_name")} />
             </Field>
             <Field label="Mobile" error={form.formState.errors.mobile?.message}>
-              <Input maxLength={10} {...form.register("mobile")} />
+              {/* autoComplete off: stop the browser filling the admin's own
+                  saved login (e.g. "admin@…") into the new user's mobile. */}
+              <Input maxLength={10} inputMode="numeric" autoComplete="off" {...form.register("mobile")} />
+            </Field>
+            <Field label="Email (optional)" error={form.formState.errors.email?.message}>
+              <Input type="email" placeholder="user@gmail.com" autoComplete="off" {...form.register("email")} />
             </Field>
             <Field label="Initial password" error={form.formState.errors.password?.message}>
               <div className="relative">
                 <Input
                   type={showPassword ? "text" : "password"}
                   className="pr-10"
+                  autoComplete="new-password"
                   {...form.register("password")}
                 />
                 <button
@@ -161,6 +170,7 @@ export default function NewUserPage() {
             >
               <Input
                 type={showPassword ? "text" : "password"}
+                autoComplete="new-password"
                 {...form.register("confirm_password")}
               />
             </Field>
