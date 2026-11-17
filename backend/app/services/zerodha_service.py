@@ -26,7 +26,7 @@ from app.core.redis_client import (
     cache_get,
     cache_set,
     idempotency_check_and_set,
-    publish,
+    publish_batch,
 )
 from app.models.zerodha_settings import (
     SubscribedInstrument,
@@ -37,6 +37,15 @@ from app.utils.time_utils import now_utc
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
+
+# Precompiled Kite binary layouts (big-endian) for the tick parser — one
+# unpack per packet section instead of a struct call per field.
+_S_U32 = struct.Struct(">I")
+_S_LTP = struct.Struct(">II")      # token, ltp
+_S_INDEX = struct.Struct(">6I")    # token, ltp, high, low, open, close
+_S_QUOTE = struct.Struct(">11I")   # token, ltp, ltq, atp, vol, tbq, tsq, open, high, low, close
+_S_FULL = struct.Struct(">5I")     # @44: last_trade_time, oi, oi_day_high, oi_day_low, exchange_ts
+_S_LEVEL = struct.Struct(">IIH")   # depth level: qty, price, orders
 
 
 def _next_kite_expiry_utc() -> datetime:
@@ -2091,6 +2100,7 @@ class ZerodhaService:
         # adjustments that could turn `now - received_at` negative and
         # silently bypass the tick-staleness order-validator guard.
         received_at_mono = time.monotonic()
+        fanout: list[tuple[str, dict[str, Any]]] = []
         for tick in ticks or []:
             token = int(tick.get("instrument_token") or 0)
             if not token:
@@ -2167,9 +2177,13 @@ class ZerodhaService:
                 payload["exchange"] = sym_info.get("exchange", "")
                 self.ticks_by_symbol[payload["symbol"]] = payload
             self.ticks_by_token[token] = payload
+            fanout.append((f"market:tick:{token}", payload))
 
+        # One pipelined Redis round-trip per frame instead of a task + a
+        # round-trip per tick (per-tick publish was ~10% of the backend core).
+        if fanout:
             try:
-                asyncio.create_task(publish(f"market:tick:{token}", payload))
+                asyncio.create_task(publish_batch(fanout))
             except Exception:
                 pass
 
@@ -2199,87 +2213,65 @@ class ZerodhaService:
 
     @staticmethod
     def _parse_tick_packet(packet: bytes) -> dict[str, Any] | None:
+        """One Kite packet -> tick dict. Same fields/values as the original
+        field-by-field port, except market depth keeps only the best level on
+        each side - the only one any consumer reads (bid/ask in
+        _handle_parsed_ticks). Precompiled structs: this runs for every tick
+        and was ~12% of the backend core."""
         length = len(packet)
-
-        def u32(o: int) -> int:
-            return struct.unpack(">I", packet[o:o + 4])[0]
-
-        def u16(o: int) -> int:
-            return struct.unpack(">H", packet[o:o + 2])[0]
-
-        token = u32(0)
+        token = _S_U32.unpack_from(packet, 0)[0]
         # The last byte of the token encodes the exchange segment, which
         # determines the price divisor (currency segments use 10^7 / 10^4,
-        # everything else paise → /100). Segment 9 = indices (no depth).
+        # everything else paise -> /100). Segment 9 = indices (no depth).
         segment = token & 0xFF
-        if segment == 3:  # NSE CDS
-            divisor = 10000000.0
-        elif segment == 6:  # BSE CDS (BCD)
-            divisor = 10000.0
-        else:
-            divisor = 100.0
-        is_index = segment == 9
+        divisor = 10000000.0 if segment == 3 else 10000.0 if segment == 6 else 100.0
 
         tick: dict[str, Any] = {"instrument_token": token}
 
         # LTP mode (8 bytes)
         if length == 8:
-            tick["last_price"] = u32(4) / divisor
+            tick["last_price"] = _S_LTP.unpack_from(packet, 0)[1] / divisor
             return tick
 
-        # Indices: quote (28 bytes) / full (32 bytes) — no market depth.
-        if is_index:
-            ltp = u32(4) / divisor
-            close = u32(20) / divisor
+        # Indices: quote (28 bytes) / full (32 bytes) - no market depth.
+        if segment == 9:
+            _, ltp_i, high, low, open_, close_i = _S_INDEX.unpack_from(packet, 0)
+            ltp = ltp_i / divisor
+            close = close_i / divisor
             tick["last_price"] = ltp
-            tick["ohlc"] = {
-                "high": u32(8) / divisor,
-                "low": u32(12) / divisor,
-                "open": u32(16) / divisor,
-                "close": close,
-            }
+            tick["ohlc"] = {"high": high / divisor, "low": low / divisor, "open": open_ / divisor, "close": close}
             tick["change"] = ((ltp - close) / close * 100) if close else 0.0
             if length >= 32:
-                tick["exchange_timestamp"] = u32(28)
+                tick["exchange_timestamp"] = _S_U32.unpack_from(packet, 28)[0]
             return tick
 
         # Tradable instruments: quote (44 bytes) / full (184 bytes).
         if length >= 44:
-            ltp = u32(4) / divisor
-            close = u32(40) / divisor
+            _, ltp_i, ltq, atp, vol, tbq, tsq, open_, high, low, close_i = _S_QUOTE.unpack_from(packet, 0)
+            ltp = ltp_i / divisor
+            close = close_i / divisor
             tick["last_price"] = ltp
-            tick["last_traded_quantity"] = u32(8)
-            tick["average_traded_price"] = u32(12) / divisor
-            tick["volume_traded"] = u32(16)
-            tick["total_buy_quantity"] = u32(20)
-            tick["total_sell_quantity"] = u32(24)
-            tick["ohlc"] = {
-                "open": u32(28) / divisor,
-                "high": u32(32) / divisor,
-                "low": u32(36) / divisor,
-                "close": close,
-            }
+            tick["last_traded_quantity"] = ltq
+            tick["average_traded_price"] = atp / divisor
+            tick["volume_traded"] = vol
+            tick["total_buy_quantity"] = tbq
+            tick["total_sell_quantity"] = tsq
+            tick["ohlc"] = {"open": open_ / divisor, "high": high / divisor, "low": low / divisor, "close": close}
             tick["change"] = ((ltp - close) / close * 100) if close else 0.0
 
         if length >= 184:
-            tick["last_trade_time"] = u32(44)
-            tick["oi"] = u32(48)
-            tick["oi_day_high"] = u32(52)
-            tick["oi_day_low"] = u32(56)
-            tick["exchange_timestamp"] = u32(60)
-            depth: dict[str, list[dict[str, Any]]] = {"buy": [], "sell": []}
-            o = 64
-            for _ in range(5):
-                depth["buy"].append(
-                    {"quantity": u32(o), "price": u32(o + 4) / divisor, "orders": u16(o + 8)}
-                )
-                o += 12
-            for _ in range(5):
-                depth["sell"].append(
-                    {"quantity": u32(o), "price": u32(o + 4) / divisor, "orders": u16(o + 8)}
-                )
-                o += 12
-            tick["depth"] = depth
+            ltt, oi, oi_hi, oi_lo, ets = _S_FULL.unpack_from(packet, 44)
+            tick["last_trade_time"] = ltt
+            tick["oi"] = oi
+            tick["oi_day_high"] = oi_hi
+            tick["oi_day_low"] = oi_lo
+            tick["exchange_timestamp"] = ets
+            bq, bp, bo = _S_LEVEL.unpack_from(packet, 64)   # best bid
+            sq, sp, so = _S_LEVEL.unpack_from(packet, 124)  # best ask
+            tick["depth"] = {
+                "buy": [{"quantity": bq, "price": bp / divisor, "orders": bo}],
+                "sell": [{"quantity": sq, "price": sp / divisor, "orders": so}],
+            }
 
         return tick
 
