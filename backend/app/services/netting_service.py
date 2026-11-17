@@ -931,12 +931,16 @@ async def resolve_spread(segment_name: str, symbol: str | None) -> dict[str, Any
     except Exception:
         pass
 
-    seg = await NettingSegment.find_one(NettingSegment.name == seg_name)
+    # Raw projected reads (only the spread fields): building full ~100-field
+    # Beanie models here for every symbol on every cache miss was ~10% of the
+    # backend core. Same rows, same values.
+    _SPREAD_PROJ = {"_id": 0, "symbol": 1, "spreadType": 1, "spreadPips": 1}
+    seg = await NettingSegment.get_motor_collection().find_one({"name": seg_name}, _SPREAD_PROJ)
     spread_type: str = "fixed"
     spread_pips: float = 0.0
     if seg is not None:
-        spread_type = str(getattr(seg, "spreadType", "fixed") or "fixed")
-        spread_pips = float(getattr(seg, "spreadPips", 0.0) or 0.0)
+        spread_type = str(seg.get("spreadType") or "fixed")
+        spread_pips = float(seg.get("spreadPips") or 0.0)
 
     # Super-admin's platform-wide override sits above the seed default. The
     # admin Segment Settings page writes to `SuperAdminSegmentOverride` when
@@ -948,13 +952,12 @@ async def resolve_spread(segment_name: str, symbol: str | None) -> dict[str, Any
     try:
         sa_id = await _resolve_super_admin_id()
         if sa_id is not None:
-            sa_over = await SuperAdminSegmentOverride.find_one(
-                SuperAdminSegmentOverride.super_admin_id == sa_id,
-                SuperAdminSegmentOverride.segment_name == seg_name,
+            sa_over = await SuperAdminSegmentOverride.get_motor_collection().find_one(
+                {"super_admin_id": sa_id, "segment_name": seg_name}, _SPREAD_PROJ
             )
             if sa_over is not None:
-                sa_type = getattr(sa_over, "spreadType", None)
-                sa_pips = getattr(sa_over, "spreadPips", None)
+                sa_type = sa_over.get("spreadType")
+                sa_pips = sa_over.get("spreadPips")
                 if sa_type is not None:
                     spread_type = str(sa_type)
                 if sa_pips is not None:
@@ -981,20 +984,20 @@ async def resolve_spread(segment_name: str, symbol: str | None) -> dict[str, Any
         # (scope_admin_id=admin.id) would match the exact-find but then the
         # pattern fallback silently skipped the admin-scoped rows, resulting
         # in no override being applied for pattern-based scripts.
-        all_scripts = await NettingScriptOverride.find(
-            NettingScriptOverride.segment_name == seg_name,
-        ).to_list()
+        all_scripts = await NettingScriptOverride.get_motor_collection().find(
+            {"segment_name": seg_name}, _SPREAD_PROJ
+        ).to_list(None)
 
         script = None
         # 1. Exact match (any scope)
         for row in all_scripts:
-            if (row.symbol or "").upper() == sym_key:
+            if (row.get("symbol") or "").upper() == sym_key:
                 script = row
                 break
         # 2. Pattern match (any scope) — e.g. SILVERFUT matches SILVER26JULFUT
         if script is None:
             for row in all_scripts:
-                split = _split_pattern(row.symbol)
+                split = _split_pattern(row.get("symbol"))
                 if split is None:
                     continue
                 base, suffix = split
@@ -1003,8 +1006,8 @@ async def resolve_spread(segment_name: str, symbol: str | None) -> dict[str, Any
                     break
 
         if script is not None:
-            override_type = getattr(script, "spreadType", None)
-            override_pips = getattr(script, "spreadPips", None)
+            override_type = script.get("spreadType")
+            override_pips = script.get("spreadPips")
             if override_type is not None:
                 spread_type = str(override_type)
             if override_pips is not None:
