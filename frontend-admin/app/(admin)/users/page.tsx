@@ -29,7 +29,8 @@ import { useAdminAuthStore } from "@/stores/authStore";
  * unique tokens — so the per-tick cost scales with unique tokens, not
  * row count.
  */
-const LIVE_STATS_REFETCH_MS = 1500;
+// 3 s (was 1.5 s): still live for an overview table, half the backend load.
+const LIVE_STATS_REFETCH_MS = 3000;
 
 type LiveStat = {
   user_id: string;

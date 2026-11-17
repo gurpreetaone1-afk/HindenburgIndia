@@ -100,7 +100,9 @@ class Settings(BaseSettings):
     # with headroom; bigger requests get rejected with an explicit
     # `subscription_limit` error frame so the frontend can prompt the
     # user to unsubscribe something first.
-    WS_MAX_SUBSCRIPTIONS_PER_CONN: int = 70
+    # 250 since the web app shares ONE socket per tab across all panels
+    # (frontend-user/lib/useMarketStream.ts); each panel still caps itself at 70.
+    WS_MAX_SUBSCRIPTIONS_PER_CONN: int = 250
 
     # ── JWT ──────────────────────────────────────────────────────────
     # Refresh-token TTL widened from 7 → 30 days so the mobile app keeps

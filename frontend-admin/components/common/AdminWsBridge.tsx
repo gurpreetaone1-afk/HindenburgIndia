@@ -160,7 +160,10 @@ export function AdminWsBridge() {
             qc.invalidateQueries({ queryKey: ["admin", "wallets"] });
             qc.invalidateQueries({ queryKey: ["admin", "ledger"] });
             qc.invalidateQueries({ queryKey: ["admin", "dashboard"] });
-            qc.invalidateQueries({ queryKey: ["admin", "users"] });
+            // NOT ["admin","users"]: wallets change on every fill, and that
+            // prefix refetched the whole Users list + live-stats every 1-2 s
+            // in market hours. The list's balance / P&L columns already come
+            // from its own live-stats poll.
             break;
           case "deposit_update":
             qc.invalidateQueries({ queryKey: ["admin", "deposits"] });
