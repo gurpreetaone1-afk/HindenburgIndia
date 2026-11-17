@@ -33,7 +33,6 @@ const schema = z
     // catches the mismatch client-side before submit.
     confirm_password: z.string().min(8),
     initial_balance: z.coerce.number().min(0).default(0),
-    credit_limit: z.coerce.number().min(0).default(0),
     // "" = Self (keep user directly under caller).  Otherwise a broker /
     // sub-broker id to place the user inside that broker's subtree.
     assign_to_broker_id: z.string().optional(),
@@ -58,7 +57,6 @@ export default function NewUserPage() {
       password: "",
       confirm_password: "",
       initial_balance: 0,
-      credit_limit: 0,
       assign_to_broker_id: "",
       is_demo: false,
     },
@@ -180,7 +178,7 @@ export default function NewUserPage() {
         <Card>
           <CardHeader>
             <CardTitle>Access &amp; balances</CardTitle>
-            <CardDescription>Placement + opening balance + credit limit</CardDescription>
+            <CardDescription>Placement + opening balance</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <Field
@@ -203,9 +201,6 @@ export default function NewUserPage() {
             </Field>
             <Field label="Initial balance (₹)">
               <Input type="number" step="0.01" {...form.register("initial_balance")} />
-            </Field>
-            <Field label="Credit limit (₹)">
-              <Input type="number" step="0.01" {...form.register("credit_limit")} />
             </Field>
             <div className="flex items-start gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
               <input
