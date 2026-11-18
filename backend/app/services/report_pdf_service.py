@@ -136,8 +136,22 @@ def _rupee() -> str:
     return "₹" if _HAS_RUPEE else "Rs. "
 
 
+def _num(v: Any) -> float:
+    """A report number that may arrive pre-formatted ("1,750.00", "₹2,500")
+    from the route payloads. Plain float() crashed the WHOLE PDF (500 →
+    "network error" in the app) for any open position / amount >= 1,000."""
+    if v is None or v == "":
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).replace(",", "").replace("₹", "").replace("Rs.", "").strip() or 0)
+    except ValueError:
+        return 0.0
+
+
 def _fmt_money(v: float | int | str | None) -> str:
-    n = float(v or 0)
+    n = _num(v)
     return f"{_rupee()}{n:,.2f}"
 
 
@@ -366,7 +380,7 @@ def build_pnl_pdf(user, payload: dict) -> bytes:
     doc, buf = _doc()
     rng_from = _fmt_date(payload.get("from"))
     rng_to = _fmt_date(payload.get("to"))
-    net_pnl = float(payload.get("net_pnl") or 0)
+    net_pnl = _num(payload.get("net_pnl"))
     elems = _header(
         "Profit & Loss Statement",
         f"Period: {rng_from} → {rng_to}",
@@ -400,7 +414,7 @@ def build_pnl_pdf(user, payload: dict) -> bytes:
         elems.append(Paragraph("Symbol-wise breakdown", styles["h2"]))
         rows: list[list[Any]] = [["Symbol", "Buy Qty", "Sell Qty", "Buy Value", "Sell Value", "Charges", "P&L"]]
         for s in by_symbol:
-            pnl = float(s.get("pnl") or 0)
+            pnl = _num(s.get("pnl"))
             rows.append(
                 [
                     s.get("symbol", "—"),
@@ -549,7 +563,7 @@ def build_full_tradebook_pdf(user, payload: dict) -> bytes:
     rng_from = payload.get("from_label", "Beginning")
     rng_to = payload.get("to_label", "Now")
     generated_at = payload.get("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    total_brokerage = float(payload.get("total_brokerage", 0))
+    total_brokerage = _num(payload.get("total_brokerage", 0))
 
     # ── Branded header ─────────────────────────────────────────────
     brand_name = admin_brand or "Hindenburg India"
@@ -661,8 +675,8 @@ def build_full_tradebook_pdf(user, payload: dict) -> bytes:
     total_brokerage_col = 0.0
     total_pnl = 0.0
     for tx in closed:
-        brokerage = float(tx.get("brokerage") or 0)
-        pnl = float(tx.get("total_pnl") or 0)
+        brokerage = _num(tx.get("brokerage"))
+        pnl = _num(tx.get("total_pnl"))
         total_brokerage_col += brokerage
         total_pnl += pnl
 
@@ -705,12 +719,12 @@ def build_full_tradebook_pdf(user, payload: dict) -> bytes:
     mw = page_w / 7
     money_widths = [mw] * 7
     money_row = [
-        f"{float(money.get('credit_in', 0)):,.2f}",
-        f"{float(money.get('credit_out', 0)):,.2f}",
-        f"{float(money.get('deposit', 0)):,.2f}",
-        f"{float(money.get('withdraw', 0)):,.2f}",
-        f"{float(money.get('adjustment', 0)):,.2f}",
-        f"{float(money.get('bonus', 0)):,.2f}",
+        f"{_num(money.get('credit_in', 0)):,.2f}",
+        f"{_num(money.get('credit_out', 0)):,.2f}",
+        f"{_num(money.get('deposit', 0)):,.2f}",
+        f"{_num(money.get('withdraw', 0)):,.2f}",
+        f"{_num(money.get('adjustment', 0)):,.2f}",
+        f"{_num(money.get('bonus', 0)):,.2f}",
         f"{total_brokerage:,.2f}",
     ]
     elems.append(_ark_table(money_headers, [money_row], money_widths))
@@ -734,10 +748,10 @@ def build_full_tradebook_pdf(user, payload: dict) -> bytes:
     od_total_pnl = 0.0
     od_total_val = 0.0
     for d in opened:
-        amt = float(d.get("amount") or 0)
-        com = float(d.get("commission") or 0)
-        pnl = float(d.get("total_pnl") or 0)
-        val = float(d.get("value") or 0)
+        amt = _num(d.get("amount"))
+        com = _num(d.get("commission"))
+        pnl = _num(d.get("total_pnl"))
+        val = _num(d.get("value"))
         od_total_amt += amt
         od_total_com += com
         od_total_pnl += pnl
@@ -798,13 +812,13 @@ def build_full_tradebook_pdf(user, payload: dict) -> bytes:
     elems.append(Paragraph("<b>Financial Standings</b>", styles["h2"]))
 
     fin_items = [
-        ("Balance", f"{_rupee()}{float(fin.get('balance', 0)):,.2f}"),
-        ("Credit", f"{_rupee()}{float(fin.get('credit', 0)):,.2f}"),
-        ("Equity", f"{_rupee()}{float(fin.get('equity', 0)):,.2f}"),
-        ("Total PnL", f"{_rupee()}{float(fin.get('total_pnl', 0)):,.2f}"),
-        ("Used Margin", f"{_rupee()}{float(fin.get('used_margin', 0)):,.2f}"),
-        ("Holding Margin", f"{_rupee()}{float(fin.get('holding_margin', 0)):,.2f}"),
-        ("Free Margin", f"{_rupee()}{float(fin.get('free_margin', 0)):,.2f}"),
+        ("Balance", f"{_rupee()}{_num(fin.get('balance', 0)):,.2f}"),
+        ("Credit", f"{_rupee()}{_num(fin.get('credit', 0)):,.2f}"),
+        ("Equity", f"{_rupee()}{_num(fin.get('equity', 0)):,.2f}"),
+        ("Total PnL", f"{_rupee()}{_num(fin.get('total_pnl', 0)):,.2f}"),
+        ("Used Margin", f"{_rupee()}{_num(fin.get('used_margin', 0)):,.2f}"),
+        ("Holding Margin", f"{_rupee()}{_num(fin.get('holding_margin', 0)):,.2f}"),
+        ("Free Margin", f"{_rupee()}{_num(fin.get('free_margin', 0)):,.2f}"),
         ("Margin Level", fin.get("margin_level", "0.00%")),
         ("Brokerage Paid", f"{_rupee()}{total_brokerage:,.2f}"),
     ]
