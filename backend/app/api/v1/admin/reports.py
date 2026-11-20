@@ -82,8 +82,10 @@ async def financial_report(
     total_withdrawals = sum(float(str(w.total_withdrawals)) for w in wallets)
     total_brokerage = sum(float(str(w.total_brokerage)) for w in wallets)
 
-    pending_dep = await DepositRequest.find(
-        {"status": DepositStatus.PENDING.value, **user_q}
+    from app.api.v1.admin.payin_out import MANUAL_DEPOSIT_FILTER
+
+    pending_dep = await DepositRequest.find(  # awaiting approval, not gateway orders
+        {"status": DepositStatus.PENDING.value, **user_q, **MANUAL_DEPOSIT_FILTER}
     ).count()
     pending_wd = await WithdrawalRequest.find(
         {"status": WithdrawalStatus.PENDING.value, **user_q}

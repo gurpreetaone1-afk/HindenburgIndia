@@ -104,9 +104,12 @@ async def stats(admin: CurrentAdmin):
         ).count(),
         0,
     )
+    from app.api.v1.admin.payin_out import MANUAL_DEPOSIT_FILTER
+
+    # Only deposits awaiting an admin's approval — not online-gateway orders.
     pending_deposits = await _safe(
         DepositRequest.find(
-            {"status": DepositStatus.PENDING.value, **user_id_filter}
+            {"status": DepositStatus.PENDING.value, **user_id_filter, **MANUAL_DEPOSIT_FILTER}
         ).count(),
         0,
     )

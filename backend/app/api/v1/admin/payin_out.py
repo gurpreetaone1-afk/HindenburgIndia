@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from beanie import PydanticObjectId
@@ -307,6 +308,13 @@ async def list_deposits(
 
 
 _GATEWAYS = {"divinepay", "payfromupi", "okpay", "univepay", "monepay", "cashfree"}
+
+# Deposits an admin can actually approve: everything except online-gateway
+# orders, which credit themselves — an abandoned one (payment page opened,
+# never paid) stays PENDING forever and used to swell the dashboard cards.
+MANUAL_DEPOSIT_FILTER: dict = {
+    "idempotency_key": {"$not": re.compile(r"^(?:%s):" % "|".join(sorted(_GATEWAYS)))}
+}
 
 
 def _gateway_of(r: DepositRequest) -> str | None:
