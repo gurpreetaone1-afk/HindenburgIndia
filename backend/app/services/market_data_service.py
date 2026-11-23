@@ -1117,6 +1117,7 @@ async def feed_subscribe_listener() -> None:
 
 
 async def get_quote(token: str) -> dict[str, Any]:
+    _note_interest(token)  # keeps an HTTP-polled token on the leader's feed
     now_ms = int(_t.time() * 1000)
     cached = _quote_cache.get(token)
     if cached and (now_ms - cached[0]) < _QUOTE_CACHE_TTL_MS:
@@ -1240,6 +1241,8 @@ async def get_quotes(tokens: list[str]) -> list[dict[str, Any]]:
 
 def subscribe(tokens: list[str]) -> None:
     _subscribed.update(tokens)
+    for t in tokens:
+        _note_interest(t)
 
     # Seed an empty `_state` slot for every subscribed token so the leader's
     # `tick_loop` starts overlaying it immediately. Zerodha (numeric) tokens are
@@ -1411,6 +1414,15 @@ _INTEREST_KEY_PREFIX = "feed:interest:"
 _INTEREST_TTL_SEC = 90
 _REAP_GRACE_SEC = 180.0  # unneeded this long before it is dropped
 _unneeded_since: dict[str, float] = {}
+# Tokens asked for on THIS worker through any path (HTTP quote, option chain,
+# order fill, subscribe) — not only sockets. Index quotes are mostly polled
+# over HTTP; without this the reaper dropped NIFTY/SENSEX and froze them.
+_RECENT_INTEREST_SEC = 600.0
+_recent_interest: dict[str, float] = {}
+
+
+def _note_interest(token: Any) -> None:
+    _recent_interest[str(token)] = _t.monotonic()
 
 
 async def feed_interest_publish_loop(interval_sec: float = 30.0) -> None:
@@ -1423,8 +1435,12 @@ async def feed_interest_publish_loop(interval_sec: float = 30.0) -> None:
     key = f"{_INTEREST_KEY_PREFIX}{os.getpid()}"
     while True:
         try:
-            tokens = list(market_tick_hub._subscribers.keys())
-            await get_redis().set(key, json.dumps(tokens), ex=_INTEREST_TTL_SEC)
+            now = _t.monotonic()
+            for tok, at in list(_recent_interest.items()):
+                if now - at > _RECENT_INTEREST_SEC:
+                    _recent_interest.pop(tok, None)
+            tokens = set(market_tick_hub._subscribers.keys()) | set(_recent_interest)
+            await get_redis().set(key, json.dumps(sorted(tokens)), ex=_INTEREST_TTL_SEC)
         except Exception:  # noqa: BLE001 — next pass retries
             logger.debug("feed_interest_publish_failed", exc_info=True)
         await asyncio.sleep(interval_sec)
