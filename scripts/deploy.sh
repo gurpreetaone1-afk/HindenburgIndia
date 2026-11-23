@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fail-safe deploy for the Hindenburg VPS (pm2: hb-backend, hb-user, hb-admin).
+# Fail-safe deploy for the Hindenburg VPS (pm2: hb-backend + hb-feed, hb-user, hb-admin).
 #
 #   bash scripts/deploy.sh            deploy origin/main
 #   bash scripts/deploy.sh rollback   go back to the release before the last deploy
@@ -51,6 +51,7 @@ verify() {
   local bad=0
   log "verify"
   check_url http://127.0.0.1:8000/health 200 || bad=1
+  if has_feed; then check_url http://127.0.0.1:8001/health 200 || bad=1; fi
   check_url http://127.0.0.1:3000/ 200 || bad=1
   check_url http://127.0.0.1:3000/terminal 200 || bad=1
   check_url http://127.0.0.1:3001/ 307 || bad=1
@@ -61,6 +62,14 @@ verify() {
 restart() {
   log "pm2 restart $1"
   pm2 restart "$1" >/dev/null
+}
+
+# The live feed runs in its own pm2 app (backend/run_feed.sh) from the same
+# backend code, so it restarts whenever the backend does.
+has_feed() { pm2 describe hb-feed >/dev/null 2>&1; }
+restart_backend() {
+  restart hb-backend
+  if has_feed; then restart hb-feed; fi
 }
 
 market_open() { # NSE cash session, Mon-Fri 09:15-15:30 IST
@@ -94,7 +103,7 @@ restore() {
   log "repo reset to $sha"
   for p in "$@"; do
     if [[ $p == backend ]]; then
-      restart hb-backend
+      restart_backend
       continue
     fi
     d="$REPO/$p"
@@ -189,7 +198,7 @@ deploy() {
     restart "${PM2[$f]}"
   done
   if [[ " ${changed[*]} " == *" backend "* ]]; then
-    restart hb-backend
+    restart_backend
   fi
 
   if verify; then
