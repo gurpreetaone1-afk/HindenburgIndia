@@ -1400,6 +1400,88 @@ async def open_position_subscription_loop(interval_sec: float = 120.0) -> None:
         await _asyncio.sleep(interval_sec)
 
 
+# ── Cross-worker watch interest + leader-side subscription reaper ─────
+# With several uvicorn workers a socket's `unsubscribe` only reached ITS
+# worker's `_subscribed`; the feed leader's set (which tick_loop overlays,
+# mirrors to `mdlive` and publishes every pass) only ever grew. In 3 days it
+# reached ~2,450 tokens, pinned the leader at ~90% CPU, left every price
+# 4-15 s stale and made the risk enforcer overrun (2026-11-23). Each worker
+# now advertises what its sockets watch; the leader prunes the rest.
+_INTEREST_KEY_PREFIX = "feed:interest:"
+_INTEREST_TTL_SEC = 90
+_REAP_GRACE_SEC = 180.0  # unneeded this long before it is dropped
+_unneeded_since: dict[str, float] = {}
+
+
+async def feed_interest_publish_loop(interval_sec: float = 30.0) -> None:
+    """EVERY worker: publish the tokens its connected market sockets watch."""
+    import os
+
+    from app.core.redis_client import get_redis
+    from app.core.ws_hub import market_tick_hub
+
+    key = f"{_INTEREST_KEY_PREFIX}{os.getpid()}"
+    while True:
+        try:
+            tokens = list(market_tick_hub._subscribers.keys())
+            await get_redis().set(key, json.dumps(tokens), ex=_INTEREST_TTL_SEC)
+        except Exception:  # noqa: BLE001 — next pass retries
+            logger.debug("feed_interest_publish_failed", exc_info=True)
+        await asyncio.sleep(interval_sec)
+
+
+async def prune_unwatched_subscriptions() -> int:
+    """LEADER: drop tokens nobody needs from `_subscribed`. Needed = any
+    worker's watched tokens + open positions + live orders. A token must be
+    unneeded for `_REAP_GRACE_SEC` first; with no interest data at all (Redis
+    trouble) nothing is pruned. Returns how many tokens were dropped."""
+    from app.core.redis_client import get_redis
+    from app.models.order import Order, OrderStatus
+    from app.models.position import Position, PositionStatus
+
+    r = get_redis()
+    needed: set[str] = set()
+    seen_workers = 0
+    async for k in r.scan_iter(match=f"{_INTEREST_KEY_PREFIX}*", count=200):
+        raw = await r.get(k)
+        if raw:
+            seen_workers += 1
+            needed.update(str(t) for t in json.loads(raw))
+    if seen_workers == 0:
+        return 0
+    for model, q in (
+        (Position, {"status": PositionStatus.OPEN.value}),
+        (Order, {"status": {"$in": [OrderStatus.PENDING.value, OrderStatus.OPEN.value, OrderStatus.PARTIAL.value]}}),
+    ):
+        needed.update(str(t) for t in await model.get_motor_collection().distinct("instrument.token", q) if t)
+
+    now = _t.monotonic()
+    pruned = 0
+    for tok in list(_subscribed):
+        if tok in needed:
+            _unneeded_since.pop(tok, None)
+            continue
+        if now - _unneeded_since.setdefault(tok, now) >= _REAP_GRACE_SEC:
+            _subscribed.discard(tok)
+            _unneeded_since.pop(tok, None)
+            pruned += 1
+    for tok in [t for t in _unneeded_since if t not in _subscribed]:
+        _unneeded_since.pop(tok, None)
+    return pruned
+
+
+async def unwatched_subscription_reaper_loop(interval_sec: float = 60.0) -> None:
+    """Leader-only: run `prune_unwatched_subscriptions` every minute."""
+    while True:
+        await asyncio.sleep(interval_sec)
+        try:
+            n = await prune_unwatched_subscriptions()
+            if n:
+                logger.info("feed_subscriptions_pruned pruned=%d remaining=%d", n, len(_subscribed))
+        except Exception:  # noqa: BLE001
+            logger.exception("feed_subscription_reaper_failed")
+
+
 # ── Background tick loop ────────────────────────────────────────────
 async def tick_loop(interval_sec: float = 1.0) -> None:
     """Fan out subscribed instrument ticks to Redis pub/sub.

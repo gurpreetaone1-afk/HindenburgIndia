@@ -544,6 +544,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                     name="open_position_subscriptions",
                 )
             )
+            # Prune tokens no worker's sockets / positions / orders need any
+            # more — non-leader unsubscribes never reach this set otherwise.
+            subtasks.append(
+                _asyncio.create_task(
+                    _supervise(
+                        "feed_subscription_reaper",
+                        market_data_service.unwatched_subscription_reaper_loop,
+                    ),
+                    name="feed_subscription_reaper",
+                )
+            )
             subtasks.append(
                 _asyncio.create_task(
                     _supervise(
@@ -927,6 +938,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             logger.exception("zerodha_startup_init_failed")
 
     asyncio.create_task(_zerodha_boot())
+
+    # Every worker advertises the tokens its market sockets watch, so the feed
+    # leader's reaper (market_data_service) can drop the unwatched ones.
+    setattr(
+        app,
+        "_feed_interest_task",
+        _asyncio.create_task(
+            _supervise("feed_interest", market_data_service.feed_interest_publish_loop),
+            name="feed_interest",
+        ),
+    )
 
     # Zerodha auto-login daily scheduler now runs INSIDE the leader:feed
     # factory above — its WS reconnect + verify must act on the worker that
