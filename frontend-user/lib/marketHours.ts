@@ -94,10 +94,10 @@ export function isInstrumentMarketOpen(
   const mu = MUHURAT_SESSIONS[_istDateKey(now)];
   if (mu) return min >= mu[0] && min <= mu[1];
 
-  // MCX commodities: Mon-Fri 09:00-23:30 IST (evening session merged).
+  // MCX commodities: Mon-Fri 09:00-23:55 IST (backend time_utils MCX_CLOSE).
   if (seg.startsWith("MCX") || exch === "MCX") {
     if (!weekday) return false;
-    return min >= 9 * 60 && min <= 23 * 60 + 30;
+    return min >= 9 * 60 && min < 23 * 60 + 55;
   }
 
   // NSE / BSE equity, F&O — Mon-Fri 09:15-15:30 IST.

@@ -974,7 +974,7 @@ async def validate(
         or "CDS" in seg_upper
         or exch_upper == "CDS"
     )
-    is_mcx = "MCX" in seg_upper  # MCX has its own hours (~09:00-23:30 IST)
+    is_mcx = "MCX" in seg_upper  # MCX has its own hours (09:00-23:55 IST)
 
     # Only SERVER/admin force-closes bypass the market-hours guard — risk
     # auto-flatten (RISK_ENFORCER), admin "Close" (ADMIN / ADMIN_KILL_SWITCH),
@@ -1043,11 +1043,12 @@ async def validate(
             if _mu:
                 pass  # inside the muhurat window (checked above)
             elif is_mcx:
-                # MCX: 09:00 – 23:30 IST (winter) / 23:55 IST (summer evening session)
-                # We use a generous 09:00 – 23:30 window.
-                from datetime import time as _t
+                # MCX: 09:00 – 23:55 IST — same MCX_OPEN / MCX_CLOSE the risk
+                # enforcer, pending-order poller and carry rollover use, so an
+                # order accepted here is never one the rest treats as closed.
+                from app.utils.time_utils import MCX_CLOSE, MCX_OPEN
 
-                if not (_t(9, 0) <= ist.time() <= _t(23, 30)):
+                if not (MCX_OPEN <= ist.time() < MCX_CLOSE):
                     raise MarketClosedError("MCX is closed. Place AMO instead.")
             else:
                 # NSE / BSE equities + F&O: 09:15 – 15:30 IST

@@ -888,7 +888,7 @@ async def _enforce_for_user(
         for p in open_positions:
             # A stop-out is a FORCED liquidation — unlike a USER close it must
             # flatten EVERY open position, INCLUDING ones whose market is
-            # currently closed (NFO/NSE after 15:30, MCX after 23:30, weekends).
+            # currently closed (NFO/NSE after 15:30, MCX after 23:55, weekends).
             # The old `_segment_closed` skip left a closed-segment leg (e.g. a
             # NIFTY option after 15:30) OPEN with its margin still LOCKED while
             # the rest of the book was squared off — the reported "stop-out ke

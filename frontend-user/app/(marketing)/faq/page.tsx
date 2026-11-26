@@ -35,7 +35,7 @@ const GROUPS: { heading: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "What are the market hours?",
-        a: "Equity and F&O trade 9:15 AM to 3:30 PM IST on market days. MCX commodities trade until 11:30 PM IST. No weekends or exchange holidays.",
+        a: "Equity and F&O trade 9:15 AM to 3:30 PM IST on market days. MCX commodities trade until 11:55 PM IST. No weekends or exchange holidays.",
       },
       {
         q: "Can I apply for IPOs and invest in mutual funds?",

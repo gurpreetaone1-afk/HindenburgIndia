@@ -444,10 +444,10 @@ export class CustomDatafeed {
       // suffix the library treats every day as a trading day, leaving two
       // large blank spaces (Sat + Sun) between every Friday close and Monday
       // open, which makes the chart look broken ("bahut gaffe").
-      // MCX metals/energy trade till 11:30 PM IST — use extended MCX session.
+      // MCX metals/energy trade till 11:55 PM IST — use extended MCX session.
       const exch = (inst.exchange || "").toUpperCase();
       const isMCX = exch === "MCX";
-      const indianSession = isMCX ? "0900-2330:23456" : "0915-1530:23456";
+      const indianSession = isMCX ? "0900-2355:23456" : "0915-1530:23456";
       onResolve({
         name: inst.symbol,
         description: inst.name || inst.symbol,

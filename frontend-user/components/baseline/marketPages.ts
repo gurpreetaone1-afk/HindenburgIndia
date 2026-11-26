@@ -128,12 +128,12 @@ const COMMODITIES: MarketPage = {
     { v: "MCX", l: "Exchange" },
     { v: "15+", l: "Commodities" },
     { v: "SPAN + Exposure", l: "Margin" },
-    { v: "9 AM – 11:30 PM", l: "Market hours" },
+    { v: "9 AM – 11:55 PM", l: "Market hours" },
   ],
   overview: {
     eyebrow: "Overview",
     lines: ["A hedge against", "equity volatility"],
-    body: "Commodities diversify a portfolio and hedge against inflation. Trade precious metals like gold and silver, and energy contracts like crude oil and natural gas on the MCX. Transparent SPAN + Exposure margins, and access to Indian commodity futures from 9 AM to 11:30 PM.",
+    body: "Commodities diversify a portfolio and hedge against inflation. Trade precious metals like gold and silver, and energy contracts like crude oil and natural gas on the MCX. Transparent SPAN + Exposure margins, and access to Indian commodity futures from 9 AM to 11:55 PM.",
   },
   instruments: [
     { symbol: "GOLD", exchange: "MCX", lot: "100 grams", margin: "SPAN + Exposure" },
