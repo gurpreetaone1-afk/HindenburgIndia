@@ -217,6 +217,16 @@ async def find_admin_by_domain(domain: str) -> User | None:
         return None
     user = await User.find_one(User.custom_domain == norm)
     if user is None:
+        # Secondary domain of an admin (custom_domain_aliases). Scoped to
+        # active admins so the (role, status) index keeps it cheap.
+        user = await User.find_one(
+            {
+                "role": UserRole.ADMIN.value,
+                "status": UserStatus.ACTIVE.value,
+                "custom_domain_aliases": norm,
+            }
+        )
+    if user is None:
         return None
     if user.role != UserRole.ADMIN or user.status != UserStatus.ACTIVE:
         return None
@@ -267,9 +277,13 @@ async def all_active_custom_domains() -> list[str]:
             "role": UserRole.ADMIN.value,
             "status": UserStatus.ACTIVE.value,
         },
-        {"custom_domain": 1},
+        {"custom_domain": 1, "custom_domain_aliases": 1},
     )
-    return [doc["custom_domain"] async for doc in cursor]
+    out: list[str] = []
+    async for doc in cursor:
+        out.append(doc["custom_domain"])
+        out.extend(a for a in (doc.get("custom_domain_aliases") or []) if a)
+    return out
 
 
 # ── Resolve admin from a register request (host + referral) ──────────

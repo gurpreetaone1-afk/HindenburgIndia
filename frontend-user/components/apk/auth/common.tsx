@@ -56,8 +56,10 @@ export function AuthHero({ title, subtitle }: { title: string; subtitle?: string
     <div className="mb-8 flex flex-col gap-5">
       <div className="flex flex-col items-center gap-2.5">
         {logo ? (
+          // object-contain + no rounding: tenant logos come in any shape
+          // (round, wide, square) — show the whole mark, never crop it.
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={logo} alt={tenant || "Logo"} className="size-16 rounded-2xl object-cover" />
+          <img src={logo} alt={tenant || "Logo"} className="size-20 object-contain" />
         ) : (
           <HindenburgMark className="size-16" />
         )}

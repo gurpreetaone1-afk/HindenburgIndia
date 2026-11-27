@@ -354,6 +354,12 @@ class User(TimestampMixin):
     # Custom domain (sparse-unique — see Settings.indexes). Stored
     # lowercased, no scheme: "mybroker.com".
     custom_domain: str | None = None
+    # Extra hostnames (normalised like custom_domain: lowercase, no scheme,
+    # no www) that act exactly like `custom_domain` for CORS, branding and
+    # signup attribution — e.g. a second Cloudflare-proxied domain for the
+    # same tenant (sharemarket.one next to sharemarketone.site). Set by ops;
+    # no admin UI yet. Allowed for CORS only while the admin is READY.
+    custom_domain_aliases: list[str] = Field(default_factory=list)
 
     # Lifecycle state machine for `custom_domain` provisioning.
     #   PENDING_DNS  → admin saved domain, hasn't verified yet
