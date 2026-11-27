@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/authStore";
 import { setUserNotificationsEnabled, userNotificationsEnabled } from "@/lib/notify-sound";
 import { setApkTheme, useApkTheme } from "@/components/apk/ApkShell";
-import { Screen, Header, Toggle } from "@/components/apk/ui";
+import { Screen, Header, Toggle, useConfirm } from "@/components/apk/ui";
 import { useBrandName } from "@/components/apk/wallet/common";
 import { useMe } from "@/components/apk/profile/parts";
 
@@ -33,9 +33,17 @@ export function ApkSettingsScreen() {
   const brand = useBrandName();
   const twoFa = !!useMe().me?.two_fa_enabled;
   const logout = useAuthStore((s) => s.logout);
+  const [confirm, confirmDialog] = useConfirm();
 
   async function confirmLogout() {
-    if (!window.confirm("Log out? You'll need to sign in again.")) return;
+    const ok = await confirm({
+      title: "Log out?",
+      message: "You'll need to sign in again.",
+      confirmLabel: "Log out",
+      danger: true,
+      icon: <IoLogOutOutline size={22} />,
+    });
+    if (!ok) return;
     try {
       await logout();
     } finally {
@@ -66,6 +74,7 @@ export function ApkSettingsScreen() {
         <SettingRow icon={<IoLogOutOutline size={18} />} title="Log out" danger onClick={confirmLogout} />
         <div className="mt-5 text-center text-[11px] text-apk-dim">{brand} • v1.0.0</div>
       </div>
+      {confirmDialog}
     </Screen>
   );
 }

@@ -10,7 +10,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { IoTrashOutline } from "react-icons/io5";
 import { WalletAPI } from "@/lib/api";
-import { Spinner } from "@/components/apk/ui";
+import { Spinner, useConfirm } from "@/components/apk/ui";
 
 export type FeedKind = "deposit" | "withdrawal" | "admin_add" | "admin_deduct";
 export type FeedRow = {
@@ -104,8 +104,16 @@ export function buildFeed(txns: any[], deposits: any[], withdrawals: any[]): Fee
 export function DeleteRequestButton({ id, type }: { id: string; type: "deposit" | "withdrawal" }) {
   const qc = useQueryClient();
   const [deleting, setDeleting] = useState(false);
+  const [confirm, confirmDialog] = useConfirm();
   async function handleDelete() {
-    if (!window.confirm("Delete this pending request?")) return;
+    const ok = await confirm({
+      title: "Delete request?",
+      message: `This pending ${type} request will be removed.`,
+      confirmLabel: "Delete",
+      danger: true,
+      icon: <IoTrashOutline size={22} />,
+    });
+    if (!ok) return;
     setDeleting(true);
     try {
       if (type === "deposit") await WalletAPI.deleteDeposit(id);
@@ -120,14 +128,17 @@ export function DeleteRequestButton({ id, type }: { id: string; type: "deposit" 
     }
   }
   return (
-    <button
-      type="button"
-      onClick={handleDelete}
-      disabled={deleting}
-      aria-label="Delete pending request"
-      className="-mr-1 grid size-8 shrink-0 place-items-center rounded-full text-apk-muted disabled:opacity-50"
-    >
-      {deleting ? <Spinner className="size-4" /> : <IoTrashOutline size={16} />}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={handleDelete}
+        disabled={deleting}
+        aria-label="Delete pending request"
+        className="-mr-1 grid size-8 shrink-0 place-items-center rounded-full text-apk-muted disabled:opacity-50"
+      >
+        {deleting ? <Spinner className="size-4" /> : <IoTrashOutline size={16} />}
+      </button>
+      {confirmDialog}
+    </>
   );
 }

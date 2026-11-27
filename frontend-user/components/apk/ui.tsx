@@ -5,7 +5,7 @@
 // originals; colours come from the `apk-*` Tailwind tokens (globals.css
 // `.apk`). Screens under components/apk/** build on these.
 
-import { useEffect, useState, type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes } from "react";
+import { useCallback, useEffect, useState, type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes } from "react";
 import { useRouter } from "next/navigation";
 import { IoChevronBack, IoDocumentsOutline, IoEyeOffOutline, IoEyeOutline, IoClose } from "react-icons/io5";
 import { cn } from "@/lib/utils";
@@ -402,6 +402,84 @@ export function Sheet({
       </div>
     </div>
   );
+}
+
+export interface ConfirmOptions {
+  title: string;
+  message?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  /** Red confirm button (logout, delete). */
+  danger?: boolean;
+  icon?: ReactNode;
+}
+
+/**
+ * In-app confirm popup (the app's Alert dialog): centred card over a dim
+ * overlay, Cancel + confirm. Replaces the browser's window.confirm box.
+ *   const [confirm, confirmDialog] = useConfirm();
+ *   if (!(await confirm({ title: "Log out?", danger: true }))) return;
+ *   …render {confirmDialog} anywhere inside the `.apk` tree.
+ */
+export function useConfirm(): [(o: ConfirmOptions) => Promise<boolean>, ReactNode] {
+  const [req, setReq] = useState<(ConfirmOptions & { resolve: (ok: boolean) => void }) | null>(null);
+  const confirm = useCallback(
+    (o: ConfirmOptions) => new Promise<boolean>((resolve) => setReq({ ...o, resolve })),
+    [],
+  );
+  const close = useCallback(
+    (ok: boolean) => {
+      req?.resolve(ok);
+      setReq(null);
+    },
+    [req],
+  );
+  useEffect(() => {
+    if (!req) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [req, close]);
+  const dialog = req ? (
+    <div className="fixed inset-0 z-[70] grid place-items-center p-6" role="alertdialog" aria-modal="true" aria-label={req.title}>
+      <div className="absolute inset-0 bg-black/60 animate-in fade-in duration-150" onClick={() => close(false)} />
+      <div className="relative w-full max-w-[320px] rounded-2xl border border-apk-border bg-apk-elevated p-5 text-center shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+        {req.icon ? (
+          <div
+            className={cn(
+              "mx-auto mb-3 grid size-12 place-items-center rounded-full",
+              req.danger ? "bg-apk-sell/15 text-apk-sell" : "bg-apk-primary/15 text-apk-primary",
+            )}
+          >
+            {req.icon}
+          </div>
+        ) : null}
+        <div className="text-[17px] font-semibold text-apk-text">{req.title}</div>
+        {req.message ? <div className="mt-1.5 whitespace-pre-line text-[14px] leading-snug text-apk-muted">{req.message}</div> : null}
+        <div className="mt-5 flex gap-3">
+          <button
+            type="button"
+            onClick={() => close(false)}
+            className="flex-1 rounded-xl border border-apk-border bg-apk-bg py-3 text-[14px] font-semibold text-apk-text"
+          >
+            {req.cancelLabel ?? "Cancel"}
+          </button>
+          <button
+            type="button"
+            autoFocus
+            onClick={() => close(true)}
+            className={cn(
+              "flex-1 rounded-xl py-3 text-[14px] font-semibold text-white",
+              req.danger ? "bg-apk-sell" : "bg-apk-primary",
+            )}
+          >
+            {req.confirmLabel ?? "OK"}
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+  return [confirm, dialog];
 }
 
 /** Indian-format number with fixed decimals and tabular digits. */

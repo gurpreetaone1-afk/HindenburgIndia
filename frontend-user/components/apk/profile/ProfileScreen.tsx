@@ -40,7 +40,7 @@ import { ApiAccessAPI, type ApiAccessState } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/authStore";
 import { buildMailtoUrl, buildWhatsappUrl, useSupportContacts } from "@/lib/useSupport";
-import { Screen, Input, GradientButton, Loader, fmt } from "@/components/apk/ui";
+import { Screen, Input, GradientButton, Loader, fmt, useConfirm } from "@/components/apk/ui";
 import { useBrandName, useLeave, walletQ } from "@/components/apk/wallet/common";
 import { Avatar, Row, Section, useMe } from "./parts";
 
@@ -51,11 +51,20 @@ export function ApkProfileScreen() {
   const { data: support } = useSupportContacts();
   const logout = useAuthStore((s) => s.logout);
   const [signingOut, setSigningOut] = useState(false);
+  const [confirm, confirmDialog] = useConfirm();
 
   const mailUrl = buildMailtoUrl(support?.email, { subject: `${brand} support request` });
   const waUrl = buildWhatsappUrl(support?.whatsapp, `Hi, I need help with my ${brand} account`);
 
   async function signOut() {
+    const ok = await confirm({
+      title: "Log out?",
+      message: "You'll need to sign in again.",
+      confirmLabel: "Log out",
+      danger: true,
+      icon: <IoLogOutOutline size={22} />,
+    });
+    if (!ok) return;
     setSigningOut(true);
     try {
       await logout();
@@ -83,6 +92,7 @@ export function ApkProfileScreen() {
 
   return (
     <Screen padded={false}>
+      {confirmDialog}
       <div className="flex justify-between px-4 py-3 text-apk-text">
         <BackLink />
         <Link href="/settings" aria-label="Settings" className="-m-2 p-2">

@@ -10,7 +10,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { IoAdd, IoAlarmOutline, IoClose, IoTrashOutline } from "react-icons/io5";
 import { AlertsAPI, InstrumentAPI } from "@/lib/api";
-import { Card, Chip, GradientButton, Header, Loader, Screen } from "@/components/apk/ui";
+import { Card, Chip, GradientButton, Header, Loader, Screen, useConfirm } from "@/components/apk/ui";
 import { fixed } from "@/components/apk/market/format";
 import { fmtTime } from "./time";
 
@@ -165,9 +165,16 @@ export function ApkAlertsScreen() {
   const [showForm, setShowForm] = useState(false);
   const { data, isLoading, isError } = useQuery({ queryKey: ["alerts"], queryFn: () => AlertsAPI.list() });
   const rows = data ?? [];
+  const [confirm, confirmDialog] = useConfirm();
 
   async function remove(a: any) {
-    if (!window.confirm(`Remove alert?\n${a.symbol ?? a.instrument_token} ${TYPE_LABEL[a.alert_type] ?? ""}`)) return;
+    const ok = await confirm({
+      title: "Remove alert?",
+      message: `${a.symbol ?? a.instrument_token} ${TYPE_LABEL[a.alert_type] ?? ""}`.trim(),
+      confirmLabel: "Remove",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await AlertsAPI.delete(a.id);
       toast.success("Deleted");
@@ -179,6 +186,7 @@ export function ApkAlertsScreen() {
 
   return (
     <Screen padded={false}>
+      {confirmDialog}
       <div className="px-4">
         <Header
           title="Price alerts"
