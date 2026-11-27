@@ -17,7 +17,7 @@ import { IllustrationEmpty, SideFilterChips, type SideFilter } from "@/component
 import { useActiveTrades, useClosedPositions, useOpenPositions, usePositionActions, useWalletSummary } from "./data";
 import { activeLive, closedSide, holdingMarginFor, isInfowayPosition, positionLive, resolveSide, tokenOf } from "./logic";
 import { PositionRow, type RowKind } from "./PositionRow";
-import { PositionSheet } from "./PositionSheet";
+import { useApkTradeSheet } from "@/components/apk/trade/TradeSheetProvider";
 import { SlTpSheet } from "./SlTpSheet";
 
 type TabKey = "position" | "active" | "closed";
@@ -42,7 +42,6 @@ export function ApkPositionsScreen() {
   const [sideFilter, setSideFilter] = useState<SideFilter>("all");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [sheet, setSheet] = useState<{ id: string; kind: "position" | "active" } | null>(null);
   const [slTp, setSlTp] = useState<{ row: any; kind: "position" | "active" } | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
   const [closingAll, setClosingAll] = useState(false);
@@ -68,12 +67,17 @@ export function ApkPositionsScreen() {
     );
   }, [tab, kind, open, active, closed, sideFilter, searchQuery]);
 
+  // Tapping an open / active row opens the order ticket straight away (one
+  // card: lots, Market/Limit, BUY / SELL). The old intermediate position card
+  // made the user tap twice. Full exit stays on the row's CLOSE button; a
+  // partial exit = an opposite order for fewer lots from this ticket.
+  const ticket = useApkTradeSheet();
   const onPress = useCallback(
     (r: any, k: RowKind) => {
-      if (k !== "closed" && tokenOf(r)) setSheet({ id: r.id, kind: k });
+      if (k !== "closed" && tokenOf(r)) ticket.open({ token: tokenOf(r), symbol: r.symbol });
       else if (k === "closed") router.push(`/positions/${encodeURIComponent(r.id)}`);
     },
-    [router],
+    [router, ticket],
   );
   const onCloseRow = useCallback(
     (r: any, k: RowKind) => void (k === "active" ? actions.exitActive(r.id) : actions.squareoff(r.id)),
@@ -93,7 +97,6 @@ export function ApkPositionsScreen() {
   const q = tab === "position" ? openQ : tab === "active" ? activeQ : closedQ;
   const tabLoading = q.isPending;
   const tabError = q.isError && !q.data;
-  const sheetRow = sheet ? (sheet.kind === "position" ? open : active).find((r) => r.id === sheet.id) : undefined;
 
   return (
     <Screen padded={false}>
@@ -233,19 +236,6 @@ export function ApkPositionsScreen() {
           }
         />
       )}
-
-      {sheet && sheetRow ? (
-        <PositionSheet
-          row={sheetRow}
-          kind={sheet.kind}
-          onClose={() => setSheet(null)}
-          onExit={() => {
-            onCloseRow(sheetRow, sheet.kind);
-            setSheet(null);
-          }}
-          closeLots={actions.closeLots}
-        />
-      ) : null}
 
       <SlTpSheet target={slTp} onClose={() => setSlTp(null)} />
 
