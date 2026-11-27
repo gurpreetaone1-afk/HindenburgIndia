@@ -114,11 +114,13 @@ export function ApkOrdersScreen() {
         <div className="px-4 pb-2 pt-3">
           <h1 className="text-[26px] font-extrabold text-apk-text">Orders</h1>
         </div>
-        <div className="apk-no-scrollbar flex overflow-x-auto border-b border-apk-border px-4">
+        {/* Open · Executed · Rejected spread over the full width (Rejected at
+            the right edge, equal gaps), like the Positions tabs. */}
+        <div className="apk-no-scrollbar flex justify-between gap-3 overflow-x-auto border-b border-apk-border px-4">
           {tabs.map((t) => {
             const active = tab === t.key;
             return (
-              <button key={t.key} type="button" onClick={() => setTab(t.key)} className="mr-6 shrink-0 whitespace-nowrap text-left">
+              <button key={t.key} type="button" onClick={() => setTab(t.key)} className="shrink-0 whitespace-nowrap text-left">
                 <span className="flex items-center py-3">
                   <span className={cn("text-[15px]", active ? "font-bold text-apk-text" : "font-semibold text-apk-muted")}>
                     {t.label}
