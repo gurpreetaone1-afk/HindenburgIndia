@@ -361,6 +361,19 @@ export function useOrderTicket(token: string | null, side: Side) {
     const sl = stopLoss ? Number(stopLoss) : null;
     const tp = target ? Number(target) : null;
 
+    // Exposure this fill OPENS. A SELL against a long (or BUY against a short)
+    // is a closing leg: the server never lists it under Active, so an
+    // optimistic Active row for it would be a phantom that lingers until the
+    // next poll (seen: "position exit kiya phir bhi Active me trade"). Only the
+    // part that flips past flat opens new exposure.
+    const openNow = qc.getQueryData<any[]>(["positions", "open"]) ?? [];
+    const sameLeg = openNow.find(
+      (p) => p && p.instrument_token === instrument.token && p.product_type === productType,
+    );
+    const legQty = Number(sameLeg?.quantity) || 0;
+    const reduces = legQty !== 0 && Math.sign(legQty) !== Math.sign(signedQty);
+    const openingQty = reduces ? Math.max(0, Math.abs(signedQty) - Math.abs(legQty)) : Math.abs(signedQty);
+
     if (isImmediate) {
       qc.cancelQueries({ queryKey: ["positions", "open"] });
       qc.setQueryData<any[]>(["positions", "open"], (old) => {
@@ -420,6 +433,8 @@ export function useOrderTicket(token: string | null, side: Side) {
       qc.cancelQueries({ queryKey: ["positions", "active-trades"] });
       qc.setQueryData<any[]>(["positions", "active-trades"], (old) => {
         const prev = Array.isArray(old) ? old : [];
+        if (openingQty <= 0) return prev;
+        const openLots = +(openingQty / (lotSize || 1)).toFixed(4);
         return [
           {
             id: optimisticId,
@@ -431,15 +446,15 @@ export function useOrderTicket(token: string | null, side: Side) {
             action,
             side: action,
             product_type: productType,
-            quantity: Math.abs(signedQty),
-            lots,
+            quantity: openingQty,
+            lots: openLots,
             lot_size: lotSize,
             price: fillPrice,
             avg_price: fillPrice,
             ltp: ltp || fillPrice,
-            margin: m.perLot * lots,
-            used_margin: m.perLot * lots,
-            margin_used: m.perLot * lots,
+            margin: m.perLot * openLots,
+            used_margin: m.perLot * openLots,
+            margin_used: m.perLot * openLots,
             stop_loss: sl,
             target: tp,
             token: instrument.token,

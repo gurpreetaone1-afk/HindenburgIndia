@@ -120,8 +120,20 @@ export function usePositionActions() {
     qc.setQueryData<any[]>(["positions", "open"], (old) =>
       Array.isArray(old) ? old.filter((p) => p.id !== id && p.id !== targetId) : [],
     );
+    // Also drop optimistic (not-yet-confirmed) rows on this instrument: they
+    // carry no position_id, so the id filter alone left them on Active after
+    // the close until the next poll.
+    const closedRow = (posSnapshot ?? []).find((p) => p.id === id || p.id === targetId);
+    const closedTok = String(closedRow?.instrument_token ?? closedRow?.token ?? (targetId.startsWith("token:") ? targetId.slice(6) : ""));
     qc.setQueryData<any[]>(["positions", "active-trades"], (old) =>
-      Array.isArray(old) ? old.filter((t) => t.position_id !== id && t.position_id !== targetId) : [],
+      Array.isArray(old)
+        ? old.filter(
+            (t) =>
+              t.position_id !== id &&
+              t.position_id !== targetId &&
+              !(t._optimistic && closedTok && String(t.instrument_token ?? t.token ?? "") === closedTok),
+          )
+        : [],
     );
 
     const pendingToastId = toast.success("Closed", { duration: 1500 });
