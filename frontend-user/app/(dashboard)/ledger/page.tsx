@@ -8,6 +8,8 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { Pagination } from "@/components/common/Pagination";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn, formatINR, pnlColor } from "@/lib/utils";
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkLedgerScreen } from "@/components/apk/reports/LedgerScreen";
 
 type LedgerRow = {
   id: string;
@@ -40,7 +42,12 @@ const VISIBLE_TYPES = new Set<string>([
   "PROMO",
 ]);
 
+// Phones get the APK Ledger screen; tablet / desktop keep the table below.
 export default function UserLedgerPage() {
+  return useIsMobile() ? <ApkLedgerScreen /> : <LedgerDesktop />;
+}
+
+function LedgerDesktop() {
   // Last 30 days. The backend sorts ledger rows ascending then applies the
   // limit, so calling with no date window only ever returned the OLDEST rows
   // and the recent month was cut off. Pass an explicit 1-month from/to.

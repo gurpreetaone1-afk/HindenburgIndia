@@ -1,5 +1,7 @@
 "use client";
 
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkRegisterScreen } from "@/components/apk/auth/RegisterScreen";
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useBranding } from "@/lib/branding-context";
@@ -76,7 +78,7 @@ function passwordStrength(pwd: string): Strength {
   };
 }
 
-export default function RegisterPage() {
+function RegisterDesktop() {
   return (
     <Suspense fallback={null}>
       <RegisterPageInner />
@@ -452,4 +454,8 @@ function RegisterPageInner() {
       )}
     </div>
   );
+}
+
+export default function RegisterPage() {
+  return useIsMobile() ? <ApkRegisterScreen /> : <RegisterDesktop />;
 }

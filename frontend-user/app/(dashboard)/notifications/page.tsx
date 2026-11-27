@@ -1,5 +1,7 @@
 "use client";
 
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkNotificationsScreen } from "@/components/apk/misc/NotificationsScreen";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Check } from "lucide-react";
@@ -10,7 +12,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StatusPill } from "@/components/common/StatusPill";
 import { cn } from "@/lib/utils";
 
-export default function NotificationsPage() {
+function NotificationsDesktop() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["notifications"], queryFn: () => NotificationsAPI.list() });
 
@@ -75,4 +77,8 @@ export default function NotificationsPage() {
       </div>
     </div>
   );
+}
+
+export default function NotificationsPage() {
+  return useIsMobile() ? <ApkNotificationsScreen /> : <NotificationsDesktop />;
 }

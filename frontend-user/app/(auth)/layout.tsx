@@ -1,5 +1,7 @@
 "use client";
 
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkAuthScope } from "@/components/apk/auth/common";
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -63,8 +65,21 @@ const BACKED_BY = ["NSE", "BSE", "MCX", "CDSL"];
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
     <Suspense fallback={<main className="min-h-screen w-full bg-background" />}>
-      <AuthLayoutInner>{children}</AuthLayoutInner>
+      <AuthLayoutSwitch>{children}</AuthLayoutSwitch>
     </Suspense>
+  );
+}
+
+/** Phones get the APK auth look (own `.apk` scope, no split showcase). The
+ * server render can't know the width, so the desktop markup it sends is
+ * hidden below md until hydration picks the phone tree (no layout flash). */
+function AuthLayoutSwitch({ children }: { children: React.ReactNode }) {
+  return useIsMobile() ? (
+    <ApkAuthScope>{children}</ApkAuthScope>
+  ) : (
+    <div className="max-md:hidden">
+      <AuthLayoutInner>{children}</AuthLayoutInner>
+    </div>
   );
 }
 

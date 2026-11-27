@@ -1,5 +1,7 @@
 "use client";
 
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkAlertsScreen } from "@/components/apk/misc/AlertsScreen";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -13,7 +15,7 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { DataTable, type Column } from "@/components/common/DataTable";
 import { StatusPill } from "@/components/common/StatusPill";
 
-export default function AlertsPage() {
+function AlertsDesktop() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["alerts"], queryFn: () => AlertsAPI.list() });
   const [open, setOpen] = useState(false);
@@ -145,4 +147,8 @@ export default function AlertsPage() {
       <DataTable columns={cols} rows={data} keyExtractor={(r) => r.id} />
     </div>
   );
+}
+
+export default function AlertsPage() {
+  return useIsMobile() ? <ApkAlertsScreen /> : <AlertsDesktop />;
 }

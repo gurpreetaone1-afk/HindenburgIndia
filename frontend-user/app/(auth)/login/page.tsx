@@ -1,5 +1,7 @@
 "use client";
 
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkLoginScreen } from "@/components/apk/auth/LoginScreen";
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -24,7 +26,7 @@ const schema = z.object({
 });
 type FormValues = z.infer<typeof schema>;
 
-export default function LoginPage() {
+function LoginDesktop() {
   return (
     <Suspense fallback={<LoginSplash subtitle="Loading…" />}>
       <LoginPageInner />
@@ -325,4 +327,8 @@ function InstallAppBanner() {
       <InstallPwaButton variant="compact" className="shrink-0" />
     </div>
   );
+}
+
+export default function LoginPage() {
+  return useIsMobile() ? <ApkLoginScreen /> : <LoginDesktop />;
 }

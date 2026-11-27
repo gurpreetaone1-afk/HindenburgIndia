@@ -1,5 +1,7 @@
 "use client";
 
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkHomeScreen } from "@/components/apk/home/HomeScreen";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -23,7 +25,7 @@ import { AddFundsWizard } from "@/components/wallet/AddFundsWizard";
 import { MarketOverview } from "@/components/trading/MarketOverview";
 import { TopMovers } from "@/components/trading/TopMovers";
 
-export default function DashboardPage() {
+function DashboardDesktop() {
   const user = useAuthStore((s) => s.user);
   const { data: summary } = useQuery({
     queryKey: ["dashboard"],
@@ -420,4 +422,8 @@ function EmptyState({ message, cta }: { message: string; cta?: { label: string; 
       )}
     </div>
   );
+}
+
+export default function DashboardPage() {
+  return useIsMobile() ? <ApkHomeScreen /> : <DashboardDesktop />;
 }

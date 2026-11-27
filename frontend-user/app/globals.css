@@ -513,3 +513,68 @@
 @keyframes apFlashDown { from { color: #ef4444; } }
 .ap-up { animation: apFlashUp 0.5s ease-out; }
 .ap-down { animation: apFlashDown 0.5s ease-out; }
+
+/* ── APK mobile view (phones < 768 px) ─────────────────────────────────
+   Port of the React Native app's palette (apk src/shared/theme/colors.ts).
+   Dark by default like the app; `.apk-light` = its light palette. System
+   font + tabular digits, as the app renders. Nothing outside `.apk`. */
+.apk {
+  --apk-bg: 13 13 13;
+  --apk-elevated: 26 26 26;
+  --apk-surface: 38 38 38;
+  --apk-chip: 31 31 31;
+  --apk-border: 42 42 42;
+  --apk-border-strong: 58 58 58;
+  --apk-text: 250 250 250;
+  --apk-muted: 161 161 170;
+  --apk-dim: 113 113 122;
+  --apk-inverse: 13 13 13;
+  --apk-buy: 45 212 191;
+  --apk-buy-dim: 15 118 110;
+  --apk-sell: 251 113 133;
+  --apk-sell-dim: 159 18 57;
+  --apk-warn: 245 158 11;
+  --apk-info: 96 165 250;
+  --apk-primary: 168 85 247;
+  --apk-primary-pressed: 126 34 206;
+  --apk-primary-dim: 76 29 149;
+  --apk-grad-from: 139 92 246;
+  --apk-grad-via: 236 72 153;
+  --apk-grad-to: 249 115 22;
+  --apk-avatar: 14 116 144;
+  --apk-shimmer: 32 32 32;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: rgb(var(--apk-bg));
+  color: rgb(var(--apk-text));
+  color-scheme: dark;
+  -webkit-tap-highlight-color: transparent;
+}
+.apk.apk-light {
+  --apk-bg: 255 255 255;
+  --apk-elevated: 244 244 245;
+  --apk-surface: 228 228 231;
+  --apk-chip: 244 244 245;
+  --apk-border: 228 228 231;
+  --apk-border-strong: 212 212 216;
+  --apk-text: 13 13 13;
+  --apk-muted: 82 82 91;
+  --apk-dim: 113 113 122;
+  --apk-inverse: 255 255 255;
+  --apk-buy: 15 118 110;
+  --apk-buy-dim: 153 246 228;
+  --apk-sell: 225 29 72;
+  --apk-sell-dim: 254 205 211;
+  --apk-warn: 180 83 9;
+  --apk-info: 29 78 216;
+  --apk-primary: 124 58 237;
+  --apk-primary-pressed: 91 33 182;
+  --apk-primary-dim: 237 233 254;
+  --apk-grad-from: 124 58 237;
+  --apk-grad-via: 219 39 119;
+  --apk-grad-to: 234 88 12;
+  --apk-avatar: 14 116 144;
+  --apk-shimmer: 228 228 231;
+  color-scheme: light;
+}
+.apk-no-scrollbar { scrollbar-width: none; }
+.apk-no-scrollbar::-webkit-scrollbar { display: none; }

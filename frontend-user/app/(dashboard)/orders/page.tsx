@@ -6,6 +6,8 @@ import { toast } from "sonner";
 import { X } from "lucide-react";
 import { OrderAPI } from "@/lib/api";
 import { cn, formatIST, formatPrice } from "@/lib/utils";
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkOrdersScreen } from "@/components/apk/orders/OrdersScreen";
 
 // Orders book — Open / Executed / Rejected tabs. Separate from the unified
 // /positions blotter (Position / Active / Closed / Cancelled / Rejected),
@@ -44,7 +46,12 @@ function prettyType(t: string): string {
   return u;
 }
 
+// Phones get the APK Orders screen; tablet / desktop keep the book below.
 export default function OrdersPage() {
+  return useIsMobile() ? <ApkOrdersScreen /> : <OrdersDesktop />;
+}
+
+function OrdersDesktop() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<Tab>("open");
 

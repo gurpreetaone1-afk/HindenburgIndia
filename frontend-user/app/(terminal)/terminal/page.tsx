@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -21,10 +21,23 @@ import { MobileNews } from "@/components/trading/MobileNews";
 import { TradeDetailSheet } from "@/components/trading/TradeDetailSheet";
 import { WalletStrip } from "@/components/trading/WalletStrip";
 import { cn, formatPercent, pnlColor } from "@/lib/utils";
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkChartScreen } from "@/components/apk/trade/ChartScreen";
 
 const ORDER_PANEL_COLLAPSED_KEY = "setupfx.terminal.orderPanelCollapsed";
 
+// Phones (< 768 px) get the APK Trade tab; tablet / desktop keep the terminal.
 export default function TradingTerminalPage() {
+  return useIsMobile() ? (
+    <Suspense fallback={null}>
+      <ApkChartScreen />
+    </Suspense>
+  ) : (
+    <TradingTerminalDesktop />
+  );
+}
+
+function TradingTerminalDesktop() {
   const qc = useQueryClient();
   // Mirror the app theme into the embedded TradingView widget. Defaults to
   // dark while the theme provider hasn't hydrated to avoid a white flash.

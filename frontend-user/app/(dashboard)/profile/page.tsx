@@ -39,6 +39,8 @@ import {
   useSupportContacts,
 } from "@/lib/useSupport";
 import { cn } from "@/lib/utils";
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkProfileScreen } from "@/components/apk/profile/ProfileScreen";
 
 /**
  * Mobile-first profile screen modelled on Zerodha Kite / Groww — a
@@ -63,6 +65,10 @@ type SubView =
   | "api-access";
 
 export default function ProfilePage() {
+  return useIsMobile() ? <ApkProfileScreen /> : <ProfileDesktop />;
+}
+
+function ProfileDesktop() {
   // The persisted login user (zustand `nb.auth`) is our offline-safe seed.
   // It carries every field the main profile screen renders (name, code,
   // email, status, role, is_demo, 2FA), so we can paint a correct profile

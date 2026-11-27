@@ -59,6 +59,35 @@ const config: Config = {
         // space-separated RGB channels so Tailwind's `/<alpha>` modifier
         // works (bg-mp-primary/10, border-mp-border/60, …). The trading app
         // is untouched — it never sets `.mp-scope`.
+        // ── APK mobile palette (phones < 768 px) ─────────────────────────────
+        // The mobile web view is a port of the React Native app; these are its
+        // src/shared/theme/colors.ts tokens, scoped to `.apk` (globals.css).
+        apk: {
+          "bg": "rgb(var(--apk-bg) / <alpha-value>)",
+          "elevated": "rgb(var(--apk-elevated) / <alpha-value>)",
+          "surface": "rgb(var(--apk-surface) / <alpha-value>)",
+          "chip": "rgb(var(--apk-chip) / <alpha-value>)",
+          "border": "rgb(var(--apk-border) / <alpha-value>)",
+          "border-strong": "rgb(var(--apk-border-strong) / <alpha-value>)",
+          "text": "rgb(var(--apk-text) / <alpha-value>)",
+          "muted": "rgb(var(--apk-muted) / <alpha-value>)",
+          "dim": "rgb(var(--apk-dim) / <alpha-value>)",
+          "inverse": "rgb(var(--apk-inverse) / <alpha-value>)",
+          "buy": "rgb(var(--apk-buy) / <alpha-value>)",
+          "buy-dim": "rgb(var(--apk-buy-dim) / <alpha-value>)",
+          "sell": "rgb(var(--apk-sell) / <alpha-value>)",
+          "sell-dim": "rgb(var(--apk-sell-dim) / <alpha-value>)",
+          "warn": "rgb(var(--apk-warn) / <alpha-value>)",
+          "info": "rgb(var(--apk-info) / <alpha-value>)",
+          "primary": "rgb(var(--apk-primary) / <alpha-value>)",
+          "primary-pressed": "rgb(var(--apk-primary-pressed) / <alpha-value>)",
+          "primary-dim": "rgb(var(--apk-primary-dim) / <alpha-value>)",
+          "grad-from": "rgb(var(--apk-grad-from) / <alpha-value>)",
+          "grad-via": "rgb(var(--apk-grad-via) / <alpha-value>)",
+          "grad-to": "rgb(var(--apk-grad-to) / <alpha-value>)",
+          "avatar": "rgb(var(--apk-avatar) / <alpha-value>)",
+          "shimmer": "rgb(var(--apk-shimmer) / <alpha-value>)",
+        },
         mp: {
           bg: "rgb(var(--mp-bg) / <alpha-value>)",
           surface: "rgb(var(--mp-surface) / <alpha-value>)",

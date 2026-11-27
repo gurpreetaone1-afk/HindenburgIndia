@@ -13,11 +13,14 @@ import { UserWsBridge } from "@/components/common/UserWsBridge";
 import { OfflineBanner } from "@/components/common/OfflineBanner";
 import { TermsGate } from "@/components/common/TermsGate";
 import { PagePrewarmer } from "@/components/common/PagePrewarmer";
+import { ApkShell } from "@/components/apk/ApkShell";
+import { useIsMobile } from "@/lib/useIsMobile";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     if (hydrated && !user) router.replace("/login");
@@ -63,6 +66,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     );
   }
   if (!user) return null;
+
+  // Phones: the APK-style UI (components/apk/**) with its own bottom tabs;
+  // every page renders its mobile screen. Web chrome (sidebar, top bar,
+  // status bar, web bottom nav) is desktop / tablet only.
+  if (isMobile) {
+    return (
+      <ApkShell>
+        <UserWsBridge />
+        <PagePrewarmer />
+        <OfflineBanner />
+        <TermsGate />
+        {children}
+      </ApkShell>
+    );
+  }
 
   return (
     <div className="grid min-h-screen grid-cols-1 md:grid-cols-[auto_1fr]">

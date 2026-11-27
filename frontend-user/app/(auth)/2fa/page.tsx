@@ -1,5 +1,7 @@
 "use client";
 
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkTwoFAScreen } from "@/components/apk/auth/TwoFAScreen";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -9,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-export default function TwoFAEnrollPage() {
+function TwoFADesktop() {
   const router = useRouter();
   const [secret, setSecret] = useState<string | null>(null);
   const [uri, setUri] = useState<string | null>(null);
@@ -141,4 +143,8 @@ export default function TwoFAEnrollPage() {
       )}
     </div>
   );
+}
+
+export default function TwoFAEnrollPage() {
+  return useIsMobile() ? <ApkTwoFAScreen /> : <TwoFADesktop />;
 }

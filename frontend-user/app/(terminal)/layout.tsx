@@ -21,6 +21,8 @@ import { InstrumentsPanel } from "@/components/trading/InstrumentsPanel";
 import { OptionChainPicker } from "@/components/trading/OptionChainPicker";
 import { TradeDetailSheet } from "@/components/trading/TradeDetailSheet";
 import { InstrumentAPI, OptionChainAPI } from "@/lib/api";
+import { ApkShell } from "@/components/apk/ApkShell";
+import { useIsMobile } from "@/lib/useIsMobile";
 
 type SidePanel = "instruments" | null;
 
@@ -41,6 +43,9 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
   const logout = useAuthStore((s) => s.logout);
+  // Phones get the APK Trade tab (ApkShell + ApkChartScreen); the desktop
+  // picker prefetch below is skipped there — the phone chain uses its own keys.
+  const isMobile = useIsMobile();
 
   // Desktop drag-to-resize for the MARKET list (keeps its 340 px default
   // until the user first drags its right edge).
@@ -121,7 +126,7 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
   useQuery({
     queryKey: ["option-chain-picker", u0, undefined],
     queryFn: () => OptionChainAPI.fetch(u0!),
-    enabled: !!user && !!u0,
+    enabled: !!user && !!u0 && !isMobile,
     refetchInterval: 6000,
     staleTime: 5000,
     notifyOnChangeProps: [],
@@ -129,7 +134,7 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
   useQuery({
     queryKey: ["option-chain-picker", u1, undefined],
     queryFn: () => OptionChainAPI.fetch(u1!),
-    enabled: !!user && !!u1,
+    enabled: !!user && !!u1 && !isMobile,
     refetchInterval: 6000,
     staleTime: 5000,
     notifyOnChangeProps: [],
@@ -137,7 +142,7 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
   useQuery({
     queryKey: ["option-chain-picker", u2, undefined],
     queryFn: () => OptionChainAPI.fetch(u2!),
-    enabled: !!user && !!u2,
+    enabled: !!user && !!u2 && !isMobile,
     refetchInterval: 6000,
     staleTime: 5000,
     notifyOnChangeProps: [],
@@ -153,6 +158,18 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
     );
   }
   if (!user) return null;
+
+  // Phones: APK shell (Trade tab active) around the APK chart screen. Keeps
+  // the auth gate above, the charting_library preload and the user WS bridge.
+  if (isMobile) {
+    return (
+      <ApkShell>
+        <Script src="/charting_library/charting_library.standalone.js" strategy="afterInteractive" />
+        <UserWsBridge />
+        {children}
+      </ApkShell>
+    );
+  }
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-background">

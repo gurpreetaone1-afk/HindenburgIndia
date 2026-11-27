@@ -24,6 +24,8 @@ import { DataTable, type Column } from "@/components/common/DataTable";
 import { StatusPill } from "@/components/common/StatusPill";
 import { TradeDetailSheet } from "@/components/trading/TradeDetailSheet";
 import { cn, formatINR, formatIST, formatPrice, pnlColor } from "@/lib/utils";
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkPositionsScreen } from "@/components/apk/positions/PortfolioScreen";
 
 // Unified blotter tabs: Position (open) / Active (per-fill) / Closed
 // (today's realised) / Cancelled (orders) / Rejected (orders). Replaces
@@ -203,7 +205,12 @@ function CloseReasonChip({ reason }: { reason?: string | null }) {
   );
 }
 
+// Phones get the APK Portfolio screen; tablet / desktop keep the blotter below.
 export default function PositionsPage() {
+  return useIsMobile() ? <ApkPositionsScreen /> : <PositionsDesktop />;
+}
+
+function PositionsDesktop() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<TabKey>("position");
   // `source` discriminates between the two tabs that share the same edit

@@ -1,5 +1,7 @@
 "use client";
 
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkForgotPasswordScreen } from "@/components/apk/auth/ForgotPasswordScreen";
 import { useState } from "react";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
@@ -24,7 +26,7 @@ const resetSchema = z.object({
     .regex(/\d/),
 });
 
-export default function ForgotPasswordPage() {
+function ForgotPasswordDesktop() {
   const [step, setStep] = useState<"request" | "reset">("request");
   const [identifier, setIdentifier] = useState("");
 
@@ -149,4 +151,8 @@ export default function ForgotPasswordPage() {
       </p>
     </div>
   );
+}
+
+export default function ForgotPasswordPage() {
+  return useIsMobile() ? <ApkForgotPasswordScreen /> : <ForgotPasswordDesktop />;
 }

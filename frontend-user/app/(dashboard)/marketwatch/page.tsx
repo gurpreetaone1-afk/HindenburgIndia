@@ -1,5 +1,7 @@
 "use client";
 
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkMarketScreen } from "@/components/apk/market/MarketScreen";
 import { useState } from "react";
 import { MobileInstrumentsBar } from "@/components/trading/MobileInstrumentsBar";
 import { TradeDetailSheet } from "@/components/trading/TradeDetailSheet";
@@ -19,7 +21,7 @@ type SeedQuote = {
   segment?: string | null;
 } | null;
 
-export default function MarketsPage() {
+function MarketsDesktop() {
   const [tradeToken, setTradeToken] = useState<string | null>(null);
   // Last-known price of the tapped row, handed to the trade card so it
   // paints a price INSTANTLY instead of sitting at 0.00 while its own WS
@@ -65,4 +67,8 @@ export default function MarketsPage() {
       />
     </div>
   );
+}
+
+export default function MarketsPage() {
+  return useIsMobile() ? <ApkMarketScreen /> : <MarketsDesktop />;
 }

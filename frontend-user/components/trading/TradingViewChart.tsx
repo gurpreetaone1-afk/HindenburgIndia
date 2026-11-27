@@ -13,6 +13,9 @@ interface TradingViewChartProps {
   symbol?: string;
   interval?: string;
   theme?: "light" | "dark";
+  /** Dark-theme pane / scale background (default #131122). The phone (APK)
+   *  chart passes the app's #0d0d0d. */
+  paneBg?: string;
   className?: string;
   /** Live quote from the terminal's WebSocket stream. When provided, the
    *  chart's real-time bar uses this price instead of REST polling, so
@@ -44,6 +47,7 @@ function TradingViewChartInner({
   token,
   interval = "5",
   theme = "dark",
+  paneBg = "#131122",
   className = "",
   quote,
   instrument,
@@ -546,11 +550,11 @@ function TradingViewChartInner({
             "header_resolutions",
           ],
           overrides: {
-            "paneProperties.background": theme === "dark" ? "#131122" : "#ffffff",
+            "paneProperties.background": theme === "dark" ? paneBg : "#ffffff",
             "paneProperties.backgroundType": "solid",
             "paneProperties.vertGridProperties.color": theme === "dark" ? "#1e1c30" : "#e9e9ea",
             "paneProperties.horzGridProperties.color": theme === "dark" ? "#1e1c30" : "#e9e9ea",
-            "scalesProperties.backgroundColor": theme === "dark" ? "#131122" : "#ffffff",
+            "scalesProperties.backgroundColor": theme === "dark" ? paneBg : "#ffffff",
             "scalesProperties.textColor": theme === "dark" ? "#8a86a8" : "#555",
             "scalesProperties.lineColor": theme === "dark" ? "#1e1c30" : "#e0e0e0",
             "mainSeriesProperties.candleStyle.upColor": "#2bca6a",
@@ -573,7 +577,7 @@ function TradingViewChartInner({
             "paneProperties.crossHairProperties.style": 2,
           },
           loading_screen: {
-            backgroundColor: theme === "dark" ? "#131122" : "#ffffff",
+            backgroundColor: theme === "dark" ? paneBg : "#ffffff",
             foregroundColor: theme === "dark" ? "#8e7df0" : "#3b82f6",
           },
           custom_css_url: "",

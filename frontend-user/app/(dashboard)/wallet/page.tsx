@@ -48,6 +48,8 @@ import {
   buildWhatsappUrl,
   useSupportContacts,
 } from "@/lib/useSupport";
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkWalletScreen } from "@/components/apk/wallet/WalletScreen";
 
 // ─────────────────────────────────────────────────────────────────
 // Official-style UPI logo mark (orange/green chevrons + UPI text).
@@ -87,6 +89,10 @@ function UpiLogo({ className }: { className?: string }) {
 }
 
 export default function WalletPage() {
+  return useIsMobile() ? <ApkWalletScreen /> : <WalletDesktop />;
+}
+
+function WalletDesktop() {
   const qc = useQueryClient();
   const authUser = useAuthStore((s) => s.user);
   const isDemo = authUser?.is_demo ?? false;

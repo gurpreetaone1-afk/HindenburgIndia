@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, Search, TrendingDown, TrendingUp } from "lucide-react";
 import { OptionChainAPI } from "@/lib/api";
@@ -12,10 +12,23 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { TradeDetailSheet } from "@/components/trading/TradeDetailSheet";
 import { MobileOptionChain } from "@/components/trading/MobileOptionChain";
 import { cn, formatNumber, pnlColor } from "@/lib/utils";
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkOptionChainScreen } from "@/components/apk/optionchain/ApkOptionChainScreen";
 
 const UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"] as const;
 
+// Phones (< 768 px) get the APK option chain; tablet / desktop unchanged.
 export default function OptionChainPage() {
+  return useIsMobile() ? (
+    <Suspense fallback={null}>
+      <ApkOptionChainScreen />
+    </Suspense>
+  ) : (
+    <OptionChainDesktop />
+  );
+}
+
+function OptionChainDesktop() {
   const router = useRouter();
   const [underlying, setUnderlying] = useState<string>("NIFTY");
   const [expiry, setExpiry] = useState<string | undefined>(undefined);

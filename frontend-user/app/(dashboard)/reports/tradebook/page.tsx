@@ -5,11 +5,18 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { ReportPdfButton } from "@/components/common/ReportPdfButton";
 import { DateRangeBar, toIsoFrom, toIsoTo, type DateRange } from "@/components/common/DateRangeBar";
 import { Card } from "@/components/ui/card";
+import { useIsMobile } from "@/lib/useIsMobile";
+import { ApkTradebookScreen } from "@/components/apk/reports/ReportScreens";
 
 // Reports is now a single "download your trade book" page — the trades
 // DataTable / mobile list / pagination were removed. The PDF is rendered
 // server-side by ReportPdfButton, so no client-side rows fetch is needed.
+// Phones get the APK Tradebook screen; tablet / desktop keep the PDF page below.
 export default function TradebookPage() {
+  return useIsMobile() ? <ApkTradebookScreen /> : <TradebookDesktop />;
+}
+
+function TradebookDesktop() {
   const [range, setRange] = useState<DateRange>(() => {
     const to = new Date();
     const from = new Date();
