@@ -18,9 +18,10 @@ export function ApkAuthScope({ children }: { children: ReactNode }) {
   // auth bundle doesn't pull in the order-ticket provider it mounts.
   const [theme] = useState<"dark" | "light">(() => {
     try {
-      return localStorage.getItem("apk-theme") === "light" ? "light" : "dark";
+      // Light unless the user picked dark — same default as ApkShell.
+      return localStorage.getItem("apk-theme") === "dark" ? "dark" : "light";
     } catch {
-      return "dark";
+      return "light";
     }
   });
   useEffect(() => {

@@ -130,10 +130,12 @@ export function ApkPositionsScreen() {
         </div>
       </div>
 
-      {/* 3 × 17 px labels overflow a 360 px phone: scroll the strip, never the page. */}
+      {/* Positions · Active · Closed spread over the full width (Closed at the
+          right edge, equal gaps). Very long counts on a 360 px phone scroll
+          the strip, never the page. */}
       <div className="apk-no-scrollbar overflow-x-auto px-4 pb-2">
         <Tabs
-          className="[&>button]:shrink-0 [&_span]:whitespace-nowrap"
+          className="w-full justify-between gap-3 [&>button]:shrink-0 [&_span]:whitespace-nowrap"
           items={[
             { key: "position", label: `Positions (${open.length})` },
             { key: "active", label: `Active (${active.length})` },

@@ -33,8 +33,9 @@ const TABS = [
 // 48 px bar + 8 px clearance above the home indicator (apk NAV_CLEARANCE).
 export const APK_TABBAR_HEIGHT = "calc(56px + env(safe-area-inset-bottom))";
 
-// Light / dark choice, as the app's Settings → Theme stores it. Dark is the
-// app default. Anything that changes it calls setApkTheme().
+// Light / dark choice, as the app's Settings → Theme stores it. Light (white)
+// is the phone-web default (operator, 2026-11-27); "dark" only when the user
+// picked it. Anything that changes it calls setApkTheme().
 const THEME_KEY = "apk-theme";
 const THEME_EVENT = "apk-theme-change";
 
@@ -47,9 +48,9 @@ export function setApkTheme(theme: "dark" | "light") {
 
 function readTheme(): "dark" | "light" {
   try {
-    return localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
+    return localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light";
   } catch {
-    return "dark";
+    return "light";
   }
 }
 
@@ -63,7 +64,7 @@ function subscribeTheme(cb: () => void) {
 }
 
 export function useApkTheme(): "dark" | "light" {
-  return useSyncExternalStore(subscribeTheme, readTheme, () => "dark");
+  return useSyncExternalStore(subscribeTheme, readTheme, () => "light");
 }
 
 function isActive(pathname: string | null, href: string) {
